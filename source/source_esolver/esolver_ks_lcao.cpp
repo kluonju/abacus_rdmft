@@ -528,12 +528,18 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         const Input_para& inp = PARAM.inp;
         const int nk = this->pelec->wg.nr;
         const int nbands = this->pelec->wg.nc;
+        const int nks = this->kv.get_nks(); // kv.wk has nks entries; ik >= nks wraps (spin-down)
+
+        // Helper to map k-spin index ik to the kv.wk slot
+        auto kv_wk = [&](int ik) -> double {
+            return this->kv.wk[ik < nks ? ik : ik - nks];
+        };
 
         // Build flat occupation vector n_{ik} = wg(ik, ib) / wk[ik]
         std::vector<double> occ_flat(nk * nbands, 0.0);
         for (int ik = 0; ik < nk; ++ik)
         {
-            double wk = this->kv.wk[ik < this->kv.get_nks() ? ik : ik - this->kv.get_nks()];
+            const double wk = kv_wk(ik);
             for (int ib = 0; ib < nbands; ++ib)
             {
                 occ_flat[ik * nbands + ib] = (wk > 0.0)
@@ -600,7 +606,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         // Update pelec->wg from optimized occupations
         for (int ik = 0; ik < nk; ++ik)
         {
-            double wk = this->kv.wk[ik < this->kv.get_nks() ? ik : ik - this->kv.get_nks()];
+            const double wk = kv_wk(ik);
             for (int ib = 0; ib < nbands; ++ib)
             {
                 this->pelec->wg(ik, ib) = occ_flat[ik * nbands + ib] * wk;
