@@ -551,11 +551,9 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<double>& grad_occ,
     psi::Psi<TK>& grad_wfc)
 {
-    ModuleBase::timer::tick("RDMFT_EG", "compute");
+    ModuleBase::timer::start("RDMFT_EG", "compute");
 
     assert(ion_initialized_);
-
-    // 1. Build charge density from occupations and orbitals
     build_charge(occ_flat, wfc);
 
     // 2. Build Hartree potential
@@ -724,7 +722,7 @@ double EnergyGradient<TK, TR>::compute(
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
 
-    ModuleBase::timer::tick("RDMFT_EG", "compute");
+    ModuleBase::timer::end("RDMFT_EG", "compute");
     return E_total_;
 }
 
@@ -733,7 +731,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     const std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc)
 {
-    ModuleBase::timer::tick("RDMFT_EG", "compute_energy");
+    ModuleBase::timer::start("RDMFT_EG", "compute_energy");
 
     assert(ion_initialized_);
 
@@ -823,7 +821,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
 
-    ModuleBase::timer::tick("RDMFT_EG", "compute_energy");
+    ModuleBase::timer::end("RDMFT_EG", "compute_energy");
     return E_total_;
 }
 

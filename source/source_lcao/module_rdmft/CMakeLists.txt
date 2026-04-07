@@ -6,6 +6,8 @@ if(ENABLE_LCAO)
         rdmft_tools.cpp
         rdmft_pot.cpp
         update_state_rdmft.cpp
+        rdmft_energy_gradient.cpp
+        rdmft_solver.cpp
     )
 endif()
 

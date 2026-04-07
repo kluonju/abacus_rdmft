@@ -14,6 +14,8 @@
 #include "../source_lcao/module_ri/exx_opt_orb.h"
 #endif
 #include "source_lcao/module_rdmft/rdmft.h"
+#include "source_lcao/module_rdmft/rdmft_solver.h"
+#include "source_lcao/module_rdmft/rdmft_type.h"
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
 #include "source_estate/module_dm/init_dm.h" // init dm from electronic wave functions
 #include "source_io/module_ctrl/ctrl_runner_lcao.h" // use ctrl_runner_lcao() 
@@ -93,6 +95,16 @@ void ESolver_KS_LCAO<TK, TR>::before_all_runners(UnitCell& ucell, const Input_pa
         rdmft_solver.init(this->pv, ucell,
           this->gd, this->kv, *(this->pelec), this->orb_,
           two_center_bundle_, inp.dft_functional, inp.rdmft_power_alpha);
+
+        // Init new RDMFT energy/gradient engine when rdmft_functional is specified
+        if (!inp.rdmft_functional.empty())
+        {
+            rdmft::XCFunctionalType xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
+            rdmft::XCFunctional xc_func(xc_type, inp.rdmft_power_alpha);
+            rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv,
+                          this->pelec, &this->orb_, &two_center_bundle_, xc_func);
+            rdmft_eg_initialized = true;
+        }
     }
 
     ModuleBase::timer::end("ESolver_KS_LCAO", "before_all_runners");
@@ -207,6 +219,10 @@ void ESolver_KS_LCAO<TK, TR>::before_scf(UnitCell& ucell, const int istep)
     if (PARAM.inp.rdmft == true)
     {
         rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+        if (rdmft_eg_initialized)
+        {
+            rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+        }
     }
 
     ModuleBase::timer::end("ESolver_KS_LCAO", "before_scf");
@@ -503,6 +519,99 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
     //! 1) call after_scf() of ESolver_KS
     ESolver_KS::after_scf(ucell, istep, conv_esolver);
+
+    //! 1.5) Run RDMFT optimization when the new engine is active
+    if (rdmft_eg_initialized && this->psi != nullptr)
+    {
+        ModuleBase::timer::start("ESolver_KS_LCAO", "rdmft_solve");
+
+        const Input_para& inp = PARAM.inp;
+        const int nk = this->pelec->wg.nr;
+        const int nbands = this->pelec->wg.nc;
+
+        // Build flat occupation vector n_{ik} = wg(ik, ib) / wk[ik]
+        std::vector<double> occ_flat(nk * nbands, 0.0);
+        for (int ik = 0; ik < nk; ++ik)
+        {
+            double wk = this->kv.wk[ik < this->kv.get_nks() ? ik : ik - this->kv.get_nks()];
+            for (int ib = 0; ib < nbands; ++ib)
+            {
+                occ_flat[ik * nbands + ib] = (wk > 0.0)
+                    ? this->pelec->wg(ik, ib) / wk : 0.0;
+            }
+        }
+
+        // Build RDMFTConfig from input parameters
+        rdmft::RDMFTConfig rdmft_config;
+        rdmft_config.xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
+        rdmft_config.alpha_power = inp.rdmft_power_alpha;
+        rdmft_config.max_iter = inp.rdmft_max_iter;
+        rdmft_config.max_inner_iter = inp.rdmft_max_inner_iter;
+        rdmft_config.energy_tol = inp.rdmft_energy_tol;
+        rdmft_config.grad_tol = inp.rdmft_grad_tol;
+        rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
+        rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
+        rdmft_config.adam_lr = inp.rdmft_adam_lr;
+
+        // Parse strategy
+        if (inp.rdmft_solver_strategy == "alternating")
+            rdmft_config.strategy = rdmft::SolverStrategy::Alternating;
+        else
+            rdmft_config.strategy = rdmft::SolverStrategy::ProductManifold;
+
+        // Parse occupation parameterisation
+        if (inp.rdmft_occ_param == "logistic")
+            rdmft_config.occ_param = rdmft::OccParamType::Logistic;
+        else
+            rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
+
+        // Parse constraint
+        if (inp.rdmft_constraint == "projected_gradient")
+            rdmft_config.constraint_method = rdmft::ConstraintMethod::ProjectedGradient;
+        else if (inp.rdmft_constraint == "active_set")
+            rdmft_config.constraint_method = rdmft::ConstraintMethod::ActiveSet;
+        else
+            rdmft_config.constraint_method = rdmft::ConstraintMethod::AugmentedLagrangian;
+
+        // Parse optimisers
+        auto parse_opt = [](const std::string& s) {
+            if (s == "sd")    return rdmft::OptimizerType::SteepestDescent;
+            if (s == "lbfgs") return rdmft::OptimizerType::LBFGS;
+            if (s == "adam")  return rdmft::OptimizerType::Adam;
+            return rdmft::OptimizerType::ConjugateGradient; // default
+        };
+        rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
+        rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
+
+        // Initialise solver (lightweight)
+        const double n_electrons = PARAM.inp.nelec;
+        rdmft::RDMFTSolver<TK, TR> rdmft_new_solver;
+        rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons);
+
+        // Optional gradient check
+        if (inp.rdmft_grad_check)
+        {
+            rdmft_new_solver.check_gradient_consistency(occ_flat, *this->psi);
+        }
+
+        // Run the optimization
+        double etot_rdmft = rdmft_new_solver.solve(occ_flat, *this->psi);
+
+        // Update pelec->wg from optimized occupations
+        for (int ik = 0; ik < nk; ++ik)
+        {
+            double wk = this->kv.wk[ik < this->kv.get_nks() ? ik : ik - this->kv.get_nks()];
+            for (int ib = 0; ib < nbands; ++ib)
+            {
+                this->pelec->wg(ik, ib) = occ_flat[ik * nbands + ib] * wk;
+            }
+        }
+
+        // Update the total energy record
+        this->pelec->f_en.etot = etot_rdmft;
+
+        ModuleBase::timer::end("ESolver_KS_LCAO", "rdmft_solve");
+    }
 
     //! 2) output of lcao every few ionic steps
     ModuleIO::ctrl_scf_lcao<TK, TR>(ucell,

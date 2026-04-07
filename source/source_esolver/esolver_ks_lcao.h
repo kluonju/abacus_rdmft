@@ -10,6 +10,7 @@
 #include "source_lcao/setup_deepks.h" // for deepks, mohan add 20251008
 #include "source_lcao/setup_exx.h" // for exx, mohan add 20251008
 #include "source_lcao/module_rdmft/rdmft.h" // rdmft
+#include "source_lcao/module_rdmft/rdmft_energy_gradient.h" // rdmft new engine
 #include "source_lcao/setup_dm.h" // mohan add 2025-10-30
 
 #include <memory>
@@ -91,6 +92,10 @@ class ESolver_KS_LCAO : public ESolver_KS
 
     //! For RDMFT calculations, added by jghan, 2024-03-16 
     rdmft::RDMFT<TK, TR> rdmft_solver;
+
+    //! Energy/gradient oracle for the new RDMFT optimisation engine
+    rdmft::EnergyGradient<TK, TR> rdmft_eg;
+    bool rdmft_eg_initialized = false;
 
     //! For linear-response TDDFT
     friend class LR::ESolver_LR<double, double>;

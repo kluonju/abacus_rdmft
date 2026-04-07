@@ -418,8 +418,11 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
 
     //------------------------------------------------------------------
     //! 17) Perform RDMFT calculations, added by jghan, 2024-10-17
+    //! When rdmft_functional is set, the full RDMFT optimisation has
+    //! already run in after_scf() via RDMFTSolver; skip the legacy
+    //! single-step evaluation here to avoid overwriting the result.
     //------------------------------------------------------------------
-    if (inp.rdmft == true)
+    if (inp.rdmft == true && inp.rdmft_functional.empty())
     {
         ModuleBase::matrix occ_num(pelec->wg);
         for (int ik = 0; ik < occ_num.nr; ++ik)
@@ -442,6 +445,7 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
 
         double etot_rdmft = rdmft_solver.run(dedocc, dedwfc);
     }
+
 
     //------------------------------------------------------------------
     //! 17) Output quasi orbitals
