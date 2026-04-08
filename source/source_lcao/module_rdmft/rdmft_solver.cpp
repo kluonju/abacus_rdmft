@@ -54,7 +54,7 @@ double RDMFTSolver<TK, TR>::solve(
     std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
-    ModuleBase::timer::tick("RDMFT", "solve");
+    ModuleBase::timer::start("RDMFT", "solve");
 
     double E = 0.0;
     switch (config_.strategy)
@@ -67,7 +67,7 @@ double RDMFTSolver<TK, TR>::solve(
             break;
     }
 
-    ModuleBase::timer::tick("RDMFT", "solve");
+    ModuleBase::timer::end("RDMFT", "solve");
     return E;
 }
 
