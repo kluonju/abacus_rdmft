@@ -545,6 +545,45 @@ void EnergyGradient<TK, TR>::compute_diagonal(
 }
 
 template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::project_orbital_gradient(
+    const psi::Psi<TK>& wfc,
+    psi::Psi<TK>& grad_wfc) const
+{
+    // Compute the Riemannian (tangent-space) gradient on the Stiefel manifold:
+    //   G_R = G - Phi * (Phi^H * G)
+    // At any orthonormal critical point (e.g. KS eigenstates), G_R == 0, which
+    // allows the orbital inner loop to detect convergence immediately instead of
+    // running all max_inner_iter steps.
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const TK neg_one = TK(-1.0);
+    char tc = detail::trans_char(TK());
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* psi_k = &wfc(ik, 0, 0);
+        TK* g_k = &grad_wfc(ik, 0, 0);
+
+        // A = Phi^H * G  (nbands x nbands)
+        std::vector<TK> A(para_Eij_.get_row_size() * para_Eij_.get_col_size(), TK(0));
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, psi_k, 1, 1, ParaV_->desc_wfc,
+            g_k, 1, 1, ParaV_->desc_wfc,
+            zero, A.data(), 1, 1, para_Eij_.desc);
+
+        // G_R = G - Phi * A
+        detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
+            neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
+            A.data(), 1, 1, para_Eij_.desc,
+            one, g_k, 1, 1, ParaV_->desc_wfc);
+    }
+#endif
+}
+
+template <typename TK, typename TR>
 double EnergyGradient<TK, TR>::compute(
     const std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc,

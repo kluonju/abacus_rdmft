@@ -122,6 +122,15 @@ class EnergyGradient
     void compute_diagonal(const TK* psi_k, const TK* Hpsi_k,
                           double* diag, int ik) const;
 
+  public:
+    /// Project orbital gradient onto the tangent space of the Stiefel manifold.
+    /// Replaces the Euclidean gradient G with the Riemannian gradient
+    ///   G_R = G - Phi * (Phi^H * G)
+    /// so that the gradient is zero at any orthonormal critical point (e.g.
+    /// KS eigenstates), allowing the orbital inner loop to converge there.
+    void project_orbital_gradient(const psi::Psi<TK>& wfc,
+                                   psi::Psi<TK>& grad_wfc) const;
+
     // ABACUS infrastructure (non-owning)
     const Parallel_Orbitals* ParaV_ = nullptr;
     const UnitCell* ucell_ = nullptr;
