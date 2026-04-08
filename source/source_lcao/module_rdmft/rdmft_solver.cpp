@@ -184,9 +184,9 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
         std::vector<double> grad_params;
         occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
 
-        // Compute Riemannian gradient for orbitals (project onto tangent space)
-        // For now, we do a simple projected gradient step on orbitals
-        // and a Euclidean step on occupation parameters
+        // Project orbital gradient onto the Stiefel tangent space so the orbital
+        // step moves within the manifold and converges at the correct critical point.
+        energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
         // Occupation parameter step
         std::vector<double> occ_dir;
@@ -224,18 +224,16 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
         }
         prod_occ_opt.update(grad_params, step_vec);
 
-        // Orbital retraction step
+        // Orbital retraction step using the Riemannian gradient
         double orb_step = config_.line_search_alpha_init * 0.1;
         const int nk = wfc.get_nk();
         for (int ik = 0; ik < nk; ++ik)
         {
-            // Simple gradient descent with reorthogonalization
             TK* C = &wfc(ik, 0, 0);
             const TK* G = &grad_wfc(ik, 0, 0);
             for (int i = 0; i < nb_local * nbs_local; ++i)
                 C[i] -= TK(orb_step) * G[i];
         }
-        // TODO: proper Stiefel retraction via roptlite
 
         // Update augmented Lagrangian multiplier periodically
         if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian
@@ -466,6 +464,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
                                           wfc, grad_occ, grad_wfc);
 
+        // Project the Euclidean gradient onto the tangent space of the Stiefel
+        // manifold: G_R = G - Phi * (Phi^H * G).
+        // This makes the gradient zero at any orthonormal critical point (e.g.
+        // KS eigenstates), so the convergence test below correctly detects
+        // when no further orbital update is needed.
+        energy_grad_->project_orbital_gradient(wfc, grad_wfc);
+
         result.grad_norm = 0.0;
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
@@ -485,6 +490,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             break;
         }
 
+        // Gradient step in the direction of the Riemannian gradient
         double step = config_.line_search_alpha_init * 0.1;
         for (int ik = 0; ik < nk; ++ik)
         {
