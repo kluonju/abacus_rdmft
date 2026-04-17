@@ -123,13 +123,33 @@ class EnergyGradient
                           double* diag, int ik) const;
 
   public:
-    /// Project orbital gradient onto the tangent space of the Stiefel manifold.
-    /// Replaces the Euclidean gradient G with the Riemannian gradient
-    ///   G_R = G - Phi * (Phi^H * G)
-    /// so that the gradient is zero at any orthonormal critical point (e.g.
-    /// KS eigenstates), allowing the orbital inner loop to converge there.
+    /// Project orbital gradient onto the tangent space of the Stiefel manifold
+    /// with overlap matrix S (generalised Stiefel: C^H S C = I).
+    ///   G_R = G - S * C * sym(C^H * G)
+    /// At any S-orthonormal critical point (e.g. KS eigenstates), G_R == 0,
+    /// allowing the orbital inner loop to detect convergence immediately.
     void project_orbital_gradient(const psi::Psi<TK>& wfc,
-                                   psi::Psi<TK>& grad_wfc) const;
+                                   psi::Psi<TK>& grad_wfc);
+
+    /// S-orthonormalise wfc along the direction grad_wfc with step -alpha:
+    ///   C <- C - alpha * G
+    ///   C <- C * M^{-1/2}   where M = C^H S C
+    /// Ensures the new orbitals lie on the generalised Stiefel manifold
+    /// (C^H S C = I) to machine precision.
+    void retract_orbitals(psi::Psi<TK>& wfc,
+                          const psi::Psi<TK>& grad_wfc,
+                          double alpha);
+
+    /// Return pointer to overlap matrix at k-point ik (column-major). May be
+    /// nullptr if no overlap operator is active. Rebuilt lazily the first time
+    /// it is requested per ion step.
+    const TK* get_SK(int ik);
+
+    /// Compute the S-weighted inner product  <X, Y>_S = Re Tr(X^H S Y)
+    /// summed over k-points. Performs an MPI Allreduce internally.
+    /// When no overlap is available (PW basis) falls back to the Euclidean
+    /// inner product <X, Y> = Re Tr(X^H Y).
+    double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
 
     // ABACUS infrastructure (non-owning)
     const Parallel_Orbitals* ParaV_ = nullptr;
@@ -155,16 +175,19 @@ class EnergyGradient
     hamilt::HContainer<TR>* HR_one_ = nullptr;
     hamilt::HContainer<TR>* HR_hartree_ = nullptr;
     hamilt::HContainer<TR>* HR_exx_ = nullptr;
+    hamilt::HContainer<TR>* SR_ = nullptr;
 
     hamilt::HS_Matrix_K<TK>* hsk_one_ = nullptr;
     hamilt::HS_Matrix_K<TK>* hsk_hartree_ = nullptr;
     hamilt::HS_Matrix_K<TK>* hsk_exx_ = nullptr;
+    hamilt::HS_Matrix_K<TK>* hsk_overlap_ = nullptr;
 
     hamilt::OperatorLCAO<TK, TR>* op_ekinetic_ = nullptr;
     hamilt::OperatorLCAO<TK, TR>* op_nonlocal_ = nullptr;
     hamilt::OperatorLCAO<TK, TR>* op_local_ = nullptr;
     hamilt::OperatorLCAO<TK, TR>* op_hartree_ = nullptr;
     hamilt::OperatorLCAO<TK, TR>* op_exx_ = nullptr;
+    hamilt::OperatorLCAO<TK, TR>* op_overlap_ = nullptr;
 
 #ifdef __EXX
     Exx_LRI<double>* exx_lri_d_ = nullptr;

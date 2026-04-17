@@ -56,6 +56,53 @@ double RDMFTSolver<TK, TR>::solve(
 {
     ModuleBase::timer::start("RDMFT", "solve");
 
+    // Clamp the initial occupations away from the [0, 1] boundary. With the
+    // cosine^2 / logistic parameterisations dn/dp vanishes at n = 0 and n = 1,
+    // so a KS seed (which typically has integer occupations) stalls the
+    // parameter-space optimiser on iteration 1 even though the analytic dE/dn
+    // is non-zero. Clamping by a small margin and rescaling to preserve the
+    // electron count restores a non-zero dp-gradient without perturbing the
+    // final converged energy (the margin vanishes when the optimum has
+    // non-integer occupations).
+    const double m = config_.occ_init_margin;
+    if (m > 0.0 && m < 0.5)
+    {
+        for (auto& n : occ_flat) n = std::max(m, std::min(1.0 - m, n));
+
+        // Re-scale to restore the electron-number constraint  sum wk n = Ne.
+        // Only scale values in (m, 1-m); values at the clamped boundaries are
+        // held fixed so they stay feasible under a uniform rescale.
+        double current = 0.0;
+        double free_sum = 0.0;
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            const double wk = kv_->wk[ik];
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                current += wk * n;
+                if (n > m && n < 1.0 - m) free_sum += wk * n;
+            }
+        }
+        const double delta = n_electrons_ - current;
+        if (std::abs(delta) > 1e-12 && free_sum > 1e-12)
+        {
+            const double scale = (free_sum + delta) / free_sum;
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                for (int ib = 0; ib < nbands_; ++ib)
+                {
+                    double& n = occ_flat[ik * nbands_ + ib];
+                    if (n > m && n < 1.0 - m)
+                    {
+                        n *= scale;
+                        n = std::max(m, std::min(1.0 - m, n));
+                    }
+                }
+            }
+        }
+    }
+
     double E = 0.0;
     switch (config_.strategy)
     {
@@ -235,13 +282,21 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
                 C[i] -= TK(orb_step) * G[i];
         }
 
-        // Update augmented Lagrangian multiplier periodically
-        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian
-            && (iter + 1) % 10 == 0)
+        // Update the augmented-Lagrangian multiplier every outer iteration so
+        // that lambda tracks the constraint violation closely. This prevents
+        // the transient |c| excursions seen when lambda was only refreshed
+        // every 10 iterations. The penalty parameter mu is only doubled when
+        // the constraint violation is still above a threshold, to avoid the
+        // penalty term dominating the gradient and causing erratic steps.
+        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
             occ_param_->params_to_occ(params, occ_flat);
             occ_constraint_->update_multiplier(occ_flat);
-            occ_constraint_->increase_penalty(config_.aug_lag_mu_factor, config_.aug_lag_mu_max);
+            if (std::abs(occ_constraint_->constraint_violation(occ_flat)) > 1e-6)
+            {
+                occ_constraint_->increase_penalty(
+                    config_.aug_lag_mu_factor, config_.aug_lag_mu_max);
+            }
         }
 
         double dE = std::abs(E - E_prev);
@@ -454,8 +509,28 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const int nk = wfc.get_nk();
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
+    const int total_size = nk * nb_local * nbs_local;
+
+    const bool use_cg = (config_.orb_optimizer == OptimizerType::ConjugateGradient);
 
     energy_grad_->invalidate_hone_cache();
+
+    // Work buffers: snapshot of the current wfc used for line-search rollback,
+    // previous Riemannian gradient and previous search direction (both needed
+    // for conjugate-gradient). prev_grad / prev_dir remain uninitialised when
+    // use_cg is false.
+    psi::Psi<TK> wfc_save(wfc);
+    psi::Psi<TK> prev_grad;
+    psi::Psi<TK> prev_dir;
+    if (use_cg)
+    {
+        prev_grad = wfc;
+        prev_dir = wfc;
+        prev_grad.zero_out();
+        prev_dir.zero_out();
+    }
+
+    double prev_gnorm2 = 0.0;
 
     for (int inner = 0; inner < config_.max_inner_iter; ++inner)
     {
@@ -464,19 +539,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
                                           wfc, grad_occ, grad_wfc);
 
-        // Project the Euclidean gradient onto the tangent space of the Stiefel
-        // manifold: G_R = G - Phi * (Phi^H * G).
-        // This makes the gradient zero at any orthonormal critical point (e.g.
-        // KS eigenstates), so the convergence test below correctly detects
-        // when no further orbital update is needed.
+        // Project onto the tangent space of the generalised Stiefel manifold
+        // with overlap S:  G_R = G - S C sym(C^H G).
+        // At any S-orthonormal critical point, G_R == 0.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        result.grad_norm = 0.0;
-        for (int ik = 0; ik < nk; ++ik)
-            for (int ib = 0; ib < nb_local; ++ib)
-                for (int mu = 0; mu < nbs_local; ++mu)
-                    result.grad_norm += abs2(grad_wfc(ik, ib, mu));
-        result.grad_norm = std::sqrt(result.grad_norm);
+        // Compute ||G_R||^2 in the S-weighted metric so the descent / CG
+        // quantities are consistent with the Stiefel geometry.
+        double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+        result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
         GlobalV::ofs_running << "      orb inner " << inner + 1
             << "  E=" << std::fixed << std::setprecision(10) << E
@@ -490,19 +561,159 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             break;
         }
 
-        // Gradient step in the direction of the Riemannian gradient
-        double step = config_.line_search_alpha_init * 0.1;
+        // ---- Build search direction ----
+        //   SD:       d = -G
+        //   CG (FR):  d = -G + beta * T(d_prev),  beta = ||G||^2 / ||G_prev||^2
+        //             Safeguards: beta >= 0 (FR+), restart on first step and
+        //             whenever <G, d> >= 0 (not a descent direction) or the
+        //             inner product <G_prev, G> / ||G_prev||^2 is too large
+        //             (Powell restart).
+        psi::Psi<TK> dir(wfc);
+        // dir = -grad_wfc
         for (int ik = 0; ik < nk; ++ik)
-        {
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
-                    wfc(ik, ib, mu) -= TK(step) * grad_wfc(ik, ib, mu);
+                    dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+
+        bool restart = true;
+        if (use_cg && inner > 0 && prev_gnorm2 > 1e-30)
+        {
+            // Vector-transport prev_dir to the current tangent space. We use the
+            // simplest transport: project onto the new tangent space (this is
+            // consistent with our descent-direction projection).
+            energy_grad_->project_orbital_gradient(wfc, prev_dir);
+
+            // Powell restart: if <grad, transported grad_prev> / ||grad||^2 is
+            // too large, the gradients have lost orthogonality and CG memory is
+            // unreliable.
+            energy_grad_->project_orbital_gradient(wfc, prev_grad);
+            double prev_grad_dot = energy_grad_->s_inner_product(grad_wfc, prev_grad);
+            const double powell_thr = 0.1;
+            if (std::abs(prev_grad_dot) <= powell_thr * gnorm2)
+            {
+                double beta = gnorm2 / prev_gnorm2;
+                // Polak-Ribiere+ style: enforce beta >= 0 for FR too.
+                beta = std::max(0.0, beta);
+                // dir += beta * prev_dir
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            dir(ik, ib, mu) += TK(beta) * prev_dir(ik, ib, mu);
+
+                // Re-project to kill the small tangent-space drift introduced by
+                // the linear combination.
+                energy_grad_->project_orbital_gradient(wfc, dir);
+
+                // Check descent condition  <grad, dir> < 0.
+                double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
+                if (dd_check < 0.0)
+                {
+                    restart = false;
+                }
+            }
+        }
+        if (restart)
+        {
+            // Steepest descent fallback (also used when use_cg is false)
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+        }
+
+        // Directional derivative  dd = <grad, dir>  (must be negative)
+        double dd = energy_grad_->s_inner_product(grad_wfc, dir);
+
+        // ---- Armijo line search along the retracted direction ----
+        // For step size alpha, we want  wfc_new = R_wfc(alpha * dir).
+        // retract_orbitals(wfc, step, alpha) internally does
+        //     wfc <- wfc - alpha * step,
+        // so we pass  step = -dir  to get the effective update  wfc + alpha*dir.
+        psi::Psi<TK> neg_dir(dir);
+        {
+            TK* q = &neg_dir(0, 0, 0);
+            const TK* p = &dir(0, 0, 0);
+            for (int i = 0; i < total_size; ++i) q[i] = -p[i];
+        }
+
+        const double c1 = config_.line_search_c1;
+        const double rho = config_.line_search_rho;
+        double alpha = config_.line_search_alpha_init;
+        double E_new = E;
+        bool ls_success = false;
+
+        // Save current wfc for line-search rollback
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
+
+        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+        {
+            // Reset wfc from the saved copy
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+
+            // Retract along +alpha * dir  (i.e. -alpha * neg_dir)
+            energy_grad_->retract_orbitals(wfc, neg_dir, alpha);
+            energy_grad_->invalidate_hone_cache();
+
+            E_new = energy_grad_->compute_energy(occ_flat, wfc);
+            if (E_new <= E + c1 * alpha * dd)
+            {
+                ls_success = true;
+                break;
+            }
+            alpha *= rho;
+        }
+
+        if (!ls_success)
+        {
+            // Line search failed; revert to previous orbitals.
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+            energy_grad_->invalidate_hone_cache();
+
+            if (use_cg && !restart)
+            {
+                // Retry with a fresh steepest-descent step before giving up:
+                // the CG direction may simply be poorly-conditioned. We force
+                // a restart by zeroing prev_dir and continuing.
+                prev_gnorm2 = 0.0;
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            prev_dir(ik, ib, mu) = TK(0);
+                result.iterations = inner + 1;
+                result.final_energy = E;
+                continue;
+            }
+
+            result.iterations = inner + 1;
+            result.final_energy = E;
+            break;
+        }
+
+        // Save this step's gradient and direction for the next CG iteration.
+        if (use_cg)
+        {
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                    {
+                        prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
+                        prev_dir(ik, ib, mu)  = dir(ik, ib, mu);
+                    }
+            prev_gnorm2 = gnorm2;
         }
 
         energy_grad_->invalidate_hone_cache();
-
         result.iterations = inner + 1;
-        result.final_energy = E;
+        result.final_energy = E_new;
     }
 
     return result;
@@ -545,10 +756,21 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
 
         double E_plus = energy_grad_->compute_energy(occ_plus,
                             const_cast<psi::Psi<TK>&>(wfc));
+        double Ep_one = energy_grad_->E_one_body();
+        double Ep_h = energy_grad_->E_hartree();
+        double Ep_x = energy_grad_->E_xc();
+
         double E_minus = energy_grad_->compute_energy(occ_minus,
                             const_cast<psi::Psi<TK>&>(wfc));
+        double Em_one = energy_grad_->E_one_body();
+        double Em_h = energy_grad_->E_hartree();
+        double Em_x = energy_grad_->E_xc();
 
         double fd_grad = (E_plus - E_minus) / (2.0 * epsilon);
+        double fd_one = (Ep_one - Em_one) / (2.0 * epsilon);
+        double fd_h   = (Ep_h - Em_h) / (2.0 * epsilon);
+        double fd_x   = (Ep_x - Em_x) / (2.0 * epsilon);
+
         double analytic = grad_occ[idx];
         double rel_err = (std::abs(analytic) > 1e-10)
                          ? std::abs(fd_grad - analytic) / std::abs(analytic)
@@ -560,9 +782,80 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
         GlobalV::ofs_running << std::fixed << std::setprecision(8)
             << "  occ[" << idx << "]: analytic=" << analytic
             << "  fd=" << fd_grad
+            << "  (fd_one=" << fd_one
+            << "  fd_h=" << fd_h
+            << "  fd_x=" << fd_x << ")"
             << "  rel_err=" << rel_err
             << (pass ? "  PASS" : "  FAIL")
             << std::endl;
+    }
+
+    // ---- Orbital gradient check (directional derivative along Riemannian G) ----
+    GlobalV::ofs_running << "\n-- Orbital gradient check --" << std::endl;
+    {
+        // Project Euclidean gradient onto tangent space; this is the direction
+        // we take the step along.
+        psi::Psi<TK> G_tan(grad_wfc);
+        energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), G_tan);
+
+        // <G, G_tan> = directional derivative along direction = G_tan
+        double dd = 0.0;
+        const int nk = wfc.get_nk();
+        const int nb_local = wfc.get_nbands();
+        const int nbs_local = wfc.get_nbasis();
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                {
+                    // Real part of conj(grad_wfc) * G_tan
+                    TK a = grad_wfc(ik, ib, mu);
+                    TK b = G_tan(ik, ib, mu);
+                    if constexpr (std::is_same<TK, double>::value)
+                        dd += a * b;
+                    else
+                        dd += (std::conj(a) * b).real();
+                }
+#ifdef __MPI
+        Parallel_Reduce::reduce_all(dd);
+#endif
+
+        double gnorm2 = 0.0;
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    gnorm2 += abs2(G_tan(ik, ib, mu));
+#ifdef __MPI
+        Parallel_Reduce::reduce_all(gnorm2);
+#endif
+
+        // f(t) = E(occ, R_C(-t * G_tan)).  f'(0) = -<G, G_tan> via Armijo convention.
+        auto f_at = [&](double t) -> double {
+            psi::Psi<TK> wfc_trial(wfc);
+            energy_grad_->retract_orbitals(wfc_trial, G_tan, t);
+            energy_grad_->invalidate_hone_cache();
+            return energy_grad_->compute_energy(occ_flat, wfc_trial);
+        };
+        const double t = epsilon;
+        double f_plus  = f_at(+t);
+        double f_minus = f_at(-t);
+        double fd = (f_plus - f_minus) / (2.0 * t);
+        // Along the steepest-descent direction the analytic directional derivative
+        // is  -<grad, G_tan> = -||G_tan||^2 up to manifold curvature.
+        double analytic_dd = -dd;
+        double rel_err = (std::abs(analytic_dd) > 1e-10)
+                         ? std::abs(fd - analytic_dd) / std::abs(analytic_dd)
+                         : std::abs(fd - analytic_dd);
+        bool pass = rel_err < tolerance;
+        if (!pass) all_pass = false;
+        GlobalV::ofs_running << std::fixed << std::setprecision(8)
+            << "  orb dir deriv: analytic=" << analytic_dd
+            << "  fd=" << fd
+            << "  ||G_R||^2=" << gnorm2
+            << "  rel_err=" << rel_err
+            << (pass ? "  PASS" : "  FAIL") << std::endl;
+
+        // Restore state: invalidate cache so next compute() recomputes correctly.
+        energy_grad_->invalidate_hone_cache();
     }
 
     GlobalV::ofs_running << "\nGradient check " << (all_pass ? "PASSED" : "FAILED") << std::endl;

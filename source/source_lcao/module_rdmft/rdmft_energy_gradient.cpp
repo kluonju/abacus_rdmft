@@ -20,6 +20,23 @@
 #include "source_lcao/module_operator_lcao/op_exx_lcao.h"
 #endif
 
+#include "source_lcao/module_operator_lcao/overlap.h"
+
+// ScaLAPACK Cholesky / triangular-solve prototypes not exposed by
+// ScalapackConnector. We only need them inside this TU.
+extern "C" {
+    void pdtrsm_(const char* side, const char* uplo, const char* trans,
+                 const char* diag, const int* m, const int* n,
+                 const double* alpha,
+                 const double* A, const int* ia, const int* ja, const int* descA,
+                 double* B, const int* ib, const int* jb, const int* descB);
+    void pztrsm_(const char* side, const char* uplo, const char* trans,
+                 const char* diag, const int* m, const int* n,
+                 const std::complex<double>* alpha,
+                 const std::complex<double>* A, const int* ia, const int* ja, const int* descA,
+                 std::complex<double>* B, const int* ib, const int* jb, const int* descB);
+}
+
 #include <cmath>
 #include <algorithm>
 #include <iostream>
@@ -250,14 +267,17 @@ EnergyGradient<TK, TR>::~EnergyGradient()
     delete HR_one_;
     delete HR_hartree_;
     delete HR_exx_;
+    delete SR_;
     delete hsk_one_;
     delete hsk_hartree_;
     delete hsk_exx_;
+    delete hsk_overlap_;
     delete op_ekinetic_;
     delete op_nonlocal_;
     delete op_local_;
     delete op_hartree_;
     delete op_exx_;
+    delete op_overlap_;
 #ifdef __EXX
     delete exx_lri_d_;
     delete exx_lri_c_;
@@ -301,16 +321,21 @@ void EnergyGradient<TK, TR>::init(
     HR_one_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
     HR_hartree_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
     HR_exx_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
+    SR_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
 
     hsk_one_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
     hsk_hartree_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
     hsk_exx_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
+    // The overlap operator writes S(k) into hsk->sk via hsk->get_sk(),
+    // so we must allocate sk (second arg false -> no_s==false)
+    hsk_overlap_ = new hamilt::HS_Matrix_K<TK>(ParaV_, false);
 
     if (PARAM.inp.gamma_only)
     {
         HR_one_->fix_gamma();
         HR_hartree_->fix_gamma();
         HR_exx_->fix_gamma();
+        SR_->fix_gamma();
     }
 
 #ifdef __EXX
@@ -328,6 +353,28 @@ void EnergyGradient<TK, TR>::init(
                 {"singularity_correction", sing_corr}
             }};
         }
+
+        // Propagate input RI parameters (input_conv skips this block when
+        // cal_exx is off, but RDMFT needs a fully-initialised info_ri to run
+        // its own EXX evaluator).
+        GlobalC::exx_info.info_ri.real_number = std::stoi(PARAM.inp.exx_real_number);
+        GlobalC::exx_info.info_ri.pca_threshold = PARAM.inp.exx_pca_threshold;
+        GlobalC::exx_info.info_ri.C_threshold   = PARAM.inp.exx_c_threshold;
+        GlobalC::exx_info.info_ri.V_threshold   = PARAM.inp.exx_v_threshold;
+        GlobalC::exx_info.info_ri.dm_threshold  = PARAM.inp.exx_dm_threshold;
+        GlobalC::exx_info.info_ri.ccp_rmesh_times = std::stod(PARAM.inp.exx_ccp_rmesh_times);
+        GlobalC::exx_info.info_ri.exx_symmetry_realspace = PARAM.inp.exx_symmetry_realspace;
+        GlobalC::exx_info.info_ri.Cs_inv_thr = PARAM.inp.exx_cs_inv_thr;
+        GlobalC::exx_info.info_ri.shrink_abfs_pca_thr = PARAM.inp.shrink_abfs_pca_thr;
+        GlobalC::exx_info.info_ri.shrink_LU_inv_thr = PARAM.inp.shrink_LU_inv_thr;
+        GlobalC::exx_info.info_ri.coul_moment = PARAM.inp.exx_coul_moment;
+        GlobalC::exx_info.info_ri.rotate_abfs = PARAM.inp.exx_rotate_abfs;
+        GlobalC::exx_info.info_ri.multip_moments_threshold = PARAM.inp.exx_multip_moments_threshold;
+        GlobalC::exx_info.info_opt_abfs.pca_threshold = PARAM.inp.exx_pca_threshold;
+        GlobalC::exx_info.info_opt_abfs.abfs_Lmax = PARAM.inp.exx_opt_orb_lmax;
+        GlobalC::exx_info.info_opt_abfs.ecut_exx = PARAM.inp.exx_opt_orb_ecut;
+        GlobalC::exx_info.info_opt_abfs.tolerence = PARAM.inp.exx_opt_orb_tolerence;
+        GlobalC::exx_info.info_global.hybrid_alpha = 1.0; // full Fock for RDMFT
 
         exx_spacegroup_symmetry_ = (PARAM.inp.nspin < 4
                                     && ModuleSymmetry::Symmetry::symm_flag == 1);
@@ -384,6 +431,13 @@ void EnergyGradient<TK, TR>::update_ion(
         hsk_one_, kv_->kvec_d, pelec_->pot, HR_one_, ucell_,
         orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "local");
 
+    // Overlap operator (builds SR internally)
+    delete op_overlap_;
+    op_overlap_ = new hamilt::Overlap<hamilt::OperatorLCAO<TK, TR>>(
+        hsk_overlap_, kv_->kvec_d, SR_, SR_, ucell_,
+        orb_->cutoffs(), gd_, two_center_bundle_->overlap_orb.get());
+    op_overlap_->contributeHR();
+
     op_ekinetic_->contributeHR();
     op_nonlocal_->contributeHR();
     op_local_->contributeHR();
@@ -433,7 +487,13 @@ void EnergyGradient<TK, TR>::build_charge(
         ModuleGint::cal_gint_rho(DM.get_DMR_vector(), nspin_, charge_->rho);
     }
 
-    charge_->renormalize_rho();
+    // NOTE: Do NOT call charge_->renormalize_rho() here.
+    // In RDMFT, the density must be exactly rho = sum_k w_k sum_i n_ik |phi_ik|^2
+    // for the analytic occupation gradient to be consistent with finite differences
+    // (perturbing n_ik by epsilon would otherwise be undone by renormalization).
+    // The electron-number constraint is handled independently at the occupation level
+    // (augmented Lagrangian / projection). Renormalizing here would hide constraint
+    // violations from the energy and break gradient consistency.
 
     Symmetry_rho srho;
     for (int is = 0; is < nspin_; is++)
@@ -520,7 +580,7 @@ void EnergyGradient<TK, TR>::compute_diagonal(
     const TK zero = TK(0.0);
     char tc = detail::trans_char(TK());
 
-    // Compute Eij = psi^H * Hpsi
+    // Compute Eij = psi^H * Hpsi in the 2D BLACS grid
     std::vector<TK> Eij(para_Eij_.get_row_size() * para_Eij_.get_col_size(), TK(0));
 
     detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
@@ -528,7 +588,12 @@ void EnergyGradient<TK, TR>::compute_diagonal(
         Hpsi_k, 1, 1, ParaV_->desc_wfc,
         zero, Eij.data(), 1, 1, para_Eij_.desc);
 
-    // Extract diagonal
+    // Extract diagonal. Only the one process that owns the (ig,ig) entry of the
+    // 2D BLACS grid writes a non-zero value; all other processes write 0. An
+    // Allreduce-sum below brings the full diagonal to every process so that all
+    // downstream code (energy accumulation, gradient formulas, line-search) can
+    // treat 'diag' as a globally-consistent replicated array.
+    std::fill(diag, diag + nbands, 0.0);
     const int nrow = para_Eij_.get_row_size();
     const int ncol = para_Eij_.get_col_size();
     for (int i = 0; i < nrow; ++i)
@@ -541,19 +606,92 @@ void EnergyGradient<TK, TR>::compute_diagonal(
                 diag[jg] = detail::real_of(Eij[i + j * nrow]);
         }
     }
+    Parallel_Reduce::reduce_all(diag, nbands);
 #endif
+}
+
+template <typename TK, typename TR>
+const TK* EnergyGradient<TK, TR>::get_SK(int ik)
+{
+    if (op_overlap_ == nullptr || hsk_overlap_ == nullptr) return nullptr;
+    hsk_overlap_->set_zero_sk();
+    op_overlap_->contributeHk(ik);
+    return hsk_overlap_->get_sk();
+}
+
+namespace {
+inline double real_of_conj_prod(double a, double b) { return a * b; }
+inline double real_of_conj_prod(std::complex<double> a, std::complex<double> b)
+{
+    // Re(conj(a) * b)
+    return a.real() * b.real() + a.imag() * b.imag();
+}
+} // namespace
+
+template <typename TK, typename TR>
+double EnergyGradient<TK, TR>::s_inner_product(
+    const psi::Psi<TK>& X,
+    const psi::Psi<TK>& Y)
+{
+    double result = 0.0;
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+
+    std::vector<TK> SY(ParaV_->nloc, TK(0));
+    const int nb_local = Y.get_nbands();
+    const int nbs_local = Y.get_nbasis();
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* Xk = &X(ik, 0, 0);
+        const TK* Yk = &Y(ik, 0, 0);
+        const TK* SK = get_SK(ik);
+
+        if (SK != nullptr)
+        {
+            std::fill(SY.begin(), SY.end(), TK(0));
+            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, 1, 1, ParaV_->desc,
+                Yk, 1, 1, ParaV_->desc_wfc,
+                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
+            for (int i = 0; i < nb_local * nbs_local; ++i)
+                result += real_of_conj_prod(Xk[i], SY[i]);
+        }
+        else
+        {
+            for (int i = 0; i < nb_local * nbs_local; ++i)
+                result += real_of_conj_prod(Xk[i], Yk[i]);
+        }
+    }
+    Parallel_Reduce::reduce_all(result);
+#else
+    const int nb_local = Y.get_nbands();
+    const int nbs_local = Y.get_nbasis();
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* Xk = &X(ik, 0, 0);
+        const TK* Yk = &Y(ik, 0, 0);
+        for (int i = 0; i < nb_local * nbs_local; ++i)
+            result += real_of_conj_prod(Xk[i], Yk[i]);
+    }
+#endif
+    return result;
 }
 
 template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::project_orbital_gradient(
     const psi::Psi<TK>& wfc,
-    psi::Psi<TK>& grad_wfc) const
+    psi::Psi<TK>& grad_wfc)
 {
-    // Compute the Riemannian (tangent-space) gradient on the Stiefel manifold:
-    //   G_R = G - Phi * (Phi^H * G)
-    // At any orthonormal critical point (e.g. KS eigenstates), G_R == 0, which
-    // allows the orbital inner loop to detect convergence immediately instead of
-    // running all max_inner_iter steps.
+    // Compute the Riemannian (tangent-space) gradient on the generalised
+    // Stiefel manifold  { C : C^H S C = I } with the Euclidean ambient metric:
+    //     proj_C(G) = G - S * C * sym(C^H G)
+    // The resulting tangent vector satisfies  C^H S proj + proj^H S C = 0,
+    // and equals zero exactly at any S-orthonormal critical point (e.g. KS
+    // eigenstates), so the orbital inner loop converges immediately there.
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
@@ -562,23 +700,161 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     const TK neg_one = TK(-1.0);
     char tc = detail::trans_char(TK());
 
+    const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
+
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // A = Phi^H * G  (nbands x nbands)
-        std::vector<TK> A(para_Eij_.get_row_size() * para_Eij_.get_col_size(), TK(0));
+        // SC = S * Phi  (if S available), otherwise SC == Phi
+        std::vector<TK> SC(ParaV_->nloc, TK(0));
+        const TK* SK = get_SK(ik);
+        if (SK != nullptr)
+        {
+            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, 1, 1, ParaV_->desc,
+                psi_k, 1, 1, ParaV_->desc_wfc,
+                zero, SC.data(), 1, 1, ParaV_->desc_wfc);
+        }
+        else
+        {
+            const int npsi = nbasis * wfc.get_nbands();
+            for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
+        }
+
+        // A = C^H G  (nbands x nbands)
+        std::vector<TK> A(eij_nloc, TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, psi_k, 1, 1, ParaV_->desc_wfc,
             g_k, 1, 1, ParaV_->desc_wfc,
             zero, A.data(), 1, 1, para_Eij_.desc);
 
-        // G_R = G - Phi * A
+        // B = G^H C, then symmetric part  A <- 0.5 (A + B) = 0.5(C^H G + G^H C)
+        // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
+        std::vector<TK> B(eij_nloc, TK(0));
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, g_k, 1, 1, ParaV_->desc_wfc,
+            psi_k, 1, 1, ParaV_->desc_wfc,
+            zero, B.data(), 1, 1, para_Eij_.desc);
+        for (int i = 0; i < eij_nloc; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
+
+        // G <- G - SC * A_sym
         detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
-            neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
+            neg_one, SC.data(), 1, 1, ParaV_->desc_wfc,
             A.data(), 1, 1, para_Eij_.desc,
             one, g_k, 1, 1, ParaV_->desc_wfc);
+    }
+#endif
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::retract_orbitals(
+    psi::Psi<TK>& wfc,
+    const psi::Psi<TK>& grad_wfc,
+    double alpha)
+{
+    // One retraction step on the generalised Stiefel manifold:
+    //   Y = C - alpha * G
+    //   C_new = Y * (Y^H S Y)^{-1/2}
+    // We approximate the inverse-square-root via Cholesky of M = Y^H S Y:
+    //     M = L L^H   =>   Y_ortho = Y * L^{-H}
+    // This is the "Cholesky QR" S-orthonormalisation, much cheaper than a
+    // Hermitian eigendecomposition and perfectly adequate as long as alpha
+    // is chosen small enough that M stays well-conditioned (which the outer
+    // line search guarantees).
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
+    const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
+    char tc = detail::trans_char(TK());
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        TK* C = &wfc(ik, 0, 0);
+        const TK* G = &grad_wfc(ik, 0, 0);
+
+        // Y = C - alpha * G (in-place on C)
+        for (int i = 0; i < nb_local * nbs_local; ++i)
+            C[i] -= TK(alpha) * G[i];
+
+        // SY = S * Y
+        std::vector<TK> SY(ParaV_->nloc, TK(0));
+        const TK* SK = get_SK(ik);
+        if (SK != nullptr)
+        {
+            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, 1, 1, ParaV_->desc,
+                C, 1, 1, ParaV_->desc_wfc,
+                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
+        }
+        else
+        {
+            for (int i = 0; i < nb_local * nbs_local; ++i) SY[i] = C[i];
+        }
+
+        // M = Y^H S Y
+        std::vector<TK> M(eij_nloc, TK(0));
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, C, 1, 1, ParaV_->desc_wfc,
+            SY.data(), 1, 1, ParaV_->desc_wfc,
+            zero, M.data(), 1, 1, para_Eij_.desc);
+
+        // Cholesky: M = L L^H, then Y <- Y * L^{-H}
+        {
+            int info = 0;
+            int one_int = 1;
+            char uplo = 'L';
+            if (std::is_same<TK, double>::value)
+            {
+                pdpotrf_(&uplo, const_cast<int*>(&nbands),
+                    reinterpret_cast<double*>(M.data()),
+                    &one_int, &one_int, const_cast<int*>(para_Eij_.desc), &info);
+            }
+            else
+            {
+                pzpotrf_(&uplo, const_cast<int*>(&nbands),
+                    reinterpret_cast<std::complex<double>*>(M.data()),
+                    &one_int, &one_int, const_cast<int*>(para_Eij_.desc), &info);
+            }
+            if (info != 0)
+            {
+                // Cholesky failed; fall back to no re-orthonormalisation for
+                // this step. The outer line search should reject it.
+                continue;
+            }
+
+            // Y <- Y * (L^H)^{-1}: solve X * L^H = Y  (side = 'R', trans = 'C')
+            char side = 'R';
+            char trans = detail::trans_char(TK());
+            char diag = 'N';
+            if (std::is_same<TK, double>::value)
+            {
+                double alpha_r = 1.0;
+                pdtrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                    &alpha_r,
+                    reinterpret_cast<double*>(M.data()),
+                    &one_int, &one_int, para_Eij_.desc,
+                    reinterpret_cast<double*>(C),
+                    &one_int, &one_int,
+                    const_cast<int*>(ParaV_->desc_wfc));
+            }
+            else
+            {
+                std::complex<double> alpha_c = {1.0, 0.0};
+                pztrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                    &alpha_c,
+                    reinterpret_cast<std::complex<double>*>(M.data()),
+                    &one_int, &one_int, para_Eij_.desc,
+                    reinterpret_cast<std::complex<double>*>(C),
+                    &one_int, &one_int,
+                    const_cast<int*>(ParaV_->desc_wfc));
+            }
+        }
     }
 #endif
 }
@@ -699,13 +975,26 @@ double EnergyGradient<TK, TR>::compute(
         compute_diagonal(psi_k, Hpsi_h.data(), vh_diag.data(), ik);
 
         // Exchange: H_exx * psi (RDMFT's private EXX)
+        // Use RI_2D_Comm::add_Hexx directly because op_exx_->contributeHk() is
+        // short-circuited for non-hybrid KS functionals (it checks the global
+        // XC func_type and returns early when it is not 4/5). RDMFT runs on top
+        // of an LDA/GGA KS and still needs Fock exchange from its modified DM.
         std::fill(Hpsi_x.begin(), Hpsi_x.end(), TK(0));
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && op_exx_)
+        if (exx_enabled_)
         {
             hsk_exx_->set_zero_hk();
-            op_exx_->contributeHk(ik);
+            if (GlobalC::exx_info.info_ri.real_number)
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
+            else
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x.data());
             compute_diagonal(psi_k, Hpsi_x.data(), vx_diag.data(), ik);
         }
@@ -753,10 +1042,10 @@ double EnergyGradient<TK, TR>::compute(
         }
     }
 
-    // Reduce energies across MPI
-    Parallel_Reduce::reduce_all(E_one_);
-    Parallel_Reduce::reduce_all(E_hartree_);
-    Parallel_Reduce::reduce_all(E_xc_);
+    // h_one_diag / vh_diag / vx_diag are already globally replicated by
+    // compute_diagonal(); the per-rank accumulations above all produced the
+    // same value, so NO MPI reduction of E_* is needed (that would double-
+    // count). The same is true for grad_occ.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
@@ -783,6 +1072,59 @@ double EnergyGradient<TK, TR>::compute_energy(
         hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
         orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     op_hartree_->contributeHR();
+
+    // Exchange must also be rebuilt because the modified DM gamma_xc depends
+    // on occupations (and on orbitals, but those are fixed for compute_energy
+    // use cases). Without this, line-search / finite-difference calls would
+    // use a stale H_exx from the last compute() call.
+#ifdef __EXX
+    if (exx_enabled_)
+    {
+        HR_exx_->set_zero();
+        std::vector<std::vector<TK>> DM_XC;
+        build_DM_xc(occ_flat, wfc, DM_XC);
+
+        if (exx_spacegroup_symmetry_)
+            DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
+
+        std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
+        for (size_t ik = 0; ik < DM_XC.size(); ++ik)
+            DM_XC_ptr[ik] = &DM_XC[ik];
+
+        if (GlobalC::exx_info.info_ri.real_number)
+        {
+            auto Ds = std::is_same<TK, double>::value
+                ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                      exx_spacegroup_symmetry_);
+            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+            else
+                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+
+            delete op_exx_;
+            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
+                hsk_exx_, HR_exx_, *ucell_, *kv_,
+                &exx_lri_d_->Hexxs, nullptr, hamilt::Add_Hexx_Type::k);
+        }
+        else
+        {
+            auto Ds = std::is_same<TK, double>::value
+                ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                                     exx_spacegroup_symmetry_);
+            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+            else
+                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+
+            delete op_exx_;
+            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
+                hsk_exx_, HR_exx_, *ucell_, *kv_,
+                nullptr, &exx_lri_c_->Hexxs, hamilt::Add_Hexx_Type::k);
+        }
+    }
+#endif
 
     // Populate one-body diagonal cache if not valid
     if (!hone_cache_valid_)
@@ -832,10 +1174,19 @@ double EnergyGradient<TK, TR>::compute_energy(
         // Exchange diag (RDMFT's private EXX)
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && op_exx_)
+        if (exx_enabled_)
         {
             hsk_exx_->set_zero_hk();
-            op_exx_->contributeHk(ik);
+            if (GlobalC::exx_info.info_ri.real_number)
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
+            else
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
             std::fill(Hpsi_buf.begin(), Hpsi_buf.end(), TK(0));
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_buf.data());
             compute_diagonal(psi_k, Hpsi_buf.data(), vx_diag.data(), ik);
@@ -853,9 +1204,8 @@ double EnergyGradient<TK, TR>::compute_energy(
         }
     }
 
-    Parallel_Reduce::reduce_all(E_one_);
-    Parallel_Reduce::reduce_all(E_hartree_);
-    Parallel_Reduce::reduce_all(E_xc_);
+    // As in compute(), the *_diag arrays are replicated across ranks so no MPI
+    // reduction of E_* is needed here.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
