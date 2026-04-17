@@ -103,9 +103,13 @@ sub-problems:
 | Value | Algorithm | Notes |
 |-------|-----------|-------|
 | `sd` | Steepest descent | Most robust, slowest convergence |
-| `cg` | Conjugate gradient (Polak–Ribière) | Good balance of speed and reliability |
-| `lbfgs` | Limited-memory BFGS | Fast for smooth landscapes, uses `rdmft_lbfgs_memory` history vectors |
-| `adam` | Adam | Adaptive learning rate, useful for noisy or ill-conditioned problems |
+| `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability |
+| `lbfgs` | Limited-memory BFGS | Fast for smooth landscapes, uses `rdmft_lbfgs_memory` history vectors. For the orbital sub-problem, the quasi-Newton direction is projected back onto the Stiefel tangent space (Riemannian L-BFGS by projection). |
+| `adam` | Adam | Adaptive learning rate, useful for noisy or ill-conditioned problems. For the orbital sub-problem Adam's Euclidean update is projected onto the tangent space and retracted onto the Stiefel manifold at each step. |
+
+All four optimisers are available for both `rdmft_occ_optimizer` and
+`rdmft_orb_optimizer` and may be mixed freely (e.g. `cg` on occupations and
+`lbfgs` on orbitals).
 
 ### Convergence control
 

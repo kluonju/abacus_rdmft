@@ -9,6 +9,7 @@
 #include <numeric>
 #include <cassert>
 #include <memory>
+#include <type_traits>
 
 namespace rdmft
 {
@@ -16,6 +17,74 @@ namespace rdmft
 // Helper to get |x|^2 for both real and complex types
 inline double abs2(double x) { return x * x; }
 inline double abs2(std::complex<double> x) { return std::norm(x); }
+
+// ------------------------------------------------------------------------
+// Flatten / unflatten helpers for the Stiefel-manifold orbital optimiser.
+// To reuse the Euclidean L-BFGS / Adam optimiser working on a flat
+// std::vector<double>, we map psi::Psi<TK> onto a real-valued flat array:
+//   * TK = double              -> size = N, 1 double per entry
+//   * TK = complex<double>     -> size = 2N, (Re, Im) per entry
+// With this layout the Euclidean inner product on the flattened vector
+// equals Re Tr(X^H Y) in Psi space, which is the Frobenius inner product
+// the EuclideanOptimizer expects (up to overlap S -- see note below).
+//
+// Note on the Riemannian metric: the Stiefel manifold uses the S-weighted
+// inner product  <X, Y>_S = Re Tr(X^H S Y).  The flattened Euclidean dot
+// product coincides with the Riemannian one only when S = I (PW basis or
+// already S-orthonormalised LCAO columns).  For S != I we still get a
+// valid descent direction after projecting back onto the tangent space,
+// but the L-BFGS preconditioning is an approximation.  This matches the
+// standard "Riemannian L-BFGS by projection" prescription used by the
+// ROPTLITE library and is adequate for the current applications.
+// ------------------------------------------------------------------------
+inline void psi_to_flat(const psi::Psi<double>& P, std::vector<double>& flat)
+{
+    const int nk = P.get_nk();
+    const int nb = P.get_nbands();
+    const int nbs = P.get_nbasis();
+    const int n = nk * nb * nbs;
+    flat.resize(n);
+    const double* p = &P(0, 0, 0);
+    std::copy(p, p + n, flat.begin());
+}
+
+inline void psi_to_flat(const psi::Psi<std::complex<double>>& P,
+                        std::vector<double>& flat)
+{
+    const int nk = P.get_nk();
+    const int nb = P.get_nbands();
+    const int nbs = P.get_nbasis();
+    const int n = nk * nb * nbs;
+    flat.resize(2 * n);
+    const std::complex<double>* p = &P(0, 0, 0);
+    for (int i = 0; i < n; ++i)
+    {
+        flat[2 * i]     = p[i].real();
+        flat[2 * i + 1] = p[i].imag();
+    }
+}
+
+inline void flat_to_psi(const std::vector<double>& flat, psi::Psi<double>& P)
+{
+    const int nk = P.get_nk();
+    const int nb = P.get_nbands();
+    const int nbs = P.get_nbasis();
+    const int n = nk * nb * nbs;
+    double* p = &P(0, 0, 0);
+    for (int i = 0; i < n; ++i) p[i] = flat[i];
+}
+
+inline void flat_to_psi(const std::vector<double>& flat,
+                        psi::Psi<std::complex<double>>& P)
+{
+    const int nk = P.get_nk();
+    const int nb = P.get_nbands();
+    const int nbs = P.get_nbasis();
+    const int n = nk * nb * nbs;
+    std::complex<double>* p = &P(0, 0, 0);
+    for (int i = 0; i < n; ++i)
+        p[i] = std::complex<double>(flat[2 * i], flat[2 * i + 1]);
+}
 
 template <typename TK, typename TR>
 void RDMFTSolver<TK, TR>::init(
@@ -511,9 +580,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const int nbs_local = wfc.get_nbasis();
     const int total_size = nk * nb_local * nbs_local;
 
-    const bool use_cg = (config_.orb_optimizer == OptimizerType::ConjugateGradient);
+    const OptimizerType opt_type = config_.orb_optimizer;
+    const bool use_cg    = (opt_type == OptimizerType::ConjugateGradient);
+    const bool use_lbfgs = (opt_type == OptimizerType::LBFGS);
+    const bool use_adam  = (opt_type == OptimizerType::Adam);
 
     energy_grad_->invalidate_hone_cache();
+
+    // EuclideanOptimizer for L-BFGS / Adam.  SD and CG are handled by the
+    // existing bespoke Riemannian code paths below because they need
+    // manifold-aware vector transport / restart heuristics.
+    EuclideanOptimizer eucl_opt(opt_type, config_);
+    int flat_size = 0;
+    if (use_lbfgs || use_adam)
+    {
+        flat_size = total_size;
+        if constexpr (!std::is_same<TK, double>::value) flat_size *= 2;
+        eucl_opt.init(flat_size);
+    }
 
     // Work buffers: snapshot of the current wfc used for line-search rollback,
     // previous Riemannian gradient and previous search direction (both needed
@@ -568,6 +652,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         //             whenever <G, d> >= 0 (not a descent direction) or the
         //             inner product <G_prev, G> / ||G_prev||^2 is too large
         //             (Powell restart).
+        //   L-BFGS:   d computed by EuclideanOptimizer on the flattened
+        //             gradient, then projected onto the Stiefel tangent
+        //             space.  The update (s, y) pair is computed from the
+        //             Riemannian gradient before/after the retraction.
+        //   Adam:     same as L-BFGS; Adam already carries its own
+        //             learning rate so we step with unit alpha in the
+        //             Armijo line search (with backtracking as a safety
+        //             net in case the manifold curvature invalidates the
+        //             Euclidean step scale).
         psi::Psi<TK> dir(wfc);
         // dir = -grad_wfc
         for (int ik = 0; ik < nk; ++ik)
@@ -576,6 +669,37 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                     dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
 
         bool restart = true;
+
+        if (use_lbfgs || use_adam)
+        {
+            // Flatten the Riemannian gradient into a real-valued vector and
+            // let the Euclidean optimiser produce a direction.
+            std::vector<double> grad_flat, dir_flat;
+            psi_to_flat(grad_wfc, grad_flat);
+            eucl_opt.compute_direction(grad_flat, dir_flat);
+
+            // Unflatten the direction back into a psi::Psi and project it
+            // onto the current tangent space (vector transport by
+            // projection).  This is standard for Riemannian L-BFGS and is
+            // numerically stable here because the flattened inner product
+            // matches the Euclidean ambient metric.
+            flat_to_psi(dir_flat, dir);
+            energy_grad_->project_orbital_gradient(wfc, dir);
+
+            // Check descent.  If not, fall back to steepest descent (this
+            // can happen in the first few iterations of L-BFGS before the
+            // Hessian approximation has been built up, or when an Adam
+            // momentum term points uphill along the projection).
+            double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
+            if (dd_check >= 0.0)
+            {
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+            }
+            restart = false;
+        }
         if (use_cg && inner > 0 && prev_gnorm2 > 1e-30)
         {
             // Vector-transport prev_dir to the current tangent space. We use the
@@ -638,7 +762,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         const double c1 = config_.line_search_c1;
         const double rho = config_.line_search_rho;
-        double alpha = config_.line_search_alpha_init;
+        // Initial line-search step size:
+        //   - SD/CG: use the configured Armijo start (small, because the
+        //            gradient has arbitrary scale).
+        //   - L-BFGS: start at 1.0 (the quasi-Newton step is already
+        //             properly scaled) and backtrack if needed.
+        //   - Adam:   start at 1.0 (Adam incorporates its own learning
+        //             rate into the direction).
+        double alpha = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
         double E_new = E;
         bool ls_success = false;
 
@@ -693,6 +824,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 continue;
             }
 
+            if (use_lbfgs || use_adam)
+            {
+                // Reset the Euclidean optimiser state so the next step
+                // starts from steepest descent.  This is the Riemannian
+                // analogue of the CG Powell-restart safeguard above.
+                eucl_opt.init(flat_size);
+                result.iterations = inner + 1;
+                result.final_energy = E;
+                continue;
+            }
+
             result.iterations = inner + 1;
             result.final_energy = E;
             break;
@@ -709,6 +851,36 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                         prev_dir(ik, ib, mu)  = dir(ik, ib, mu);
                     }
             prev_gnorm2 = gnorm2;
+        }
+
+        // Update the L-BFGS history.  For L-BFGS we need the Riemannian
+        // gradient at the retracted point; that costs one extra
+        // energy+gradient evaluation per step but is essential for the
+        // (s, y) curvature pair.  Adam does not need this call because its
+        // internal moments are fully updated inside compute_direction() and
+        // the pre-existing EuclideanOptimizer::update() increments step_
+        // a second time, which would corrupt Adam's bias correction.
+        if (use_lbfgs)
+        {
+            std::vector<double> grad_occ_new;
+            psi::Psi<TK> grad_wfc_new;
+            energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
+                                   wfc, grad_occ_new, grad_wfc_new);
+            energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
+
+            // step_vec = alpha * dir in the flattened real-vector space.
+            // (For the retraction the effective tangent step is also
+            // alpha * dir; the curvature introduced by reorthonormalisation
+            // is O(alpha^2) and can safely be absorbed into the L-BFGS
+            // approximation error.)
+            std::vector<double> new_grad_flat, step_flat, dir_flat_step;
+            psi_to_flat(grad_wfc_new, new_grad_flat);
+            psi_to_flat(dir, dir_flat_step);
+            step_flat.resize(dir_flat_step.size());
+            for (size_t i = 0; i < step_flat.size(); ++i)
+                step_flat[i] = alpha * dir_flat_step[i];
+
+            eucl_opt.update(new_grad_flat, step_flat);
         }
 
         energy_grad_->invalidate_hone_cache();
