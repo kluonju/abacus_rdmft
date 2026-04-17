@@ -96,6 +96,10 @@ class ESolver_KS_LCAO : public ESolver_KS
     rdmft::RDMFT<TK, TR> rdmft_solver;
 #endif
 
+    //! Energy/gradient oracle for the new RDMFT optimisation engine
+    rdmft::EnergyGradient<TK, TR> rdmft_eg;
+    bool rdmft_eg_initialized = false;
+
     //! For linear-response TDDFT
     friend class LR::ESolver_LR<double, double>;
     friend class LR::ESolver_LR<std::complex<double>, double>;

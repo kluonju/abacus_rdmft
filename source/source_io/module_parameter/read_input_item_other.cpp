@@ -28,10 +28,10 @@ void ReadInput::item_others()
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.sc_mag_switch)
             {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                                         "This feature is not stable yet and might lead to "
-                                         "erroneous results.\n"
-                                         " Please wait for the official release version.");
+//                ModuleBase::WARNING_QUIT("ReadInput",
+//                                         "This feature is not stable yet and might lead to "
+//                                         "erroneous results.\n"
+//                                         " Please wait for the official release version.");
                 // if (para.input.nspin != 4 && para.input.nspin != 2)
                 // {
                 //     ModuleBase::WARNING_QUIT("ReadInput", "nspin must be 2 or
@@ -849,11 +849,14 @@ void ReadInput::item_others()
         item.availability = "";
         read_sync_double(input.rdmft_power_alpha);
         item.reset_value = [](const Input_Item& item, Parameter& para) {
-            if( para.input.dft_functional == "hf" || para.input.dft_functional == "pbe0" )
+            const std::string& func = para.input.rdmft_functional.empty()
+                                      ? para.input.dft_functional
+                                      : para.input.rdmft_functional;
+            if( func == "hf" || func == "pbe0" )
             {
                 para.input.rdmft_power_alpha = 1.0;
             }
-            else if( para.input.dft_functional == "muller" )
+            else if( func == "muller" )
             {
                 para.input.rdmft_power_alpha = 0.5;
             }

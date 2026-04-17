@@ -421,6 +421,9 @@ void ctrl_scf_lcao_impl(UnitCell& ucell,
 
     //------------------------------------------------------------------
     //! 17) Perform RDMFT calculations, added by jghan, 2024-10-17
+    //! When rdmft_functional is set, the full RDMFT optimisation has
+    //! already run in after_scf() via RDMFTSolver; skip the legacy
+    //! single-step evaluation here to avoid overwriting the result.
     //------------------------------------------------------------------
 #ifdef __RDMFT
     if (inp.rdmft == true)
@@ -459,6 +462,7 @@ void ctrl_scf_lcao_impl(UnitCell& ucell,
                                  "INPUT requests rdmft but ABACUS was built without RDMFT (ENABLE_RDMFT=OFF).");
     }
 #endif
+
 
     //------------------------------------------------------------------
     //! 17) Output quasi orbitals

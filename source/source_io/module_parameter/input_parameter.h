@@ -665,6 +665,22 @@ struct Input_para
     double rdmft_power_alpha = 0.656; // the alpha parameter of power-functional, g(occ_number) = occ_number^alpha
     // double rdmft_wp22_omega;                 // the omega parameter of wp22-functional = exx_erfc_omega
 
+    // RDMFT solver parameters (new optimization engine)
+    std::string rdmft_functional = "";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
+    std::string rdmft_solver_strategy = "alternating"; // alternating or product_manifold
+    std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
+    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
+    int rdmft_max_iter = 200;                       // maximum number of outer iterations
+    int rdmft_max_inner_iter = 50;                  // maximum inner iterations per sub-problem
+    double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
+    double rdmft_grad_tol = 1e-6;                  // convergence threshold on gradient norm
+    std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
+    std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint method
+    double rdmft_alpha_step = 0.1;                 // initial line-search step length
+    int rdmft_lbfgs_memory = 10;                   // L-BFGS history vectors
+    double rdmft_adam_lr = 0.001;                  // Adam learning rate
+    bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
+
     // ==============   #Parameters (22.EXX PW) =====================
     // EXX for planewave basis, rhx0820 2025-03-10
     bool exxace = true; // exxace, exact exchange for planewave basis, https://doi.org/10.1021/acs.jctc.6b00092
