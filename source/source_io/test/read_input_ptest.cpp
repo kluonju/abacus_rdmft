@@ -445,8 +445,10 @@ TEST_F(InputParaTest, ParaRead)
     EXPECT_DOUBLE_EQ(param.inp.abs_wavelen_range[0], 0.0);
     EXPECT_DOUBLE_EQ(param.inp.abs_broadening, 0.01);
     EXPECT_EQ(param.inp.abs_gauge, "length");
+#ifdef __RDMFT
     EXPECT_EQ(param.inp.rdmft, 0);
     EXPECT_DOUBLE_EQ(param.inp.rdmft_power_alpha, 0.656);
+#endif
 }
 
 // comment out this part of tests, since Parameter is in another directory now, mohan 2025-05-18

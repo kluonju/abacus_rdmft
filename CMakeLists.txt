@@ -800,8 +800,10 @@ if(ENABLE_LCAO)
     gint
     hcontainer
     numerical_atomic_orbitals
-    lr
-    rdmft)
+    lr)
+  if(ENABLE_RDMFT)
+    target_link_libraries(${ABACUS_BIN_NAME} rdmft)
+  endif()
   if(USE_ELPA)
     target_link_libraries(${ABACUS_BIN_NAME} genelpa)
   endif()

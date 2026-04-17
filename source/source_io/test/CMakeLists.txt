@@ -11,6 +11,9 @@ AddTest(
   LIBS parameter  ${math_libs} base device io_input
   SOURCES read_input_ptest.cpp
 )
+if(ENABLE_RDMFT)
+  target_compile_definitions(MODULE_IO_input_test_para PRIVATE __RDMFT)
+endif()
 
 add_test(NAME MODULE_IO_input_test_para_4
       COMMAND mpirun -np 4 ./MODULE_IO_input_test_para

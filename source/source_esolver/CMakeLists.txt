@@ -33,6 +33,10 @@ add_library(
         ../source_pw/module_pwdft/exx_helper.h
 )
 
+if(ENABLE_LCAO AND ENABLE_RDMFT)
+  target_compile_definitions(esolver PRIVATE __RDMFT)
+endif()
+
 if(ENABLE_COVERAGE)
   add_coverage(esolver)
 endif()

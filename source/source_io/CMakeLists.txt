@@ -116,6 +116,10 @@ add_library(
     module_parameter/read_set_globalv.cpp
 )
 
+if(ENABLE_RDMFT)
+  target_compile_definitions(io_input PRIVATE __RDMFT)
+endif()
+
 add_library(
     io_basic
     OBJECT
@@ -134,6 +138,10 @@ add_library(
     OBJECT
     ${objects_advanced}
 )
+
+if(ENABLE_LCAO AND ENABLE_RDMFT)
+  target_compile_definitions(io_advanced PUBLIC __RDMFT)
+endif()
 
 if(ENABLE_COVERAGE)
   add_coverage(io_basic)

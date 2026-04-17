@@ -818,6 +818,7 @@ void ReadInput::item_others()
     }
 
     // RDMFT, added by jghan, 2024-10-16
+#ifdef __RDMFT
     {
         Input_Item item("rdmft");
         item.annotation = "whether to perform rdmft calculation, default is false";
@@ -865,6 +866,7 @@ void ReadInput::item_others()
         };
         this->add_item(item);
     }
+#endif
 
     // EXX PW by rhx0820, 2025-03-10
     {

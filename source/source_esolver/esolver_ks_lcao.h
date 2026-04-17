@@ -9,7 +9,9 @@
 #include "source_estate/module_charge/gint_precision_controller.h"
 #include "source_lcao/setup_deepks.h" // for deepks, mohan add 20251008
 #include "source_lcao/setup_exx.h" // for exx, mohan add 20251008
+#ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h" // rdmft
+#endif
 #include "source_lcao/setup_dm.h" // mohan add 2025-10-30
 
 #include <memory>
@@ -89,8 +91,10 @@ class ESolver_KS_LCAO : public ESolver_KS
     // For exact-exchange energy, mohan add 2025-10-08
     Exx_NAO<TK> exx_nao;
 
-    //! For RDMFT calculations, added by jghan, 2024-03-16 
+#ifdef __RDMFT
+    //! For RDMFT calculations, added by jghan, 2024-03-16
     rdmft::RDMFT<TK, TR> rdmft_solver;
+#endif
 
     //! For linear-response TDDFT
     friend class LR::ESolver_LR<double, double>;
@@ -110,7 +114,9 @@ class ESolver_KS_LCAO : public ESolver_KS
     const Parallel_Orbitals & get_pv() const { return pv; }
     const std::unique_ptr<ModuleGint::GintInfo> & get_gint_info() const { return gint_info_; }
     const TwoCenterBundle & get_two_center_bundle() const { return two_center_bundle_; }
-    const rdmft::RDMFT<TK, TR> & get_rdmft_solver() const { return rdmft_solver; }
+#ifdef __RDMFT
+    const rdmft::RDMFT<TK, TR>& get_rdmft_solver() const { return rdmft_solver; }
+#endif
     const LCAO_Orbitals & get_orb() const { return orb_; }
     const ModuleBase::matrix & get_scs() const { return scs; }
     const Setup_DeePKS<TK> & get_deepks() const { return deepks; }
