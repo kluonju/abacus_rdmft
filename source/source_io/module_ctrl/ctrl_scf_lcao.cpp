@@ -28,34 +28,37 @@
 #include "source_lcao/module_ri/Exx_LRI_interface.h" // use EXX codes
 #include "source_lcao/module_ri/RPA_LRI.h"           // use RPA code
 #endif
-#include "../module_qo/to_qo.h"                // use toQO
+#include "../module_qo/to_qo.h" // use toQO
+#ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h" // use RDMFT codes
-#include "source_lcao/rho_tau_lcao.h"       // mohan add 2025-10-24
+#endif
+#include "source_lcao/rho_tau_lcao.h" // mohan add 2025-10-24
 #include "source_lcao/module_operator_lcao/overlap.h" // use hamilt::Overlap for NAMD
 
+namespace {
 template <typename TK, typename TR>
-void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
-                             const Input_para& inp,
-                             K_Vectors& kv,
-                             elecstate::ElecState* pelec,
-                             elecstate::DensityMatrix<TK, double>* dm, // mohan add 2025-11-04
-                             Parallel_Orbitals& pv,
-                             Grid_Driver& gd,
-                             psi::Psi<TK>* psi,
-                             hamilt::HamiltLCAO<TK, TR>* p_hamilt,
-                             Plus_U& dftu, // mohan add 2025-11-07
-                             TwoCenterBundle& two_center_bundle,
-                             LCAO_Orbitals& orb,
-                             const ModulePW::PW_Basis_K* pw_wfc,   // for berryphase
-                             const ModulePW::PW_Basis* pw_rho,     // for berryphase
-                             const ModulePW::PW_Basis_Big* pw_big, // for Wannier90
-                             const Structure_Factor& sf,           // for Wannier90
-                             rdmft::RDMFT<TK, TR>& rdmft_solver,   // for RDMFT
-                             Setup_DeePKS<TK>& deepks,
-                             Exx_NAO<TK>& exx_nao,
-                             const bool conv_esolver,
-                             const bool scf_nmax_flag,
-                             const int istep)
+void ctrl_scf_lcao_impl(UnitCell& ucell,
+                        const Input_para& inp,
+                        K_Vectors& kv,
+                        elecstate::ElecState* pelec,
+                        elecstate::DensityMatrix<TK, double>* dm, // mohan add 2025-11-04
+                        Parallel_Orbitals& pv,
+                        Grid_Driver& gd,
+                        psi::Psi<TK>* psi,
+                        hamilt::HamiltLCAO<TK, TR>* p_hamilt,
+                        Plus_U& dftu, // mohan add 2025-11-07
+                        TwoCenterBundle& two_center_bundle,
+                        LCAO_Orbitals& orb,
+                        const ModulePW::PW_Basis_K* pw_wfc,   // for berryphase
+                        const ModulePW::PW_Basis* pw_rho,     // for berryphase
+                        const ModulePW::PW_Basis_Big* pw_big, // for Wannier90
+                        const Structure_Factor& sf,           // for Wannier90
+                        void* rdmft_solver_opaque,
+                        Setup_DeePKS<TK>& deepks,
+                        Exx_NAO<TK>& exx_nao,
+                        const bool conv_esolver,
+                        const bool scf_nmax_flag,
+                        const int istep)
 {
     ModuleBase::TITLE("ModuleIO", "ctrl_scf_lcao");
     ModuleBase::timer::start("ModuleIO", "ctrl_scf_lcao");
@@ -422,8 +425,14 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
     //! already run in after_scf() via RDMFTSolver; skip the legacy
     //! single-step evaluation here to avoid overwriting the result.
     //------------------------------------------------------------------
-    if (inp.rdmft == true && inp.rdmft_functional.empty())
+#ifdef __RDMFT
+    if (inp.rdmft == true)
     {
+        auto* rdmft_solver = static_cast<rdmft::RDMFT<TK, TR>*>(rdmft_solver_opaque);
+        if (rdmft_solver == nullptr)
+        {
+            ModuleBase::WARNING_QUIT("ModuleIO::ctrl_scf_lcao", "RDMFT solver is null.");
+        }
         ModuleBase::matrix occ_num(pelec->wg);
         for (int ik = 0; ik < occ_num.nr; ++ik)
         {
@@ -432,7 +441,7 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
                 occ_num(ik, inb) /= kv.wk[ik];
             }
         }
-        rdmft_solver.update_elec(ucell, occ_num, *psi);
+        rdmft_solver->update_elec(ucell, occ_num, *psi);
 
         //! initialize the gradients of Etotal with respect to occupation numbers and wfc,
         //! and set all elements to 0.
@@ -443,8 +452,16 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
         psi::Psi<TK> dedwfc(psi->get_nk(), psi->get_nbands(), psi->get_nbasis(), kv.ngk, true);
         dedwfc.zero_out();
 
-        double etot_rdmft = rdmft_solver.run(dedocc, dedwfc);
+        double etot_rdmft = rdmft_solver->run(dedocc, dedwfc);
+        (void)etot_rdmft;
     }
+#else
+    if (inp.rdmft == true)
+    {
+        ModuleBase::WARNING_QUIT("ModuleIO::ctrl_scf_lcao",
+                                 "INPUT requests rdmft but ABACUS was built without RDMFT (ENABLE_RDMFT=OFF).");
+    }
+#endif
 
 
     //------------------------------------------------------------------
@@ -500,8 +517,107 @@ void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
 
     ModuleBase::timer::end("ModuleIO", "ctrl_scf_lcao");
 }
+} // namespace
+
+#ifdef __RDMFT
+template <typename TK, typename TR>
+void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
+                             const Input_para& inp,
+                             K_Vectors& kv,
+                             elecstate::ElecState* pelec,
+                             elecstate::DensityMatrix<TK, double>* dm,
+                             Parallel_Orbitals& pv,
+                             Grid_Driver& gd,
+                             psi::Psi<TK>* psi,
+                             hamilt::HamiltLCAO<TK, TR>* p_hamilt,
+                             Plus_U& dftu,
+                             TwoCenterBundle& two_center_bundle,
+                             LCAO_Orbitals& orb,
+                             const ModulePW::PW_Basis_K* pw_wfc,
+                             const ModulePW::PW_Basis* pw_rho,
+                             const ModulePW::PW_Basis_Big* pw_big,
+                             const Structure_Factor& sf,
+                             rdmft::RDMFT<TK, TR>& rdmft_solver,
+                             Setup_DeePKS<TK>& deepks,
+                             Exx_NAO<TK>& exx_nao,
+                             const bool conv_esolver,
+                             const bool scf_nmax_flag,
+                             const int istep)
+{
+    ctrl_scf_lcao_impl(ucell,
+                       inp,
+                       kv,
+                       pelec,
+                       dm,
+                       pv,
+                       gd,
+                       psi,
+                       p_hamilt,
+                       dftu,
+                       two_center_bundle,
+                       orb,
+                       pw_wfc,
+                       pw_rho,
+                       pw_big,
+                       sf,
+                       static_cast<void*>(&rdmft_solver),
+                       deepks,
+                       exx_nao,
+                       conv_esolver,
+                       scf_nmax_flag,
+                       istep);
+}
+#endif
+
+template <typename TK, typename TR>
+void ModuleIO::ctrl_scf_lcao(UnitCell& ucell,
+                             const Input_para& inp,
+                             K_Vectors& kv,
+                             elecstate::ElecState* pelec,
+                             elecstate::DensityMatrix<TK, double>* dm,
+                             Parallel_Orbitals& pv,
+                             Grid_Driver& gd,
+                             psi::Psi<TK>* psi,
+                             hamilt::HamiltLCAO<TK, TR>* p_hamilt,
+                             Plus_U& dftu,
+                             TwoCenterBundle& two_center_bundle,
+                             LCAO_Orbitals& orb,
+                             const ModulePW::PW_Basis_K* pw_wfc,
+                             const ModulePW::PW_Basis* pw_rho,
+                             const ModulePW::PW_Basis_Big* pw_big,
+                             const Structure_Factor& sf,
+                             Setup_DeePKS<TK>& deepks,
+                             Exx_NAO<TK>& exx_nao,
+                             const bool conv_esolver,
+                             const bool scf_nmax_flag,
+                             const int istep)
+{
+    ctrl_scf_lcao_impl(ucell,
+                       inp,
+                       kv,
+                       pelec,
+                       dm,
+                       pv,
+                       gd,
+                       psi,
+                       p_hamilt,
+                       dftu,
+                       two_center_bundle,
+                       orb,
+                       pw_wfc,
+                       pw_rho,
+                       pw_big,
+                       sf,
+                       nullptr,
+                       deepks,
+                       exx_nao,
+                       conv_esolver,
+                       scf_nmax_flag,
+                       istep);
+}
 
 // For gamma only
+#ifdef __RDMFT
 template void ModuleIO::ctrl_scf_lcao<double, double>(
     UnitCell& ucell,
     const Input_para& inp,
@@ -569,6 +685,76 @@ template void ModuleIO::ctrl_scf_lcao<std::complex<double>, std::complex<double>
     const ModulePW::PW_Basis_Big* pw_big,                                   // for Wannier90
     const Structure_Factor& sf,                                             // for Wannier90
     rdmft::RDMFT<std::complex<double>, std::complex<double>>& rdmft_solver, // for RDMFT
+    Setup_DeePKS<std::complex<double>>& deepks,
+    Exx_NAO<std::complex<double>>& exx_nao,
+    const bool conv_esolver,
+    const bool scf_nmax_flag,
+    const int istep);
+#endif
+
+template void ModuleIO::ctrl_scf_lcao<double, double>(
+    UnitCell& ucell,
+    const Input_para& inp,
+    K_Vectors& kv,
+    elecstate::ElecState* pelec,
+    elecstate::DensityMatrix<double, double>* dm,
+    Parallel_Orbitals& pv,
+    Grid_Driver& gd,
+    psi::Psi<double>* psi,
+    hamilt::HamiltLCAO<double, double>* p_hamilt,
+    Plus_U& dftu,
+    TwoCenterBundle& two_center_bundle,
+    LCAO_Orbitals& orb,
+    const ModulePW::PW_Basis_K* pw_wfc,
+    const ModulePW::PW_Basis* pw_rho,
+    const ModulePW::PW_Basis_Big* pw_big,
+    const Structure_Factor& sf,
+    Setup_DeePKS<double>& deepks,
+    Exx_NAO<double>& exx_nao,
+    const bool conv_esolver,
+    const bool scf_nmax_flag,
+    const int istep);
+
+template void ModuleIO::ctrl_scf_lcao<std::complex<double>, double>(
+    UnitCell& ucell,
+    const Input_para& inp,
+    K_Vectors& kv,
+    elecstate::ElecState* pelec,
+    elecstate::DensityMatrix<std::complex<double>, double>* dm,
+    Parallel_Orbitals& pv,
+    Grid_Driver& gd,
+    psi::Psi<std::complex<double>>* psi,
+    hamilt::HamiltLCAO<std::complex<double>, double>* p_hamilt,
+    Plus_U& dftu,
+    TwoCenterBundle& two_center_bundle,
+    LCAO_Orbitals& orb,
+    const ModulePW::PW_Basis_K* pw_wfc,
+    const ModulePW::PW_Basis* pw_rho,
+    const ModulePW::PW_Basis_Big* pw_big,
+    const Structure_Factor& sf,
+    Setup_DeePKS<std::complex<double>>& deepks,
+    Exx_NAO<std::complex<double>>& exx_nao,
+    const bool conv_esolver,
+    const bool scf_nmax_flag,
+    const int istep);
+
+template void ModuleIO::ctrl_scf_lcao<std::complex<double>, std::complex<double>>(
+    UnitCell& ucell,
+    const Input_para& inp,
+    K_Vectors& kv,
+    elecstate::ElecState* pelec,
+    elecstate::DensityMatrix<std::complex<double>, double>* dm,
+    Parallel_Orbitals& pv,
+    Grid_Driver& gd,
+    psi::Psi<std::complex<double>>* psi,
+    hamilt::HamiltLCAO<std::complex<double>, std::complex<double>>* p_hamilt,
+    Plus_U& dftu,
+    TwoCenterBundle& two_center_bundle,
+    LCAO_Orbitals& orb,
+    const ModulePW::PW_Basis_K* pw_wfc,
+    const ModulePW::PW_Basis* pw_rho,
+    const ModulePW::PW_Basis_Big* pw_big,
+    const Structure_Factor& sf,
     Setup_DeePKS<std::complex<double>>& deepks,
     Exx_NAO<std::complex<double>>& exx_nao,
     const bool conv_esolver,

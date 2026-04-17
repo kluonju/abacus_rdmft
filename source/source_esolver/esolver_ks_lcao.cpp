@@ -13,9 +13,9 @@
 #ifdef __EXX
 #include "../source_lcao/module_ri/exx_opt_orb.h"
 #endif
+#ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h"
-#include "source_lcao/module_rdmft/rdmft_solver.h"
-#include "source_lcao/module_rdmft/rdmft_type.h"
+#endif
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
 #include "source_estate/module_dm/init_dm.h" // init dm from electronic wave functions
 #include "source_io/module_ctrl/ctrl_runner_lcao.h" // use ctrl_runner_lcao() 
@@ -89,6 +89,7 @@ void ESolver_KS_LCAO<TK, TR>::before_all_runners(UnitCell& ucell, const Input_pa
     //! if kpar is not divisible by nks, print a warning
     ModuleIO::print_kpar(this->kv.get_nks(), PARAM.globalv.kpar_lcao);
 
+#ifdef __RDMFT
     //! init rdmft, added by jghan
     if (inp.rdmft == true)
     {
@@ -106,6 +107,7 @@ void ESolver_KS_LCAO<TK, TR>::before_all_runners(UnitCell& ucell, const Input_pa
             rdmft_eg_initialized = true;
         }
     }
+#endif
 
     ModuleBase::timer::end("ESolver_KS_LCAO", "before_all_runners");
     return;
@@ -215,6 +217,7 @@ void ESolver_KS_LCAO<TK, TR>::before_scf(UnitCell& ucell, const int istep)
     // 16) the electron charge density should be symmetrized,
     Symmetry_rho::symmetrize_rho(PARAM.inp.nspin, this->chr, this->pw_rho, ucell.symm);
 
+#ifdef __RDMFT
     // 17) update of RDMFT, added by jghan
     if (PARAM.inp.rdmft == true)
     {
@@ -224,6 +227,7 @@ void ESolver_KS_LCAO<TK, TR>::before_scf(UnitCell& ucell, const int istep)
             rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
         }
     }
+#endif
 
     ModuleBase::timer::end("ESolver_KS_LCAO", "before_scf");
     return;
@@ -620,12 +624,21 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
     }
 
     //! 2) output of lcao every few ionic steps
+#ifdef __RDMFT
     ModuleIO::ctrl_scf_lcao<TK, TR>(ucell,
             PARAM.inp, this->kv, this->pelec, this->dmat.dm, this->pv,
             this->gd, this->psi, hamilt_lcao, this->dftu, this->two_center_bundle_,
             this->orb_, this->pw_wfc, this->pw_rho, this->pw_big, this->sf,
             this->rdmft_solver, this->deepks, this->exx_nao,
             this->conv_esolver, this->scf_nmax_flag, istep);
+#else
+    ModuleIO::ctrl_scf_lcao<TK, TR>(ucell,
+            PARAM.inp, this->kv, this->pelec, this->dmat.dm, this->pv,
+            this->gd, this->psi, hamilt_lcao, this->dftu, this->two_center_bundle_,
+            this->orb_, this->pw_wfc, this->pw_rho, this->pw_big, this->sf,
+            this->deepks, this->exx_nao,
+            this->conv_esolver, this->scf_nmax_flag, istep);
+#endif
 
     //! 3) Clean up RA, which is used to serach for adjacent atoms
     if (!PARAM.inp.cal_force && !PARAM.inp.cal_stress)

@@ -31,6 +31,10 @@ option(ENABLE_MLALGO "Enable the machine learning algorithms" OFF)
 option(ENABLE_LCAO "Enable LCAO algorithm" ON)
 option(USE_ELPA "Enable ELPA for LCAO" ON)
 option(ENABLE_LIBRI "Enable LibRI for hybrid functional" OFF)
+option(ENABLE_RDMFT "Enable RDMFT; enables LibRI (and LibComm) build dependencies" OFF)
+if(ENABLE_RDMFT AND ENABLE_LCAO)
+  set(ENABLE_LIBRI ON)
+endif()
 option(ENABLE_LIBCOMM "Enable LibComm" OFF)
 option(ENABLE_PEXSI "Enable PEXSI for LCAO" OFF)
 
@@ -840,8 +844,10 @@ if(ENABLE_LCAO)
     gint
     hcontainer
     numerical_atomic_orbitals
-    lr
-    rdmft)
+    lr)
+  if(ENABLE_RDMFT)
+    target_link_libraries(${ABACUS_BIN_NAME} rdmft)
+  endif()
   if(USE_ELPA)
     target_link_libraries(${ABACUS_BIN_NAME} genelpa)
   endif()
