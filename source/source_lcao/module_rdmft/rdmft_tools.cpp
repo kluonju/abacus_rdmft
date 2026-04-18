@@ -123,24 +123,6 @@ void add_occNum(const K_Vectors& kv,
 }
 
 
-//! do wk*g(occNum)*wfcHwfc and add for TV, hartree, XC. 
-//! This function just use once, so it can be replace and delete
-void add_wfcHwfc(const ModuleBase::matrix& wg, 
-                    const ModuleBase::matrix& wk_fun_occNum, 
-                    const ModuleBase::matrix& wfcHwfc_TV_in, 
-                    const ModuleBase::matrix& wfcHwfc_hartree_in,
-                    const ModuleBase::matrix& wfcHwfc_XC_in, 
-                    ModuleBase::matrix& occNum_wfcHwfc, 
-                    const std::string XC_func_rdmft, 
-                    const double alpha)
-{
-    occNum_wfcHwfc.zero_out();
-    occNum_Mul_wfcHwfc(wg, wfcHwfc_TV_in, occNum_wfcHwfc);
-    occNum_Mul_wfcHwfc(wg, wfcHwfc_hartree_in, occNum_wfcHwfc, 1);
-    occNum_Mul_wfcHwfc(wk_fun_occNum, wfcHwfc_XC_in, occNum_wfcHwfc, 1);
-}
-
-
 //! give certain occNum_wfcHwfc, get the corresponding energy
 double getEnergy(const ModuleBase::matrix& occNum_wfcHwfc)
 {
@@ -235,160 +217,99 @@ void Veff_rdmft<TK, TR>::initialize_HR(const UnitCell* ucell_in, const Grid_Driv
 }
 
 
-// this part of the code is copying from class Veff and do some modifications.
-// nspin == 1 or 2 case
-template<>
+namespace {
+// Unified HR builder shared between the gamma-only (double) and multi-k
+// (complex) specialisations of Veff_rdmft::contributeHR(). The loop over
+// spin and the branch on `potential_` is identical; only the template
+// arguments of the enclosing class differ.
+template <typename TR_>
+void build_HR_gint(const std::string& potential,
+                   const int nspin,
+                   const Charge* charge,
+                   const UnitCell* ucell,
+                   const ModulePW::PW_Basis* rho_basis,
+                   const ModuleBase::matrix* vloc,
+                   const ModuleBase::ComplexMatrix* sf,
+                   double* etxc,
+                   double* vtxc,
+                   hamilt::HContainer<TR_>* hR)
+{
+    double* vr_eff = nullptr;
+
+    if (potential == "hartree")
+    {
+        ModuleBase::matrix v_matrix(nspin, charge->nrxx);
+        elecstate::PotHartree potH(rho_basis);
+        potH.cal_v_eff(charge, ucell, v_matrix);
+        for (int is = 0; is < nspin; ++is)
+        {
+            vr_eff = &v_matrix(is, 0);
+            ModuleGint::cal_gint_vl(vr_eff, hR);
+        }
+    }
+    else if (potential == "local")
+    {
+        double vlocal_of_0 = 0.0;
+        ModuleBase::matrix v_matrix(1, charge->nrxx);
+        elecstate::PotLocal potL(vloc, sf, rho_basis, vlocal_of_0);
+        potL.cal_fixed_v(&v_matrix(0, 0));
+        vr_eff = &v_matrix(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
+    }
+    else if (potential == "xc")
+    {
+        // meta-GGA not supported yet for Veff_rdmft
+        ModuleBase::matrix vofk = *vloc;
+        vofk.zero_out();
+        ModuleBase::matrix v_matrix(nspin, charge->nrxx);
+        elecstate::PotXC potXC(rho_basis, etxc, vtxc, &vofk);
+        potXC.cal_v_eff(charge, ucell, v_matrix);
+        for (int is = 0; is < nspin; ++is)
+        {
+            vr_eff = &v_matrix(is, 0);
+            ModuleGint::cal_gint_vl(vr_eff, hR);
+        }
+    }
+    else
+    {
+        ModuleBase::WARNING("Veff_rdmft", "unknown potential type " + potential);
+    }
+}
+} // anonymous namespace
+
+template <>
 void Veff_rdmft<std::complex<double>, double>::contributeHR()
 {
     ModuleBase::TITLE("Veff", "contributeHR");
     ModuleBase::timer::start("Veff", "contributeHR");
 
-    double* vr_eff_rdmft = nullptr;
+    build_HR_gint(potential_, this->nspin, charge_, ucell, rho_basis_, vloc_, sf_,
+                  etxc, vtxc, this->hR);
 
-    // calculate v_hartree(r) or v_local(r) or v_xc(r)
-    if( potential_ == "hartree" )
-    {   
-        ModuleBase::matrix v_matrix_hartree(this->nspin, charge_->nrxx);
-        elecstate::PotHartree potH(rho_basis_);
-        potH.cal_v_eff(charge_, ucell, v_matrix_hartree);
-
-        for(int is=0; is<this->nspin; ++is)
-        {
-            // use pointer to attach v(r) for current spin
-            vr_eff_rdmft = &v_matrix_hartree(is, 0);
-
-            // do grid integral calculation to get HR
-            ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-        }
-    }
-    else if( potential_ == "local" )
-    {   
-        double vlocal_of_0 = 0.0;
-        ModuleBase::matrix v_matrix_local(1, charge_->nrxx);
-        elecstate::PotLocal potL(vloc_, sf_, rho_basis_, vlocal_of_0);
-        potL.cal_fixed_v( &v_matrix_local(0, 0) );
-
-        // use pointer to attach v(r)
-        vr_eff_rdmft = &v_matrix_local(0, 0);
-
-        // do grid integral calculation to get HR
-        ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-    }
-    else if( potential_ == "xc" )
-    {
-        // meta-gga type has not been considered yet !!!
-
-        ModuleBase::matrix vofk = *vloc_;
-        vofk.zero_out();
-        ModuleBase::matrix v_matrix_XC(this->nspin, charge_->nrxx);
-        elecstate::PotXC potXC(rho_basis_, etxc, vtxc, &vofk);
-        potXC.cal_v_eff(charge_, ucell, v_matrix_XC);
-
-        // if need meta-GGA, go to study veff_lcao.cpp and modify the code
-        for(int is=0; is<this->nspin; ++is)
-        {
-            // use pointer to attach v(r) for current spin
-            vr_eff_rdmft = &v_matrix_XC(is, 0);
-
-            // do grid integral calculation to get HR
-            ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-        }
-    }
-    else
-    {
-        std::cout << "\n\n!!!!!!\n there may be something wrong when use class Veff_rdmft\n\n!!!!!!\n";
-    }
-
-    // get HR for 2D-block parallel format
-
-    if(this->nspin == 2) 
-    { 
-        this->current_spin = 1 - this->current_spin; 
-    }
+    if (this->nspin == 2) { this->current_spin = 1 - this->current_spin; }
 
     ModuleBase::timer::end("Veff", "contributeHR");
-    return;
 }
 
-template<>
+template <>
 void Veff_rdmft<std::complex<double>, std::complex<double>>::contributeHR()
 {
     // nspin = 4 case not implemented currently.
 }
 
-// this part of the code is copying from class Veff and do some modifications.
-// special case of gamma-only
-template<>
+template <>
 void Veff_rdmft<double, double>::contributeHR()
 {
     ModuleBase::TITLE("Veff", "contributeHR");
     ModuleBase::timer::start("Veff", "contributeHR");
 
-
-    double* vr_eff_rdmft = nullptr;
-
-    // calculate v_hartree(r) or V_local(r) or v_xc(r)
-    if( potential_ == "hartree" )
-    {   
-        ModuleBase::matrix v_matrix_hartree(this->nspin, charge_->nrxx);
-        elecstate::PotHartree potH(rho_basis_);
-        potH.cal_v_eff(charge_, ucell, v_matrix_hartree);
-
-        for(int is=0; is<this->nspin; ++is)
-        {
-            // use pointer to attach v(r) for current spin
-            vr_eff_rdmft = &v_matrix_hartree(is, 0);
-
-            // do grid integral calculation to get HR
-            ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-        }
-    }
-    else if( potential_ == "local" )
-    {   
-        double vlocal_of_0 = 0.0;
-        ModuleBase::matrix v_matrix_local(1, charge_->nrxx);
-        elecstate::PotLocal potL(vloc_, sf_, rho_basis_, vlocal_of_0);
-        potL.cal_fixed_v( &v_matrix_local(0, 0) );
-
-        // use pointer to attach v(r)
-        vr_eff_rdmft = &v_matrix_local(0, 0);
-
-        // do grid integral calculation to get HR
-        ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-    }
-    else if( potential_ == "xc" )
-    {
-        // meta-gga type has not been considered yet !!!
-
-        ModuleBase::matrix vofk = *vloc_;
-        vofk.zero_out();
-        ModuleBase::matrix v_matrix_XC(this->nspin, charge_->nrxx);
-        elecstate::PotXC potXC(rho_basis_, etxc, vtxc, &vofk);
-        potXC.cal_v_eff(charge_, ucell, v_matrix_XC);
-        
-        for(int is=0; is<this->nspin; ++is)
-        {
-            // use pointer to attach v(r) for current spin
-            vr_eff_rdmft = &v_matrix_XC(is, 0);
-
-            // do grid integral calculation to get HR
-            ModuleGint::cal_gint_vl(vr_eff_rdmft, this->hR);
-        }
-    }
-    else
-    {
-        std::cout << "\n\n!!!!!!\n there may be something wrong when use class Veff_rdmft\n\n!!!!!!\n";
-    }
+    build_HR_gint(potential_, this->nspin, charge_, ucell, rho_basis_, vloc_, sf_,
+                  etxc, vtxc, this->hR);
 
     this->new_e_iteration = false;
-
-    if(this->nspin == 2)
-    {
-        this->current_spin = 1 - this->current_spin;
-    }
+    if (this->nspin == 2) { this->current_spin = 1 - this->current_spin; }
 
     ModuleBase::timer::end("Veff", "contributeHR");
-    return;
 }
 
 }

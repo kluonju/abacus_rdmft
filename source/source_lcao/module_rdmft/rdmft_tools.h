@@ -232,17 +232,6 @@ void add_occNum(const K_Vectors& kv,
                     const double alpha = 1.0);
 
 
-//! do wk*g(occNum)*wfcHwfc and add for TV, hartree, XC. This function just use once, so it can be replace and delete
-void add_wfcHwfc(const ModuleBase::matrix& wg, 
-                    const ModuleBase::matrix& wk_fun_occNum, 
-                    const ModuleBase::matrix& wfcHwfc_TV_in, 
-                    const ModuleBase::matrix& wfcHwfc_hartree_in,
-                    const ModuleBase::matrix& wfcHwfc_XC_in, 
-                    ModuleBase::matrix& occNum_wfcHwfc, 
-                    const std::string XC_func_rdmft, 
-                    const double alpha);
-
-
 //! give certain occNum_wfcHwfc, get the corresponding energy
 double getEnergy(const ModuleBase::matrix& occNum_wfcHwfc);
 

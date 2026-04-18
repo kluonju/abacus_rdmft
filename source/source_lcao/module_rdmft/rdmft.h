@@ -137,7 +137,6 @@ class RDMFT
     hamilt::HContainer<TR>* HR_hartree = nullptr;
     hamilt::HContainer<TR>* HR_dft_XC = nullptr;
     hamilt::HContainer<TR>* HR_exx_XC = nullptr;
-    // hamilt::HContainer<TR>* HR_local = nullptr;
 
     //! Hamiltonian matrices in reciprocal space
     hamilt::HS_Matrix_K<TK>* hsk_TV = nullptr;
@@ -145,21 +144,17 @@ class RDMFT
     hamilt::HS_Matrix_K<TK>* hsk_dft_XC = nullptr;
     hamilt::HS_Matrix_K<TK>* hsk_exx_XC = nullptr;
 
-    std::vector<TK> HK_XC;
-    std::vector< std::vector<TK> > DM_XC_pass;
-    // ModuleDirectMin::ProdStiefelVariable HK_RDMFT_pass;
-    // ModuleDirectMin::ProdStiefelVariable HK_XC_pass;
-
+    // Per-band diagonal terms <psi_ib|H_X|psi_ib> for each potential piece.
+    // Sized (nk_total * nspin, nbands_total) and replicated across 2D ranks.
     ModuleBase::matrix Etotal_n_k;
     ModuleBase::matrix wfcHwfc_TV;
     ModuleBase::matrix wfcHwfc_hartree;
-    ModuleBase::matrix wfcHwfc_XC;
     ModuleBase::matrix wfcHwfc_exx_XC;
     ModuleBase::matrix wfcHwfc_dft_XC;
 
+    // H * psi buffers (2D-block distributed: ncol_bands x nrow).
     psi::Psi<TK> H_wfc_TV;
     psi::Psi<TK> H_wfc_hartree;
-    psi::Psi<TK> H_wfc_XC;
     psi::Psi<TK> H_wfc_exx_XC;
     psi::Psi<TK> H_wfc_dft_XC;
 

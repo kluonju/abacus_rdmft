@@ -67,44 +67,26 @@ void RDMFT<TK, TR>::cal_V_TV()
                                                                        this->gd,
                                                                        two_center_bundle->overlap_orb_beta.get());
 
-    if( PARAM.inp.gamma_only )
-    {
-        V_local = new rdmft::Veff_rdmft<TK, TR>(hsk_TV,
-                                                kv->kvec_d,
-                                                this->pelec->pot,
-                                                HR_TV,
-                                                this->ucell,
-                                                orb->cutoffs(),
-                                                this->gd,
-                                                nspin,
-                                                charge,
-                                                rho_basis,
-                                                vloc,
-                                                sf,
-                                                "local");
-    }
-    else
-    {
-        V_local = new rdmft::Veff_rdmft<TK, TR>(hsk_TV,
-                                                kv->kvec_d,
-                                                this->pelec->pot,
-                                                HR_TV,
-                                                this->ucell,
-                                                orb->cutoffs(),
-                                                this->gd,
-                                                nspin,
-                                                charge,
-                                                rho_basis,
-                                                vloc,
-                                                sf,
-                                                "local");
-    }
+    // V_local is identical for gamma_only and multi-k: the Veff_rdmft ctor
+    // already handles fixed-gamma H(R) through HR->fix_gamma() set in init().
+    V_local = new rdmft::Veff_rdmft<TK, TR>(hsk_TV,
+                                            kv->kvec_d,
+                                            this->pelec->pot,
+                                            HR_TV,
+                                            this->ucell,
+                                            orb->cutoffs(),
+                                            this->gd,
+                                            nspin,
+                                            charge,
+                                            rho_basis,
+                                            vloc,
+                                            sf,
+                                            "local");
 
-    // update HR_TV in ion-step, now HR_TV has the HR of V_ekinetic + V_nonlcao + V_local
+    // HR_TV = HR(V_ekinetic) + HR(V_nonlocal) + HR(V_local) after these calls.
     V_ekinetic_potential->contributeHR();
     V_nonlocal->contributeHR();
     V_local->contributeHR();
-
 }
 
 
@@ -113,121 +95,45 @@ void RDMFT<TK, TR>::cal_V_hartree()
 {
     HR_hartree->set_zero();
 
-    if( PARAM.inp.gamma_only )
-    {
-        V_hartree = new rdmft::Veff_rdmft<TK, TR>(hsk_hartree,
-                                                  kv->kvec_d,
-                                                  this->pelec->pot,
-                                                  HR_hartree,
-                                                  this->ucell,
-                                                  orb->cutoffs(),
-                                                  this->gd,
-                                                  nspin,
-                                                  charge,
-                                                  rho_basis,
-                                                  vloc,
-                                                  sf,
-                                                  "hartree");
-    }
-    else
-    {
-        // this can be optimized, use potHartree.update_from_charge()
-        V_hartree = new rdmft::Veff_rdmft<TK, TR>(hsk_hartree,
-                                                  kv->kvec_d,
-                                                  this->pelec->pot,
-                                                  HR_hartree,
-                                                  this->ucell,
-                                                  orb->cutoffs(),
-                                                  this->gd,
-                                                  nspin,
-                                                  charge,
-                                                  rho_basis,
-                                                  vloc,
-                                                  sf,
-                                                  "hartree");
-    }
+    V_hartree = new rdmft::Veff_rdmft<TK, TR>(hsk_hartree,
+                                              kv->kvec_d,
+                                              this->pelec->pot,
+                                              HR_hartree,
+                                              this->ucell,
+                                              orb->cutoffs(),
+                                              this->gd,
+                                              nspin,
+                                              charge,
+                                              rho_basis,
+                                              vloc,
+                                              sf,
+                                              "hartree");
 
-    // in gamma only, must calculate HR_hartree before HR_local
-    // HR_exx_XC get from another way, so don't need to do this 
     V_hartree->contributeHR();
-
-    // // update HR_local in e-step, now HR_TV has the HR of V_ekinetic + V_nonlcao + V_local, 
-    // V_local->contributeHR();
-    // HR_local->add(*HR_TV);  // now HR_local has the HR of V_ekinetic + V_nonlcao + V_local
-
 }
 
 
 template <typename TK, typename TR>
 void RDMFT<TK, TR>::cal_V_XC(const UnitCell& ucell)
 {
-    // // //test
-    // DM_XC_pass = DM_XC;
-
-    // elecstate::DensityMatrix<TK, double> DM_test(ParaV, nspin, kv->kvec_d, nk_total);
-    // elecstate::cal_dm_psi(ParaV, wg, wfc, DM_test);
-    // DM_test.init_DMR(this->gd, this->ucell);
-    // DM_test.cal_DMR();
-
-    // // compare DM_XC and DM get in update_charge(or ABACUS)
-    // std::cout << "\n\ntest DM_XC - DM in ABACUS: \n" << std::endl;
-    // double DM_XC_minus_DMtest = 0.0;
-    // for(int ik=0; ik<nk_total; ++ik)
-    // {
-    //     TK* dmk_pointer = DM_test.get_DMK_pointer(ik);
-    //     for(int iloc=0; iloc<ParaV->nloc; ++iloc)
-    //     {
-    //         double test = std::abs(DM_XC[ik][iloc] - dmk_pointer[iloc]);
-    //         DM_XC_minus_DMtest += test;
-    //         if( test > 1e-16 )
-    //         {
-    //             std::cout << "\nik, iloc, minus[ik][iloc]: " << ik << " " << iloc << " " << test << std::endl; 
-    //         }
-    //     }
-    // }
-    // std::cout << "\nsum of DM_XC - DM in ABACUS: " << DM_XC_minus_DMtest << std::endl;
-
-    if( !only_exx_type )
+    if (!only_exx_type)
     {
         HR_dft_XC->set_zero();
-        if( PARAM.inp.gamma_only )
-        {
-            // this can be optimized, use potXC.update_from_charge()
-            V_dft_XC = new rdmft::Veff_rdmft<TK, TR>(hsk_dft_XC,
-                                                     kv->kvec_d,
-                                                     this->pelec->pot,
-                                                     HR_dft_XC,
-                                                     this->ucell,
-                                                     orb->cutoffs(),
-                                                     this->gd,
-                                                     nspin,
-                                                     charge,
-                                                     rho_basis,
-                                                     vloc,
-                                                     sf,
-                                                     "xc",
-                                                     &etxc,
-                                                     &vtxc);
-        }
-        else
-        {   
-            // this can be optimized, use potXC.update_from_charge()
-            V_dft_XC = new rdmft::Veff_rdmft<TK, TR>(hsk_dft_XC,
-                                                     kv->kvec_d,
-                                                     this->pelec->pot,
-                                                     HR_dft_XC,
-                                                     this->ucell,
-                                                     orb->cutoffs(),
-                                                     this->gd,
-                                                     nspin,
-                                                     charge,
-                                                     rho_basis,
-                                                     vloc,
-                                                     sf,
-                                                     "xc",
-                                                     &etxc,
-                                                     &vtxc);
-        }
+        V_dft_XC = new rdmft::Veff_rdmft<TK, TR>(hsk_dft_XC,
+                                                 kv->kvec_d,
+                                                 this->pelec->pot,
+                                                 HR_dft_XC,
+                                                 this->ucell,
+                                                 orb->cutoffs(),
+                                                 this->gd,
+                                                 nspin,
+                                                 charge,
+                                                 rho_basis,
+                                                 vloc,
+                                                 sf,
+                                                 "xc",
+                                                 &etxc,
+                                                 &vtxc);
         V_dft_XC->contributeHR();
     }
 

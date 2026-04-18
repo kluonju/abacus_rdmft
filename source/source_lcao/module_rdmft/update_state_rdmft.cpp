@@ -11,6 +11,8 @@
 #include "source_lcao/module_gint/gint_interface.h"
 #include "source_hamilt/module_xc/xc_functional.h"
 
+#include <memory>
+
 namespace rdmft
 {
 
@@ -94,57 +96,41 @@ void RDMFT<TK, TR>::update_elec(UnitCell& ucell,
 template <typename TK, typename TR>
 void RDMFT<TK, TR>::update_charge(UnitCell& ucell)
 {
-    if( PARAM.inp.gamma_only )
+    // Unified gamma-only / multi-k branch: the DensityMatrix ctor takes
+    // different arguments, but DMR construction, rho zeroing, grid integral,
+    // optional tau, renormalization and symmetrisation are identical.
+    std::unique_ptr<elecstate::DensityMatrix<TK, double>> DM;
+    if (PARAM.inp.gamma_only)
     {
-        // calculate DMK and DMR
-        elecstate::DensityMatrix<TK, double> DM_gamma_only(ParaV, nspin);
-        elecstate::cal_dm_psi(ParaV, wg, wfc, DM_gamma_only);
-        DM_gamma_only.init_DMR(this->gd, &ucell);
-        DM_gamma_only.cal_DMR();
-
-        for (int is = 0; is < nspin; is++)
-        {
-            ModuleBase::GlobalFunc::ZEROS(charge->rho[is], charge->nrxx);
-        }
-        ModuleGint::cal_gint_rho(DM_gamma_only.get_DMR_vector(), nspin, charge->rho);
-
-        if (XC_Functional::get_ked_flag())
-        {
-            this->pelec->cal_tau(wfc);
-        }
-
-        charge->renormalize_rho();
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV, nspin));
     }
     else
     {
-        // calculate DMK and DMR
-        elecstate::DensityMatrix<TK, double> DM(ParaV, nspin, kv->kvec_d, nk_total);
-        elecstate::cal_dm_psi(ParaV, wg, wfc, DM);
-        DM.init_DMR(this->gd, &ucell);
-        DM.cal_DMR();
-
-        for (int is = 0; is < nspin; is++)
-        {
-            ModuleBase::GlobalFunc::ZEROS(charge->rho[is], charge->nrxx);
-        }
-
-        ModuleGint::cal_gint_rho(DM.get_DMR_vector(), nspin, charge->rho);
-
-        if (XC_Functional::get_ked_flag())
-        {
-            this->pelec->cal_tau(wfc);
-        }
-
-        charge->renormalize_rho();
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV, nspin, kv->kvec_d, nk_total));
     }
 
-    // charge density symmetrization
+    elecstate::cal_dm_psi(ParaV, wg, wfc, *DM);
+    DM->init_DMR(this->gd, &ucell);
+    DM->cal_DMR();
+
+    for (int is = 0; is < nspin; ++is)
+    {
+        ModuleBase::GlobalFunc::ZEROS(charge->rho[is], charge->nrxx);
+    }
+    ModuleGint::cal_gint_rho(DM->get_DMR_vector(), nspin, charge->rho);
+
+    if (XC_Functional::get_ked_flag())
+    {
+        this->pelec->cal_tau(wfc);
+    }
+
+    charge->renormalize_rho();
+
     Symmetry_rho srho;
-    for (int is = 0; is < nspin; is++)
+    for (int is = 0; is < nspin; ++is)
     {
         srho.begin(is, *(this->charge), rho_basis, ucell.symm);
     }
-
 }
 
 

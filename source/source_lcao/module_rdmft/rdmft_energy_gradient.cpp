@@ -41,6 +41,7 @@ extern "C" {
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
+#include <memory>
 #include <type_traits>
 
 namespace rdmft
@@ -184,83 +185,68 @@ void Veff_rdmft_local<TK, TR>::initialize_HR(const UnitCell* ucell_in, const Gri
     this->hR->allocate(nullptr, true);
 }
 
-// Explicit specialization for complex<double>, double (nspin=1,2, multi-k)
+namespace {
+template <typename TR_>
+void local_build_HR_gint(const std::string& potential,
+                          int nspin,
+                          const Charge* charge,
+                          const UnitCell* ucell,
+                          const ModulePW::PW_Basis* rho_basis,
+                          const ModuleBase::matrix* vloc,
+                          const ModuleBase::ComplexMatrix* sf,
+                          double* etxc,
+                          double* vtxc,
+                          hamilt::HContainer<TR_>* hR)
+{
+    double* vr_eff = nullptr;
+    if (potential == "hartree")
+    {
+        ModuleBase::matrix v(nspin, charge->nrxx);
+        elecstate::PotHartree potH(rho_basis);
+        potH.cal_v_eff(charge, ucell, v);
+        for (int is = 0; is < nspin; ++is)
+        {
+            vr_eff = &v(is, 0);
+            ModuleGint::cal_gint_vl(vr_eff, hR);
+        }
+    }
+    else if (potential == "local")
+    {
+        double vlocal_of_0 = 0.0;
+        ModuleBase::matrix v(1, charge->nrxx);
+        elecstate::PotLocal potL(vloc, sf, rho_basis, vlocal_of_0);
+        potL.cal_fixed_v(&v(0, 0));
+        vr_eff = &v(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
+    }
+    else if (potential == "xc")
+    {
+        ModuleBase::matrix vofk = *vloc;
+        vofk.zero_out();
+        ModuleBase::matrix v(nspin, charge->nrxx);
+        elecstate::PotXC potXC(rho_basis, etxc, vtxc, &vofk);
+        potXC.cal_v_eff(charge, ucell, v);
+        for (int is = 0; is < nspin; ++is)
+        {
+            vr_eff = &v(is, 0);
+            ModuleGint::cal_gint_vl(vr_eff, hR);
+        }
+    }
+}
+} // anonymous namespace
+
 template <>
 void Veff_rdmft_local<std::complex<double>, double>::contributeHR()
 {
-    double* vr_eff = nullptr;
-    if (potential_ == "hartree")
-    {
-        ModuleBase::matrix v_hartree(nspin_, charge_->nrxx);
-        elecstate::PotHartree potH(rho_basis_);
-        potH.cal_v_eff(charge_, ucell_, v_hartree);
-        for (int is = 0; is < nspin_; ++is)
-        {
-            vr_eff = &v_hartree(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, this->hR);
-        }
-    }
-    else if (potential_ == "local")
-    {
-        double vlocal_of_0 = 0.0;
-        ModuleBase::matrix v_local(1, charge_->nrxx);
-        elecstate::PotLocal potL(vloc_, sf_, rho_basis_, vlocal_of_0);
-        potL.cal_fixed_v(&v_local(0, 0));
-        vr_eff = &v_local(0, 0);
-        ModuleGint::cal_gint_vl(vr_eff, this->hR);
-    }
-    else if (potential_ == "xc")
-    {
-        ModuleBase::matrix vofk = *vloc_;
-        vofk.zero_out();
-        ModuleBase::matrix v_xc(nspin_, charge_->nrxx);
-        elecstate::PotXC potXC(rho_basis_, etxc_, vtxc_, &vofk);
-        potXC.cal_v_eff(charge_, ucell_, v_xc);
-        for (int is = 0; is < nspin_; ++is)
-        {
-            vr_eff = &v_xc(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, this->hR);
-        }
-    }
+    local_build_HR_gint(potential_, nspin_, charge_, ucell_, rho_basis_,
+                         vloc_, sf_, etxc_, vtxc_, this->hR);
 }
 
 template <>
 void Veff_rdmft_local<double, double>::contributeHR()
 {
-    double* vr_eff = nullptr;
-    if (potential_ == "hartree")
-    {
-        ModuleBase::matrix v_hartree(nspin_, charge_->nrxx);
-        elecstate::PotHartree potH(rho_basis_);
-        potH.cal_v_eff(charge_, ucell_, v_hartree);
-        for (int is = 0; is < nspin_; ++is)
-        {
-            vr_eff = &v_hartree(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, this->hR);
-        }
-    }
-    else if (potential_ == "local")
-    {
-        double vlocal_of_0 = 0.0;
-        ModuleBase::matrix v_local(1, charge_->nrxx);
-        elecstate::PotLocal potL(vloc_, sf_, rho_basis_, vlocal_of_0);
-        potL.cal_fixed_v(&v_local(0, 0));
-        vr_eff = &v_local(0, 0);
-        ModuleGint::cal_gint_vl(vr_eff, this->hR);
-    }
-    else if (potential_ == "xc")
-    {
-        ModuleBase::matrix vofk = *vloc_;
-        vofk.zero_out();
-        ModuleBase::matrix v_xc(nspin_, charge_->nrxx);
-        elecstate::PotXC potXC(rho_basis_, etxc_, vtxc_, &vofk);
-        potXC.cal_v_eff(charge_, ucell_, v_xc);
-        for (int is = 0; is < nspin_; ++is)
-        {
-            vr_eff = &v_xc(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, this->hR);
-        }
-    }
+    local_build_HR_gint(potential_, nspin_, charge_, ucell_, rho_basis_,
+                         vloc_, sf_, etxc_, vtxc_, this->hR);
 }
 
 template <>
@@ -476,26 +462,23 @@ void EnergyGradient<TK, TR>::build_charge(
         for (int ib = 0; ib < nbands_; ++ib)
             wg(ik, ib) = kv_->wk[ik] * occ_flat[ik * nbands_ + ib];
 
+    std::unique_ptr<elecstate::DensityMatrix<TK, double>> DM;
     if (PARAM.inp.gamma_only)
     {
-        elecstate::DensityMatrix<TK, double> DM(ParaV_, nspin_);
-        elecstate::cal_dm_psi(ParaV_, wg, wfc, DM);
-        DM.init_DMR(gd_, ucell_);
-        DM.cal_DMR();
-        for (int is = 0; is < nspin_; is++)
-            ModuleBase::GlobalFunc::ZEROS(charge_->rho[is], charge_->nrxx);
-        ModuleGint::cal_gint_rho(DM.get_DMR_vector(), nspin_, charge_->rho);
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_));
     }
     else
     {
-        elecstate::DensityMatrix<TK, double> DM(ParaV_, nspin_, kv_->kvec_d, nk_);
-        elecstate::cal_dm_psi(ParaV_, wg, wfc, DM);
-        DM.init_DMR(gd_, ucell_);
-        DM.cal_DMR();
-        for (int is = 0; is < nspin_; is++)
-            ModuleBase::GlobalFunc::ZEROS(charge_->rho[is], charge_->nrxx);
-        ModuleGint::cal_gint_rho(DM.get_DMR_vector(), nspin_, charge_->rho);
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_));
     }
+    elecstate::cal_dm_psi(ParaV_, wg, wfc, *DM);
+    DM->init_DMR(gd_, ucell_);
+    DM->cal_DMR();
+    for (int is = 0; is < nspin_; ++is)
+    {
+        ModuleBase::GlobalFunc::ZEROS(charge_->rho[is], charge_->nrxx);
+    }
+    ModuleGint::cal_gint_rho(DM->get_DMR_vector(), nspin_, charge_->rho);
 
     // NOTE: Do NOT call charge_->renormalize_rho() here.
     // In RDMFT, the density must be exactly rho = sum_k w_k sum_i n_ik |phi_ik|^2
@@ -529,41 +512,22 @@ void EnergyGradient<TK, TR>::build_DM_xc(
         }
     }
 
-    // DM_XC(k) = sum_i wk*g(n_i) * conj(C_i) * C_i^T
-    // Using psiMulPsi with the modified weights
-    psi::Psi<TK> wfc_copy(wfc);
-    // Scale each orbital by sqrt(wk*g(n)) then use standard DM construction
-    // Actually, build it directly:
-    for (int ik = 0; ik < nk_; ++ik)
-    {
-        // Create scaled wfc: conj(C) * wk*g(n)
-        const int nb_local = wfc.get_nbands();
-        const int nbs_local = wfc.get_nbasis();
-
-        // Use cal_dm_psi with wk_g as weights
-        // This gives DM_XC(k) = sum_i wk_g(ik,i) * C(ik,i) * C(ik,i)^H
-    }
-
-    // Use ABACUS DM infrastructure
+    // DM_XC(k) = sum_i wk*g(n_i) * conj(C_i) * C_i^T, built directly through
+    // ABACUS' cal_dm_psi with wk_g as the per-band weight.
+    std::unique_ptr<elecstate::DensityMatrix<TK, double>> DM_xc;
     if (PARAM.inp.gamma_only)
     {
-        elecstate::DensityMatrix<TK, double> DM_xc(ParaV_, nspin_);
-        elecstate::cal_dm_psi(ParaV_, wk_g, wfc, DM_xc);
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            TK* dmk = DM_xc.get_DMK_pointer(ik);
-            std::copy(dmk, dmk + ParaV_->nloc, DM_XC[ik].begin());
-        }
+        DM_xc.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_));
     }
     else
     {
-        elecstate::DensityMatrix<TK, double> DM_xc(ParaV_, nspin_, kv_->kvec_d, nk_);
-        elecstate::cal_dm_psi(ParaV_, wk_g, wfc, DM_xc);
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            TK* dmk = DM_xc.get_DMK_pointer(ik);
-            std::copy(dmk, dmk + ParaV_->nloc, DM_XC[ik].begin());
-        }
+        DM_xc.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_));
+    }
+    elecstate::cal_dm_psi(ParaV_, wk_g, wfc, *DM_xc);
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        TK* dmk = DM_xc->get_DMK_pointer(ik);
+        std::copy(dmk, dmk + ParaV_->nloc, DM_XC[ik].begin());
     }
 }
 

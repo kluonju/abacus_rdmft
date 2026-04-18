@@ -35,7 +35,6 @@ RDMFT<TK, TR>::~RDMFT()
     delete HR_hartree;
     delete HR_exx_XC;
     delete HR_dft_XC;
-    // delete HR_local;
     delete hsk_TV;
     delete hsk_hartree;
     delete hsk_dft_XC;
@@ -93,29 +92,21 @@ void RDMFT<TK, TR>::init(Parallel_Orbitals& ParaV_in,
     Etotal_n_k.create(nk_total, nbands_total);
     wfcHwfc_TV.create(nk_total, nbands_total);
     wfcHwfc_hartree.create(nk_total, nbands_total);
-    wfcHwfc_XC.create(nk_total, nbands_total);
     wfcHwfc_exx_XC.create(nk_total, nbands_total);
     wfcHwfc_dft_XC.create(nk_total, nbands_total);
 
-    // 
-    wfc.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);   // test ParaV->nrow
+    // 2D-distributed H*psi buffers: (ncol_bands x nrow) block per k.
+    wfc.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
     occNum_HamiltWfc.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
     H_wfc_TV.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
     H_wfc_hartree.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
-    H_wfc_XC.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
     H_wfc_exx_XC.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
     H_wfc_dft_XC.resize(nk_total, ParaV->ncol_bands, ParaV->nrow);
 
-    //
     hsk_TV = new hamilt::HS_Matrix_K<TK>(ParaV, true);
     hsk_hartree = new hamilt::HS_Matrix_K<TK>(ParaV, true);
     hsk_dft_XC = new hamilt::HS_Matrix_K<TK>(ParaV, true);
     hsk_exx_XC = new hamilt::HS_Matrix_K<TK>(ParaV, true);
-
-    HK_XC.resize( ParaV->get_row_size()*ParaV->get_col_size() );
-    // HK_RDMFT_pass.resize(nk_total, ParaV->get_row_size(), ParaV->get_col_size());
-    // HK_XC_pass.resize(nk_total, ParaV->get_row_size(), ParaV->get_col_size());
-
 
     Eij_TV.resize( para_Eij.get_row_size()*para_Eij.get_col_size() );
     Eij_hartree.resize( para_Eij.get_row_size()*para_Eij.get_col_size() );
@@ -133,15 +124,13 @@ void RDMFT<TK, TR>::init(Parallel_Orbitals& ParaV_in,
     occNum_HamiltWfc.zero_out();
     H_wfc_TV.zero_out();
     H_wfc_hartree.zero_out();
-    H_wfc_XC.zero_out();
     H_wfc_exx_XC.zero_out();
     H_wfc_dft_XC.zero_out();
-    
-    HR_TV->set_zero();         // HR->set_zero() might be delete here, test on Gamma_only in the furure 
+
+    HR_TV->set_zero();
     HR_hartree->set_zero();
     HR_exx_XC->set_zero();
     HR_dft_XC->set_zero();
-    // HR_local->set_zero();
 
 #ifdef __EXX
     if( GlobalC::exx_info.info_global.cal_exx )
@@ -183,104 +172,56 @@ void RDMFT<TK, TR>::init(Parallel_Orbitals& ParaV_in,
 template <typename TK, typename TR>
 void RDMFT<TK, TR>::cal_Hk_Hpsi()
 {
-    /****** get occNum_wfcHamiltWfc, occNum_HamiltWfc ******/
-    // HK_RDMFT_pass.reset();
-
-    // double XC_minus_XC = 0.0;
-    // std::cout << "\n\ntest V_exx_XC in rdmft.cpp: " << std::endl;
-    // HK_XC_pass.reset();
-
-    //calculate Hwfc, wfcHwfc for each potential
-    for(int ik=0; ik<nk_total; ++ik)
+    // For each ik in the local pool: build H_TV(k), H_hartree(k) (and, if
+    // requested, H_exx(k), H_dft_xc(k)); apply them to |psi_ik> and form the
+    // diagonal <psi_ib|H|psi_ib> that all downstream energy / gradient
+    // formulas read. The same diagonal extraction is done for every term, so
+    // it is factored out as a lambda.
+    auto diag_action = [this](hamilt::HS_Matrix_K<TK>* hsk,
+                               hamilt::OperatorLCAO<TK, TR>* op,
+                               psi::Psi<TK>& H_wfc,
+                               std::vector<TK>& Eij_buf,
+                               ModuleBase::matrix& wfcHwfc,
+                               const int ik)
     {
-        hsk_TV->set_zero_hk();
-        hsk_hartree->set_zero_hk();
-        std::fill(HK_XC.begin(), HK_XC.end(), 0.0);
+        hsk->set_zero_hk();
+        op->contributeHk(ik);
+        HkPsi(ParaV, hsk->get_hk()[0], wfc(ik, 0, 0), H_wfc(ik, 0, 0));
+        cal_bra_op_ket(ParaV, para_Eij, wfc(ik, 0, 0), H_wfc(ik, 0, 0), Eij_buf);
+        _diagonal_in_serial(para_Eij, Eij_buf, &(wfcHwfc(ik, 0)));
+    };
 
-        // get the HK with ik-th k vector, the result is stored in HK_TV, HK_hartree and HK_XC respectively
-        V_local->contributeHk(ik);
-        V_hartree->contributeHk(ik);
-
-        // get H(k) * wfc
-        HkPsi( ParaV, hsk_TV->get_hk()[0], wfc(ik, 0, 0), H_wfc_TV(ik, 0, 0));
-        HkPsi( ParaV, hsk_hartree->get_hk()[0], wfc(ik, 0, 0), H_wfc_hartree(ik, 0, 0));
-
-        // get wfc * H(k)_wfc
-        cal_bra_op_ket( ParaV, para_Eij, wfc(ik, 0, 0), H_wfc_TV(ik, 0, 0), Eij_TV );
-        cal_bra_op_ket( ParaV, para_Eij, wfc(ik, 0, 0), H_wfc_hartree(ik, 0, 0), Eij_hartree );
-        _diagonal_in_serial( para_Eij, Eij_TV, &(wfcHwfc_TV(ik, 0)) );
-        _diagonal_in_serial( para_Eij, Eij_hartree, &(wfcHwfc_hartree(ik, 0)) );
+    for (int ik = 0; ik < nk_total; ++ik)
+    {
+        diag_action(hsk_TV,      V_local,   H_wfc_TV,      Eij_TV,      wfcHwfc_TV,      ik);
+        diag_action(hsk_hartree, V_hartree, H_wfc_hartree, Eij_hartree, wfcHwfc_hartree, ik);
 
 #ifdef __EXX
-        if(GlobalC::exx_info.info_global.cal_exx)
+        if (GlobalC::exx_info.info_global.cal_exx)
         {
-            hsk_exx_XC->set_zero_hk();
-
-            V_exx_XC->contributeHk(ik);
-            HkPsi( ParaV, hsk_exx_XC->get_hk()[0], wfc(ik, 0, 0), H_wfc_exx_XC(ik, 0, 0));
-            cal_bra_op_ket( ParaV, para_Eij, wfc(ik, 0, 0), H_wfc_exx_XC(ik, 0, 0), Eij_exx_XC );
-            _diagonal_in_serial( para_Eij, Eij_exx_XC, &(wfcHwfc_exx_XC(ik, 0)) );
-            
-            for(int iloc=0; iloc<HK_XC.size(); ++iloc) HK_XC[iloc] += hsk_exx_XC->get_hk()[iloc];
+            diag_action(hsk_exx_XC, V_exx_XC, H_wfc_exx_XC, Eij_exx_XC, wfcHwfc_exx_XC, ik);
         }
 #endif
-        if( !only_exx_type )
+        if (!only_exx_type)
         {
-            hsk_dft_XC->set_zero_hk();
-
-            V_dft_XC->contributeHk(ik);
-            HkPsi( ParaV, hsk_dft_XC->get_hk()[0], wfc(ik, 0, 0), H_wfc_dft_XC(ik, 0, 0));
-            cal_bra_op_ket( ParaV, para_Eij, wfc(ik, 0, 0), H_wfc_dft_XC(ik, 0, 0), Eij_XC );
-            _diagonal_in_serial( para_Eij, Eij_XC, &(wfcHwfc_dft_XC(ik, 0)) );
-            
-            for(int iloc=0; iloc<HK_XC.size(); ++iloc) HK_XC[iloc] += hsk_dft_XC->get_hk()[iloc];
+            diag_action(hsk_dft_XC, V_dft_XC, H_wfc_dft_XC, Eij_XC, wfcHwfc_dft_XC, ik);
         }
-
-        // // store HK_RDMFT
-        // for(int ir=0; ir<HK_RDMFT_pass.nr; ++ir)
-        // {
-        //     for(int ic=0; ic<HK_RDMFT_pass.nc; ++ic)
-        //     {
-        //         HK_RDMFT_pass[ik](ir, ic) = HK_TV[ic * ParaV->get_col_size() + ir]
-        //                                 + HK_hartree[ic * ParaV->get_col_size() + ir]
-        //                                 + HK_XC[ic * ParaV->get_col_size() + ir];
-        //         // HK_XC_pass[ik](ir, ic) = HK_XC[ic * ParaV->get_col_size() + ir];
-        //     }
-        // }
-
-        // using them to the gradient of Etotal is not correct when do hybrid calculation, it's correct just for exx-type functional
-        // HkPsi( ParaV, HK_XC[0], wfc(ik, 0, 0), H_wfc_XC(ik, 0, 0));
-        // psiDotPsi( ParaV, para_Eij, wfc(ik, 0, 0), H_wfc_XC(ik, 0, 0), Eij_XC, &(wfcHwfc_XC(ik, 0)) );
-
     }
-
-    // std::cout << "\n\nsum of XC_minus_XC: " << XC_minus_XC << "\n\n" << std::endl;
-
 }
 
 
 template <typename TK, typename TR>
 double RDMFT<TK, TR>::cal_E_grad_wfc_occ_num()
 {
-    /****** get occNum_wfcHamiltWfc, occNum_HamiltWfc and Etotal ******/
+    // Gradient w.r.t. orbitals: dE/dC = sum of wk * (n*(H_TV+H_H)*C + g(n)*H_exx*C)
+    add_psi(ParaV, kv, occ_number, H_wfc_TV, H_wfc_hartree, H_wfc_dft_XC, H_wfc_exx_XC,
+            occNum_HamiltWfc, XC_func_rdmft, alpha_power);
 
-    // !this would transfer the value of H_wfc_TV, H_wfc_hartree, H_wfc_XC --> occNum_H_wfc
-    // get the gradient of energy with respect to the wfc, i.e., Wk_occNum_HamiltWfc
-    add_psi(ParaV, kv, occ_number, H_wfc_TV, H_wfc_hartree, H_wfc_dft_XC, H_wfc_exx_XC, occNum_HamiltWfc, XC_func_rdmft, alpha_power);
-
-    // get the gradient of energy with respect to the natural occupation numbers, i.e., Wk_occNum_wfcHamiltWfc
-    add_occNum(*kv, occ_number, wfcHwfc_TV, wfcHwfc_hartree, wfcHwfc_dft_XC, wfcHwfc_exx_XC, occNum_wfcHamiltWfc, XC_func_rdmft, alpha_power);
-
-    // get the total energy
-    // add_wfcHwfc(kv->wk, occ_number, wfcHwfc_TV, wfcHwfc_hartree, wfcHwfc_XC, Etotal_n_k, XC_func_rdmft, alpha_power);
-    // add_wfcHwfc(wg, wk_fun_occNum, wfcHwfc_TV, wfcHwfc_hartree, wfcHwfc_XC, Etotal_n_k, XC_func_rdmft, alpha_power);
-    // E_RDMFT[3] = getEnergy(Etotal_n_k);
-    // Parallel_Reduce::reduce_all(E_RDMFT[3]);
+    // Gradient w.r.t. occupation numbers: dE/dn_ik
+    add_occNum(*kv, occ_number, wfcHwfc_TV, wfcHwfc_hartree, wfcHwfc_dft_XC, wfcHwfc_exx_XC,
+               occNum_wfcHamiltWfc, XC_func_rdmft, alpha_power);
 
     return E_RDMFT[3];
-
-    /****** get occNum_wfcHamiltWfc, occNum_HamiltWfc and Etotal ******/
-
 }
 
 
@@ -288,16 +229,13 @@ double RDMFT<TK, TR>::cal_E_grad_wfc_occ_num()
 template <typename TK, typename TR>
 void RDMFT<TK, TR>::cal_Energy(const int cal_type)
 {
-    double E_Ewald = pelec->f_en.ewald_energy;
-    double E_entropy = pelec->f_en.demet;
+    const double E_Ewald   = pelec->f_en.ewald_energy;
+    const double E_entropy = pelec->f_en.demet;
     double E_descf = pelec->f_en.descf = 0.0;
-    // double E_descf = 0.0;
-    double E_xc_KS = pelec->f_en.etxc - pelec->f_en.etxcc;
-    double E_exx_KS = pelec->f_en.exx;
-    double E_deband_KS = pelec->f_en.deband;
-    double E_deband_harris_KS = pelec->f_en.deband_harris;
+    const double E_xc_KS   = pelec->f_en.etxc - pelec->f_en.etxcc;
+    const double E_exx_KS  = pelec->f_en.exx;
 
-    double E_exxType_rdmft = 0.0; // delete in the future
+    double E_exxType_rdmft = 0.0;
 
     if( cal_type == 1 )
     {
@@ -341,40 +279,7 @@ void RDMFT<TK, TR>::cal_Energy(const int cal_type)
         E_descf = pelec->f_en.descf = 0.0;
         this->pelec->cal_energies(2);
         Etotal = this->pelec->f_en.etot;
-
-        // if( GlobalC::exx_info.info_global.cal_exx )
-        // {
-        //     ModuleBase::matrix Exc_n_k(wg.nr, wg.nc, true);
-        //     // because we have got wk_fun_occNum, we can use symbol=1 realize it
-        //     occNum_Mul_wfcHwfc(wk_fun_occNum, wfcHwfc_XC, Exc_n_k, 1);
-        //     E_RDMFT[2] = getEnergy(Exc_n_k);
-        //     Parallel_Reduce::reduce_all(E_RDMFT[2]);
-
-        //     // test
-        //     Etotal -= E_RDMFT[2];
-        // }
     }
-
-//     // print results
-//     std::cout << "\n\nfrom class RDMFT: \nXC_fun: " << XC_func_rdmft << std::endl;
-// #ifdef __EXX
-//     if( GlobalC::exx_info.info_global.cal_exx ) std::cout << "alpha_power: " << alpha_power << std::endl;
-// #endif
-//     std::cout << std::fixed << std::setprecision(10) 
-//                 << "******\nE(TV + Hartree + XC) by RDMFT:   " << E_RDMFT[3] 
-//                 << "\n\nE_TV_RDMFT:      " << E_RDMFT[0] 
-//                 << "\nE_hartree_RDMFT: " << E_RDMFT[1] 
-//                 << "\nExc_" << XC_func_rdmft << "_RDMFT:    " << E_RDMFT[2] 
-//                 << "\nE_Ewald:         " << E_Ewald
-//                 << "\nE_entropy(-TS):  " << E_entropy 
-//                 << "\nE_descf:         " << E_descf
-//                 << "\n\nEtotal_RDMFT:    " << Etotal 
-//                 << "\n\nExc_ksdft:       " << E_xc_KS 
-//                 << "\nE_exx_ksdft:     " << E_exx_KS 
-//                 <<"\n******\n\n" << std::endl;
-
-//     std::cout << "\netxc:  " << etxc << "\nvtxc:  " << vtxc << "\n";
-//     std::cout << "\nE_deband_KS:  " << E_deband_KS << "\nE_deband_harris_KS:  " << E_deband_harris_KS << "\n\n" << std::endl;
 
     if( PARAM.inp.rdmft == true )
     {
@@ -424,7 +329,6 @@ double RDMFT<TK, TR>::run(ModuleBase::matrix& E_gradient_occNum, psi::Psi<TK>& E
     for(int i=0; i<wfc.size(); ++i) { pwfc_out[i] = pwfc[i]; }
 
     ModuleBase::timer::end("RDMFT", "E_Egradient");
-    // return E_RDMFT[3];
     return Etotal;
 }
 
