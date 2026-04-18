@@ -42,7 +42,11 @@ enum class OptimizerType
 enum class SolverStrategy
 {
     Alternating,
-    ProductManifold
+    /// Joint (product-manifold) optimisation: orbitals and occupations are
+    /// packed into a single point on the product manifold
+    ///     M = R^{Nk x Nb}  x  prod_k St(Nb, Nbasis; S^k)
+    /// and stepped simultaneously. Previously called "ProductManifold".
+    Joint
 };
 
 inline XCFunctionalType parse_xc_type(const std::string& name)
@@ -79,7 +83,8 @@ struct RDMFTConfig
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
-    /// Outer alternating / product-manifold cycles (occ then orb per cycle).
+    /// Outer alternating / joint cycles (occ then orb per cycle, or one
+    /// joint product-manifold step for SolverStrategy::Joint).
     int outer_maxiter = 200;
     /// Inner iterations for optimize_orbitals (fixed occupations).
     int orb_maxiter = 50;

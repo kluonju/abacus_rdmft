@@ -897,24 +897,32 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_solver_strategy");
-        item.annotation = "RDMFT optimisation strategy: alternating or product_manifold";
+        item.annotation = "RDMFT optimisation strategy: alternating or joint";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Strategy for the RDMFT energy minimisation. "
                            "'alternating': alternate between occupation and orbital sub-problems. "
-                           "'product_manifold': optimise occupations and orbitals simultaneously.";
+                           "'joint' (formerly 'product_manifold'): pack occupations and orbitals into a "
+                           "single point on the product manifold and optimise them simultaneously. "
+                           "The legacy value 'product_manifold' is still accepted as an alias.";
         item.default_value = "alternating";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_string(input.rdmft_solver_strategy);
+        item.read_value = [](const Input_Item& item, Parameter& para) {
+            std::string v = strvalue;
+            if (v == "product_manifold") v = "joint";
+            para.input.rdmft_solver_strategy = v;
+        };
+        sync_string(input.rdmft_solver_strategy);
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_solver_strategy;
-                if (s != "alternating" && s != "product_manifold")
+                if (s != "alternating" && s != "joint")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_solver_strategy must be 'alternating' or 'product_manifold'");
+                        "rdmft_solver_strategy must be 'alternating' or 'joint' "
+                        "(legacy alias 'product_manifold' is also accepted)");
                 }
             }
         };

@@ -15,4 +15,8 @@ if(ENABLE_LCAO AND BUILD_TESTING)
         TARGET rdmft_optimizer_test
         SOURCES test_rdmft_optimizer.cpp
     )
+    AddTest(
+        TARGET rdmft_joint_test
+        SOURCES test_rdmft_joint.cpp
+    )
 endif()
