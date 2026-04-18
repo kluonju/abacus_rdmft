@@ -23,7 +23,8 @@ namespace rdmft
 
 /// High-level RDMFT solver.
 /// Supports alternating optimization (occupation then orbitals) and
-/// product manifold optimization (simultaneous).
+/// joint (product-manifold) optimization (orbitals and occupations are
+/// packed together and stepped simultaneously).
 template <typename TK, typename TR>
 class RDMFTSolver
 {
@@ -68,8 +69,10 @@ class RDMFTSolver
     /// Alternating optimization strategy
     double solve_alternating(std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
 
-    /// Product manifold optimization strategy
-    double solve_product_manifold(std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
+    /// Joint (product-manifold) optimisation strategy. Orbitals and
+    /// occupation parameters are packed into one descent direction and
+    /// updated simultaneously at every outer iteration.
+    double solve_joint(std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
 
     /// Single step of occupation optimization with augmented Lagrangian
     void occ_step_augmented_lagrangian(std::vector<double>& occ_flat,

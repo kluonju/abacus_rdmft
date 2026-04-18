@@ -572,11 +572,13 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
 
-        // Parse strategy
+        // Parse strategy. "joint" is the current name for the simultaneous
+        // product-manifold optimisation; "product_manifold" is accepted as a
+        // backwards-compatible alias.
         if (inp.rdmft_solver_strategy == "alternating")
             rdmft_config.strategy = rdmft::SolverStrategy::Alternating;
         else
-            rdmft_config.strategy = rdmft::SolverStrategy::ProductManifold;
+            rdmft_config.strategy = rdmft::SolverStrategy::Joint;
 
         // Parse occupation parameterisation
         if (inp.rdmft_occ_param == "logistic")

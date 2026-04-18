@@ -50,14 +50,18 @@ The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMF
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_solver_strategy` | string | `alternating` | `alternating`, `product_manifold` |
+| `rdmft_solver_strategy` | string | `alternating` | `alternating`, `joint` |
 
 - **`alternating`** — Alternate between optimising occupation numbers (orbitals
   fixed) and orbitals (occupations fixed).  This is the standard approach and
   the most robust.
-- **`product_manifold`** — Treat occupations (Euclidean space, after
-  parameterisation) and orbitals (Stiefel manifold) as a single product
-  manifold and optimise everything simultaneously.
+- **`joint`** — Pack occupations (Euclidean space, after parameterisation)
+  and orbitals (Stiefel manifold) into a single point on the product manifold
+  and optimise everything simultaneously.  Each outer step computes a joint
+  descent direction using the configured `rdmft_occ_optimizer` for the
+  occupation block and `rdmft_orb_optimizer` for the orbital block, then runs a
+  single Armijo line search along the packed direction.  The legacy value
+  `product_manifold` is still accepted as an alias for `joint`.
 
 ### Occupation parameterisation
 
@@ -115,7 +119,7 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_outer_maxiter` | int | `200` | Maximum **outer** RDMFT cycles: each cycle is one occupation optimisation plus one orbital optimisation (`alternating`), or one joint product-manifold step (`product_manifold`). |
+| `rdmft_outer_maxiter` | int | `200` | Maximum **outer** RDMFT cycles: each cycle is one occupation optimisation plus one orbital optimisation (`alternating`), or one joint product-manifold step (`joint`). |
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
@@ -191,7 +195,7 @@ analytic gradients at the KS starting point.  Look for the "Gradient
 Consistency Check" section in the running log to verify that all relative errors
 are small (typically < 1e-4).
 
-### Example 3: Product-manifold with logistic parameterisation
+### Example 3: Joint (product-manifold) optimisation with logistic parameterisation
 
 ```
 INPUT_PARAMETERS
@@ -200,7 +204,7 @@ basis_type          lcao
 dft_functional      pbe
 rdmft_functional     hf
 rdmft               1
-rdmft_solver_strategy   product_manifold
+rdmft_solver_strategy   joint
 rdmft_occ_param         logistic
 rdmft_constraint        augmented_lagrangian
 rdmft_occ_optimizer     adam
@@ -211,8 +215,12 @@ rdmft_outer_maxiter        300
 ```
 
 Here occupations and orbitals are optimised simultaneously on the product
-manifold.  Occupations use the logistic parameterisation with Adam, while
-orbitals use steepest descent.
+manifold (new `joint` keyword; `product_manifold` is still accepted as a
+deprecated alias).  Occupations use the logistic parameterisation with Adam,
+while orbitals use steepest descent.  Every outer iteration builds a joint
+descent direction by asking each optimiser for its block of the step and then
+runs one Armijo line search along the packed direction (linear update for the
+occupation parameters, Stiefel retraction for the orbitals).
 
 ### Example 4: Gamma-only solid with projected gradient
 
@@ -262,7 +270,7 @@ occupations after every step.
 
 ## Tips
 
-- **Three iteration limits.** `rdmft_outer_maxiter` limits the **outer** RDMFT loop (each cycle: occupation step + orbital step in `alternating`, or one joint step in `product_manifold`). `rdmft_occ_maxiter` and `rdmft_orb_maxiter` limit the **inner** optimisations of occupations (fixed orbitals) and orbitals (fixed occupations) within each outer cycle. In older versions, `rdmft_orb_maxiter` incorrectly doubled as the outer-loop limit; use `rdmft_outer_maxiter` for that now.
+- **Three iteration limits.** `rdmft_outer_maxiter` limits the **outer** RDMFT loop (each cycle: occupation step + orbital step in `alternating`, or one joint step in `joint`/`product_manifold`). `rdmft_occ_maxiter` and `rdmft_orb_maxiter` limit the **inner** optimisations of occupations (fixed orbitals) and orbitals (fixed occupations) within each outer cycle of the alternating strategy; they are unused for the `joint` strategy (which does a single joint step per outer iteration). In older versions, `rdmft_orb_maxiter` incorrectly doubled as the outer-loop limit; use `rdmft_outer_maxiter` for that now.
 
 - **Always set `rdmft_functional`.** Without it only the legacy single-step
   RDMFT evaluator runs, which simply reports the RDMFT energy at the KS

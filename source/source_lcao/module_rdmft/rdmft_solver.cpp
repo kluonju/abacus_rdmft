@@ -226,8 +226,8 @@ double RDMFTSolver<TK, TR>::solve(
         case SolverStrategy::Alternating:
             E = solve_alternating(occ_flat, wfc);
             break;
-        case SolverStrategy::ProductManifold:
-            E = solve_product_manifold(occ_flat, wfc);
+        case SolverStrategy::Joint:
+            E = solve_joint(occ_flat, wfc);
             break;
     }
 
@@ -301,38 +301,101 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     return E;
 }
 
+// ----------------------------------------------------------------------------
+// Joint (product-manifold) optimisation
+//
+// We treat the point
+//     x = (p, C^1, ..., C^{Nk})
+// where p are the unconstrained occupation parameters (cosine^2 / logistic
+// already handles the box constraint n in [0,1]) and each C^k lives on the
+// generalised Stiefel manifold St(Nb, Nbasis; S^k), as a single point on the
+// product manifold
+//     M = R^{Nk x Nb}  x  prod_k St(Nb, Nbasis; S^k).
+//
+// The tangent vector at x has the same product structure. For the occupation
+// block we use the configured occ_optimizer (SD / CG / L-BFGS / Adam) on the
+// parameter-space gradient dE/dp; for the orbital block we use the configured
+// orb_optimizer on the flattened Riemannian gradient (L-BFGS / Adam match the
+// alternating-strategy orbital code path by flattening + projecting back onto
+// the tangent space). A single Armijo line search is then performed along the
+// packed direction: params are updated linearly and orbitals are retracted
+// onto the Stiefel manifold. The augmented-Lagrangian multiplier is refreshed
+// once per outer iteration, matching the alternating strategy.
+// ----------------------------------------------------------------------------
 template <typename TK, typename TR>
-double RDMFTSolver<TK, TR>::solve_product_manifold(
+double RDMFTSolver<TK, TR>::solve_joint(
     std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
-    GlobalV::ofs_running << "\n===== RDMFT Product Manifold Optimization =====" << std::endl;
+    GlobalV::ofs_running << "\n===== RDMFT Joint (Product-Manifold) Optimization ====="
+                         << std::endl;
 
-    // Convert occupations to unconstrained parameters
+    // Convert occupations to unconstrained parameters.
     std::vector<double> params(occ_flat.size());
     occ_param_->occ_to_params(occ_flat, params);
 
-    int n_occ_params = params.size();
+    const int n_occ_params = static_cast<int>(params.size());
+    const int nk = wfc.get_nk();
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
+    const int orb_total_size = nk * nb_local * nbs_local;
 
-    EuclideanOptimizer prod_occ_opt(config_.occ_optimizer, config_);
-    prod_occ_opt.init(n_occ_params);
+    // Separate optimiser instances for the occupation and orbital blocks.
+    // This matches the alternating strategy where each sub-problem has its
+    // own state, and it lets the user mix occupation / orbital optimisers
+    // (e.g. CG on occupations, L-BFGS on orbitals).
+    EuclideanOptimizer occ_opt(config_.occ_optimizer, config_);
+    occ_opt.init(n_occ_params);
+
+    const OptimizerType orb_type = config_.orb_optimizer;
+    const bool orb_is_lbfgs = (orb_type == OptimizerType::LBFGS);
+    const bool orb_is_adam  = (orb_type == OptimizerType::Adam);
+    const bool orb_is_cg    = (orb_type == OptimizerType::ConjugateGradient);
+
+    EuclideanOptimizer orb_opt(orb_type, config_);
+    int orb_flat_size = orb_total_size;
+    if constexpr (!std::is_same<TK, double>::value) orb_flat_size *= 2;
+    if (orb_is_lbfgs || orb_is_adam) orb_opt.init(orb_flat_size);
+
+    // CG state for the Riemannian orbital block (only used when orb_is_cg).
+    psi::Psi<TK> prev_orb_grad;
+    psi::Psi<TK> prev_orb_dir;
+    if (orb_is_cg)
+    {
+        prev_orb_grad = wfc;
+        prev_orb_dir = wfc;
+        prev_orb_grad.zero_out();
+        prev_orb_dir.zero_out();
+    }
+    double prev_orb_gnorm2 = 0.0;
+
+    // Work buffer for line-search rollback.
+    psi::Psi<TK> wfc_save(wfc);
 
     double E_prev = 1e30;
     double E = 0.0;
 
+    auto total_energy = [&](const std::vector<double>& occ_in,
+                            const psi::Psi<TK>& wfc_in) -> double {
+        double E_val = energy_grad_->compute_energy(occ_in,
+                                const_cast<psi::Psi<TK>&>(wfc_in));
+        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+            E_val += occ_constraint_->augmented_lagrangian_penalty(occ_in);
+        return E_val;
+    };
+
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
-        // Convert params -> occupations
+        // Refresh occupations from params so downstream code always sees a
+        // consistent (p, n) pair.
         occ_param_->params_to_occ(params, occ_flat);
 
-        // Compute energy and gradients
+        // Full energy + Euclidean gradients at the current point.
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;
         E = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc);
 
-        // Add augmented Lagrangian penalty
+        // Add augmented Lagrangian penalty.
         if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
             E += occ_constraint_->augmented_lagrangian_penalty(occ_flat);
@@ -342,70 +405,218 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
                 grad_occ[i] += penalty_grad[i];
         }
 
-        // Transform occupation gradient to parameter space
+        // Transform occupation gradient dE/dn -> dE/dp (chain rule through the
+        // cosine^2 / logistic parameterisation).
         std::vector<double> grad_params;
         occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
 
-        // Project orbital gradient onto the Stiefel tangent space so the orbital
-        // step moves within the manifold and converges at the correct critical point.
+        // Project orbital gradient onto the Stiefel tangent space at C.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        // Occupation parameter step
+        // ---- occupation block: search direction from configured optimiser ----
         std::vector<double> occ_dir;
-        prod_occ_opt.compute_direction(grad_params, occ_dir);
+        occ_opt.compute_direction(grad_params, occ_dir);
 
-        // Line search: try different step sizes
-        double alpha = config_.line_search_alpha_init;
-        double dd = 0.0;
-        for (size_t i = 0; i < grad_params.size(); ++i)
-            dd += occ_dir[i] * grad_params[i];
-
-        auto f_at_step = [&](double step) -> double {
-            std::vector<double> params_trial(params);
-            for (size_t i = 0; i < params_trial.size(); ++i)
-                params_trial[i] += step * occ_dir[i];
-            std::vector<double> occ_trial;
-            occ_param_->params_to_occ(params_trial, occ_trial);
-            double E_trial = energy_grad_->compute_energy(occ_trial, wfc);
-            if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
-                E_trial += occ_constraint_->augmented_lagrangian_penalty(occ_trial);
-            return E_trial;
-        };
-
-        auto ls_result = armijo_line_search(f_at_step, E, dd, alpha,
-                                             config_.line_search_c1,
-                                             config_.line_search_rho,
-                                             config_.line_search_max_iter);
-
-        // Update params
-        std::vector<double> step_vec(params.size());
-        for (size_t i = 0; i < params.size(); ++i)
+        // Descent safeguard: fall back to SD if direction is not descent.
+        double occ_dd = 0.0;
+        for (int i = 0; i < n_occ_params; ++i) occ_dd += occ_dir[i] * grad_params[i];
+        if (occ_dd >= 0.0)
         {
-            step_vec[i] = ls_result.step * occ_dir[i];
-            params[i] += step_vec[i];
+            for (int i = 0; i < n_occ_params; ++i) occ_dir[i] = -grad_params[i];
+            occ_dd = 0.0;
+            for (int i = 0; i < n_occ_params; ++i) occ_dd += occ_dir[i] * grad_params[i];
         }
-        prod_occ_opt.update(grad_params, step_vec);
 
-        // Orbital retraction step using the Riemannian gradient
-        double orb_step = config_.line_search_alpha_init * 0.1;
-        const int nk = wfc.get_nk();
+        // ---- orbital block: Riemannian search direction ----
+        psi::Psi<TK> orb_dir(wfc);
         for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+
+        const double orb_gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+
+        if (orb_is_lbfgs || orb_is_adam)
         {
-            TK* C = &wfc(ik, 0, 0);
-            const TK* G = &grad_wfc(ik, 0, 0);
-            for (int i = 0; i < nb_local * nbs_local; ++i)
-                C[i] -= TK(orb_step) * G[i];
+            std::vector<double> grad_flat, dir_flat;
+            psi_to_flat(grad_wfc, grad_flat);
+            orb_opt.compute_direction(grad_flat, dir_flat);
+            flat_to_psi(dir_flat, orb_dir);
+            energy_grad_->project_orbital_gradient(wfc, orb_dir);
+
+            double dd_check = energy_grad_->s_inner_product(grad_wfc, orb_dir);
+            if (dd_check >= 0.0)
+            {
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+            }
+        }
+        else if (orb_is_cg && iter > 0 && prev_orb_gnorm2 > 1e-30)
+        {
+            energy_grad_->project_orbital_gradient(wfc, prev_orb_dir);
+            energy_grad_->project_orbital_gradient(wfc, prev_orb_grad);
+            double prev_grad_dot = energy_grad_->s_inner_product(grad_wfc, prev_orb_grad);
+            const double powell_thr = 0.1;
+            if (std::abs(prev_grad_dot) <= powell_thr * orb_gnorm2)
+            {
+                double beta = std::max(0.0, orb_gnorm2 / prev_orb_gnorm2);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            orb_dir(ik, ib, mu) += TK(beta) * prev_orb_dir(ik, ib, mu);
+                energy_grad_->project_orbital_gradient(wfc, orb_dir);
+                double dd_check = energy_grad_->s_inner_product(grad_wfc, orb_dir);
+                if (dd_check >= 0.0)
+                {
+                    for (int ik = 0; ik < nk; ++ik)
+                        for (int ib = 0; ib < nb_local; ++ib)
+                            for (int mu = 0; mu < nbs_local; ++mu)
+                                orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+                }
+            }
         }
 
-        // Update the augmented-Lagrangian multiplier every outer iteration so
-        // that lambda tracks the constraint violation closely. This prevents
-        // the transient |c| excursions seen when lambda was only refreshed
-        // every 10 iterations. The penalty parameter mu is only doubled when
-        // the constraint violation is still above a threshold, to avoid the
-        // penalty term dominating the gradient and causing erratic steps.
+        // neg_orb_dir = -orb_dir (so retract_orbitals(wfc, neg_orb_dir, alpha)
+        // applies wfc <- wfc - alpha * (-orb_dir) = wfc + alpha * orb_dir).
+        psi::Psi<TK> neg_orb_dir(orb_dir);
+        {
+            TK* q = &neg_orb_dir(0, 0, 0);
+            const TK* p = &orb_dir(0, 0, 0);
+            for (int i = 0; i < orb_total_size; ++i) q[i] = -p[i];
+        }
+
+        // Directional derivative of the total (augmented) energy along the
+        // packed direction: dd_total = <grad_p, occ_dir> + <grad_C, orb_dir>_S.
+        const double orb_dd = energy_grad_->s_inner_product(grad_wfc, orb_dir);
+        const double dd_total = occ_dd + orb_dd;
+
+        // Snapshot the current orbitals for line-search rollback.
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
+
+        // Joint Armijo line search along (occ_dir, orb_dir). Initial step
+        // is 1.0 for L-BFGS / Adam (already well-scaled) and the configured
+        // alpha_init for SD / CG.
+        const double alpha_init = (orb_is_lbfgs || orb_is_adam)
+                                      ? 1.0
+                                      : config_.line_search_alpha_init;
+        double alpha = alpha_init;
+        const double c1 = config_.line_search_c1;
+        const double rho = config_.line_search_rho;
+        double E_new = E;
+        bool ls_success = false;
+
+        std::vector<double> occ_flat_new;
+        std::vector<double> params_new(params.size());
+
+        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+        {
+            // Roll back orbitals and retract along +alpha * orb_dir.
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+            energy_grad_->retract_orbitals(wfc, neg_orb_dir, alpha);
+            energy_grad_->invalidate_hone_cache();
+
+            for (int i = 0; i < n_occ_params; ++i)
+                params_new[i] = params[i] + alpha * occ_dir[i];
+            occ_param_->params_to_occ(params_new, occ_flat_new);
+
+            E_new = total_energy(occ_flat_new, wfc);
+            if (E_new <= E + c1 * alpha * dd_total)
+            {
+                ls_success = true;
+                break;
+            }
+            alpha *= rho;
+        }
+
+        if (!ls_success)
+        {
+            // Line search failed: roll back both blocks, restart the optimiser
+            // states and continue with steepest descent at the next iteration.
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+            energy_grad_->invalidate_hone_cache();
+
+            occ_opt.init(n_occ_params);
+            if (orb_is_lbfgs || orb_is_adam) orb_opt.init(orb_flat_size);
+            if (orb_is_cg)
+            {
+                prev_orb_gnorm2 = 0.0;
+                prev_orb_dir.zero_out();
+                prev_orb_grad.zero_out();
+            }
+
+            std::cout << "  RDMFT joint-iter " << iter + 1
+                      << "  line search failed, restarting optimiser state"
+                      << std::endl;
+            GlobalV::ofs_running << "  RDMFT joint-iter " << iter + 1
+                << "  line search failed, restarting optimiser state" << std::endl;
+            E_prev = E;
+            continue;
+        }
+
+        // Commit occupation step.
+        std::vector<double> occ_step_vec(n_occ_params);
+        for (int i = 0; i < n_occ_params; ++i)
+        {
+            occ_step_vec[i] = alpha * occ_dir[i];
+            params[i] += occ_step_vec[i];
+        }
+        occ_param_->params_to_occ(params, occ_flat);
+
+        // Update occupation optimiser history with the new gradient.
+        {
+            std::vector<double> new_grad_occ;
+            psi::Psi<TK> new_grad_wfc;
+            energy_grad_->compute(occ_flat, wfc, new_grad_occ, new_grad_wfc);
+            if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+            {
+                std::vector<double> pen_grad;
+                occ_constraint_->augmented_lagrangian_gradient(occ_flat, pen_grad);
+                for (size_t i = 0; i < new_grad_occ.size(); ++i)
+                    new_grad_occ[i] += pen_grad[i];
+            }
+            std::vector<double> new_grad_params;
+            occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
+            occ_opt.update(new_grad_params, occ_step_vec);
+
+            // Refresh orbital optimiser state.
+            if (orb_is_lbfgs)
+            {
+                energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
+                std::vector<double> new_grad_flat, step_flat, dir_flat_step;
+                psi_to_flat(new_grad_wfc, new_grad_flat);
+                psi_to_flat(orb_dir, dir_flat_step);
+                step_flat.resize(dir_flat_step.size());
+                for (size_t i = 0; i < step_flat.size(); ++i)
+                    step_flat[i] = alpha * dir_flat_step[i];
+                orb_opt.update(new_grad_flat, step_flat);
+            }
+            if (orb_is_cg)
+            {
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                        {
+                            prev_orb_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
+                            prev_orb_dir(ik, ib, mu)  = orb_dir(ik, ib, mu);
+                        }
+                prev_orb_gnorm2 = orb_gnorm2;
+            }
+        }
+
+        // Augmented-Lagrangian multiplier refresh.
         if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
-            occ_param_->params_to_occ(params, occ_flat);
             occ_constraint_->update_multiplier(occ_flat);
             if (std::abs(occ_constraint_->constraint_violation(occ_flat)) > 1e-6)
             {
@@ -414,37 +625,42 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
             }
         }
 
-        double dE = std::abs(E - E_prev);
-        double gnorm = 0.0;
-        for (auto g : grad_params) gnorm += g * g;
-        gnorm = std::sqrt(gnorm);
+        const double dE = std::abs(E_new - E_prev);
+        double gnorm2 = 0.0;
+        for (auto g : grad_params) gnorm2 += g * g;
+        const double gnorm_total = std::sqrt(gnorm2 + std::max(0.0, orb_gnorm2));
 
         std::cout << std::fixed << std::setprecision(10)
-            << "  RDMFT prod-iter " << iter + 1
-            << "  E = " << E
+            << "  RDMFT joint-iter " << iter + 1
+            << "  E = " << E_new
             << "  dE = " << std::scientific << dE
-            << "  gnorm = " << gnorm
+            << "  alpha = " << alpha
+            << "  |grad| = " << gnorm_total
             << std::endl;
 
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
-            << "  RDMFT prod-iter " << iter + 1
-            << "  E = " << E
+            << "  RDMFT joint-iter " << iter + 1
+            << "  E = " << E_new
             << "  dE = " << std::scientific << dE
-            << "  gnorm = " << gnorm
+            << "  alpha = " << alpha
+            << "  |grad_occ| = " << std::sqrt(gnorm2)
+            << "  |grad_orb| = " << std::sqrt(std::max(0.0, orb_gnorm2))
+            << "  |grad_total| = " << gnorm_total
             << std::endl;
 
-        if (dE < config_.energy_tol && gnorm < config_.grad_tol)
+        if (dE < config_.energy_tol && gnorm_total < config_.grad_tol)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
-            last_result_.final_energy = E;
-            last_result_.grad_norm = gnorm;
+            last_result_.final_energy = E_new;
+            last_result_.grad_norm = gnorm_total;
+            E = E_new;
             break;
         }
-        E_prev = E;
+        E_prev = E_new;
+        E = E_new;
     }
 
-    // Final conversion
     occ_param_->params_to_occ(params, occ_flat);
     last_result_.final_energy = E;
     return E;

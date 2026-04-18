@@ -419,7 +419,7 @@ Alternate between:
 - **Orbital step**: Fix $n_{i\mathbf{k}}$, optimize $C^{\mathbf{k}}$ on Stiefel manifold
 - **Occupation step**: Fix $C^{\mathbf{k}}$, optimize $n_{i\mathbf{k}}$ with constraints
 
-### 7.2 Product Manifold Optimization
+### 7.2 Joint (Product Manifold) Optimization
 
 Define the product manifold:
 
@@ -437,6 +437,29 @@ $\delta\boldsymbol{\theta} \in \mathbb{R}^{N_k \times N_b}$ and
 $\eta^{\mathbf{k}} \in T_{C^{\mathbf{k}}} \mathrm{St}$.
 
 Retraction: apply Euclidean update to $\boldsymbol{\theta}$ and Stiefel retraction to each $C^{\mathbf{k}}$.
+
+In the implementation (`rdmft_solver.cpp::solve_joint`), each outer iteration:
+
+1. evaluates the energy $E$ and gradients $(\nabla_p E, \nabla_C E)$;
+2. projects $\nabla_C E$ onto the Stiefel tangent space at $C^{\mathbf{k}}$;
+3. asks the configured `rdmft_occ_optimizer` for a descent direction in the
+   occupation parameter block and the configured `rdmft_orb_optimizer` for a
+   descent direction in the orbital block (with a descent-direction safeguard
+   that falls back to steepest descent);
+4. computes the directional derivative of the total (augmented) energy along
+   the packed direction
+   $dd_{\text{total}} = \langle \nabla_p, d_p\rangle + \langle \nabla_C, d_C\rangle_S$;
+5. performs a single Armijo backtracking line search along the packed
+   direction: the occupation parameters are updated linearly
+   $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
+   the generalised Stiefel manifold via
+   $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_C)$;
+6. refreshes the optimiser state (L-BFGS (s, y) history, Adam moments, CG
+   vector transport) and updates the augmented-Lagrangian multiplier.
+
+This is precisely Riemannian optimisation on the product manifold
+$\mathcal{M}$ with a shared line search, rather than two independent block
+updates.
 
 ---
 
