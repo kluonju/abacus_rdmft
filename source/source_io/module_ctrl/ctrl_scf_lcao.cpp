@@ -426,7 +426,7 @@ void ctrl_scf_lcao_impl(UnitCell& ucell,
     //! single-step evaluation here to avoid overwriting the result.
     //------------------------------------------------------------------
 #ifdef __RDMFT
-    if (inp.rdmft == true)
+    if (inp.rdmft == true && inp.rdmft_functional.empty())
     {
         auto* rdmft_solver = static_cast<rdmft::RDMFT<TK, TR>*>(rdmft_solver_opaque);
         if (rdmft_solver == nullptr)
@@ -461,7 +461,7 @@ void ctrl_scf_lcao_impl(UnitCell& ucell,
         ModuleBase::WARNING_QUIT("ModuleIO::ctrl_scf_lcao",
                                  "INPUT requests rdmft but ABACUS was built without RDMFT (ENABLE_RDMFT=OFF).");
     }
-#endif
+#endif // __RDMFT
 
 
     //------------------------------------------------------------------

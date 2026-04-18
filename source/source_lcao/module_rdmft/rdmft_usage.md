@@ -33,7 +33,7 @@ RDMFT-specific keywords below are optional and have sensible defaults.
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
 | `rdmft` | bool | `false` | Master switch. Set to `1` (or `true`) to enable RDMFT. |
-| `rdmft_functional` | string | same as `dft_functional` | RDMFT XC functional. Supported: `hf`, `muller`, `power`, `gu`. |
+| `rdmft_functional` | string | `""` (empty) | RDMFT XC functional. Supported: `hf`, `muller`, `power`, `gu`. **When left empty only the legacy single-step RDMFT evaluator is run — the RDMFT energy is NOT minimised. Set this keyword to activate the full RDMFT optimisation engine.** |
 | `rdmft_power_alpha` | real | `0.656` | Exponent α in the coupling function g(n) = n^α. Only used when `rdmft_functional` is `power`. For HF and Müller, α is fixed automatically (1.0 and 0.5). Valid range: (0, 1). |
 
 The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMFT optimisation** uses
@@ -253,9 +253,23 @@ occupations after every step.
 
 ## Tips
 
+- **Always set `rdmft_functional`.** Without it only the legacy single-step
+  RDMFT evaluator runs, which simply reports the RDMFT energy at the KS
+  solution; the occupations and orbitals are **not** optimised.
+  This is the most common cause of "I enabled RDMFT but nothing
+  happens" reports.
+
 - **Start with a good KS guess.** Use `dft_functional` (e.g. PBE, LDA) for the
   initial KS-SCF.  A well-converged KS-DFT starting point greatly accelerates
   RDMFT convergence.
+
+- **Do NOT set `dft_functional` to a hybrid functional just to run RDMFT.**
+  The RDMFT XC functional is controlled by `rdmft_functional`, not
+  `dft_functional`.  Setting `dft_functional = muller` (or `hf`, `pbe0`, ...)
+  forces the KS-SCF itself to do exact exchange, which is significantly
+  more expensive (≈1–2 min of LibRI initialisation plus EXX in every SCF
+  step for a small cell) and brings no benefit over a cheap LDA/PBE
+  starting guess followed by a muller RDMFT optimisation.
 
 - **Check gradients during development.** Set `rdmft_grad_check 1` when
   implementing or testing new functionals.  If the analytic and finite-difference
@@ -270,3 +284,43 @@ occupations after every step.
 
 - **For periodic systems with multiple k-points**, the constraint
   Σ_k w_k Σ_i n_{ik} = N_e is automatically handled using the k-point weights.
+
+---
+
+## Troubleshooting
+
+### ABACUS runs for a long time with no RDMFT output
+
+Typical causes (in roughly decreasing likelihood):
+
+1. **`rdmft_functional` is not set.** Only the legacy single-step evaluator
+   runs and no `===== RDMFT Alternating Optimization =====` banner is printed.
+   Set `rdmft_functional muller` (or `hf`/`power`/`gu`) to activate the
+   optimisation engine.
+2. **`dft_functional` is set to a hybrid (e.g. `muller`, `hf`, `pbe0`).**
+   The KS-SCF itself then runs with exact exchange, and LibRI initialisation
+   alone takes ~1–2 minutes of CPU time before the first SCF step even
+   starts. Remove the `dft_functional` line (or set it to `pbe`/`lda`) to
+   fall back to a cheap semi-local KS starting guess.
+3. **ABACUS was built without RDMFT support.** Re-configure with
+   `-DENABLE_RDMFT=ON` and rebuild; otherwise `INPUT: rdmft=true` triggers a
+   `WARNING_QUIT`.
+
+### The log shows `XC_fun: default` and a second `Etotal_RDMFT` at the end
+
+This happened in older builds where the legacy single-step
+`RDMFT::run()` was always invoked after the new solver, overwriting its
+output.  Current builds guard the legacy path on
+`rdmft_functional == ""`, so when the new engine is active only its
+`FINAL_ETOT_IS` is reported.  If you still see this, make sure your
+build includes this guard in `source/source_io/module_ctrl/ctrl_scf_lcao.cpp`.
+
+### The example in `source/source_lcao/module_rdmft/example/ZnO_RDMFT`
+
+The shipped `INPUT` uses the pseudopotential's native LDA for the KS-SCF
+and `rdmft_functional muller` for the RDMFT stage.  On a single MPI rank
+the first ≈2 min are spent initialising LibRI for the RDMFT Fock operator,
+then the KS-SCF converges in ~25 iterations and the RDMFT alternating
+CG optimisation runs for `rdmft_max_iter` outer steps, printing
+intermediate occupation and orbital sub-problem progress before writing
+the final `Etotal_RDMFT` and `!FINAL_ETOT_IS` lines.
