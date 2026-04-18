@@ -486,15 +486,17 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 // product manifold
 //     M = R^{Nk x Nb}  x  prod_k St(Nb, Nbasis; S^k).
 //
-// The tangent vector at x has the same product structure. For the occupation
-// block we use the configured occ_optimizer (SD / CG / L-BFGS / Adam) on the
-// parameter-space gradient dE/dp; for the orbital block we use the configured
-// orb_optimizer on the flattened Riemannian gradient (L-BFGS / Adam match the
-// alternating-strategy orbital code path by flattening + projecting back onto
-// the tangent space). A single Armijo line search is then performed along the
-// packed direction: params are updated linearly and orbitals are retracted
-// onto the Stiefel manifold. The augmented-Lagrangian multiplier is refreshed
-// once per outer iteration, matching the alternating strategy.
+// Key design: occupations and orbitals are packed into ONE flat vector
+//     z = (p_1, ..., p_{Np},   flat(C^1), ..., flat(C^{Nk}))
+// and a SINGLE Euclidean optimiser (configured via rdmft_joint_optimizer)
+// consumes the packed gradient
+//     g = (dE/dp_1, ..., dE/dp_{Np},   flat(G_R^1), ..., flat(G_R^{Nk}))
+// where G_R^k is the Riemannian (tangent-space) projection of the Euclidean
+// orbital gradient dE/dC^k at the current C^k. The produced search direction
+// is split back into an occupation block (linear update on parameters p) and
+// an orbital block (projected and retracted onto each Stiefel fibre) before a
+// single Armijo line search along the packed direction commits the step. The
+// augmented-Lagrangian multiplier is refreshed once per outer iteration.
 // ----------------------------------------------------------------------------
 template <typename TK, typename TR>
 double RDMFTSolver<TK, TR>::solve_joint(
@@ -514,34 +516,20 @@ double RDMFTSolver<TK, TR>::solve_joint(
     const int nbs_local = wfc.get_nbasis();
     const int orb_total_size = nk * nb_local * nbs_local;
 
-    // Separate optimiser instances for the occupation and orbital blocks.
-    // This matches the alternating strategy where each sub-problem has its
-    // own state, and it lets the user mix occupation / orbital optimisers
-    // (e.g. CG on occupations, L-BFGS on orbitals).
-    EuclideanOptimizer occ_opt(config_.occ_optimizer, config_);
-    occ_opt.init(n_occ_params);
-
-    const OptimizerType orb_type = config_.orb_optimizer;
-    const bool orb_is_lbfgs = (orb_type == OptimizerType::LBFGS);
-    const bool orb_is_adam  = (orb_type == OptimizerType::Adam);
-    const bool orb_is_cg    = (orb_type == OptimizerType::ConjugateGradient);
-
-    EuclideanOptimizer orb_opt(orb_type, config_);
+    // Flat-size of the orbital block in the packed vector: one real per
+    // orbital coefficient when TK = double, two reals (Re, Im) when TK is
+    // complex.
     int orb_flat_size = orb_total_size;
     if constexpr (!std::is_same<TK, double>::value) orb_flat_size *= 2;
-    if (orb_is_lbfgs || orb_is_adam) orb_opt.init(orb_flat_size);
 
-    // CG state for the Riemannian orbital block (only used when orb_is_cg).
-    psi::Psi<TK> prev_orb_grad;
-    psi::Psi<TK> prev_orb_dir;
-    if (orb_is_cg)
-    {
-        prev_orb_grad = wfc;
-        prev_orb_dir = wfc;
-        prev_orb_grad.zero_out();
-        prev_orb_dir.zero_out();
-    }
-    double prev_orb_gnorm2 = 0.0;
+    const int packed_size = n_occ_params + orb_flat_size;
+
+    // Single unified optimiser on the packed variable (p, C_flat).
+    const OptimizerType joint_type = config_.joint_optimizer;
+    const bool joint_is_lbfgs = (joint_type == OptimizerType::LBFGS);
+    const bool joint_is_adam  = (joint_type == OptimizerType::Adam);
+    EuclideanOptimizer joint_opt(joint_type, config_);
+    joint_opt.init(packed_size);
 
     // Work buffer for line-search rollback.
     psi::Psi<TK> wfc_save(wfc);
@@ -566,6 +554,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
             E_val += occ_constraint_->augmented_lagrangian_penalty(occ_in);
         return E_val;
     };
+
+    // Scratch buffers reused across outer iterations.
+    std::vector<double> packed_grad(packed_size, 0.0);
+    std::vector<double> packed_dir(packed_size, 0.0);
+    std::vector<double> packed_step(packed_size, 0.0);
 
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
@@ -597,69 +590,64 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // Project orbital gradient onto the Stiefel tangent space at C.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        // ---- occupation block: search direction from configured optimiser ----
-        std::vector<double> occ_dir;
-        occ_opt.compute_direction(grad_params, occ_dir);
+        // ---- Pack gradients into the unified vector ----
+        std::vector<double> grad_orb_flat;
+        psi_to_flat(grad_wfc, grad_orb_flat);
+        for (int i = 0; i < n_occ_params; ++i)
+            packed_grad[i] = grad_params[i];
+        for (int i = 0; i < orb_flat_size; ++i)
+            packed_grad[n_occ_params + i] = grad_orb_flat[i];
 
-        // Descent safeguard: fall back to SD if direction is not descent.
-        double occ_dd = 0.0;
-        for (int i = 0; i < n_occ_params; ++i) occ_dd += occ_dir[i] * grad_params[i];
-        if (occ_dd >= 0.0)
+        // Ask the single unified optimiser for a packed descent direction.
+        joint_opt.compute_direction(packed_grad, packed_dir);
+
+        // Split the packed direction into occupation and orbital blocks.
+        std::vector<double> occ_dir(n_occ_params);
+        for (int i = 0; i < n_occ_params; ++i) occ_dir[i] = packed_dir[i];
+
+        psi::Psi<TK> orb_dir(wfc);
         {
-            for (int i = 0; i < n_occ_params; ++i) occ_dir[i] = -grad_params[i];
-            occ_dd = 0.0;
-            for (int i = 0; i < n_occ_params; ++i) occ_dd += occ_dir[i] * grad_params[i];
+            std::vector<double> orb_dir_flat(orb_flat_size);
+            for (int i = 0; i < orb_flat_size; ++i)
+                orb_dir_flat[i] = packed_dir[n_occ_params + i];
+            flat_to_psi(orb_dir_flat, orb_dir);
         }
 
-        // ---- orbital block: Riemannian search direction ----
-        psi::Psi<TK> orb_dir(wfc);
-        for (int ik = 0; ik < nk; ++ik)
-            for (int ib = 0; ib < nb_local; ++ib)
-                for (int mu = 0; mu < nbs_local; ++mu)
-                    orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
-
+        // Orbital gradient norm (Riemannian) for diagnostics and for the
+        // steepest-descent fallback below.
         const double orb_gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
 
-        if (orb_is_lbfgs || orb_is_adam)
-        {
-            std::vector<double> grad_flat, dir_flat;
-            psi_to_flat(grad_wfc, grad_flat);
-            orb_opt.compute_direction(grad_flat, dir_flat);
-            flat_to_psi(dir_flat, orb_dir);
-            energy_grad_->project_orbital_gradient(wfc, orb_dir);
+        // Project the orbital search direction back onto the tangent space
+        // at C. The optimiser's Euclidean update (especially for L-BFGS /
+        // Adam, which precondition the gradient) generally leaves the tangent
+        // space; projection restores a valid Riemannian direction without
+        // changing its component on the tangent space.
+        energy_grad_->project_orbital_gradient(wfc, orb_dir);
 
-            double dd_check = energy_grad_->s_inner_product(grad_wfc, orb_dir);
-            if (dd_check >= 0.0)
-            {
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
-            }
-        }
-        else if (orb_is_cg && iter > 0 && prev_orb_gnorm2 > 1e-30)
+        // Directional derivative of the augmented energy along the packed
+        // direction:  dd_total = <grad_p, occ_dir> + <G_R, orb_dir>_S.
+        double occ_dd = 0.0;
+        for (int i = 0; i < n_occ_params; ++i)
+            occ_dd += occ_dir[i] * grad_params[i];
+        double orb_dd = energy_grad_->s_inner_product(grad_wfc, orb_dir);
+        double dd_total = occ_dd + orb_dd;
+
+        // Descent safeguard: if the optimiser-produced direction is not
+        // descent on the product manifold, fall back to the full packed
+        // steepest-descent direction d = -g.
+        if (dd_total >= 0.0)
         {
-            energy_grad_->project_orbital_gradient(wfc, prev_orb_dir);
-            energy_grad_->project_orbital_gradient(wfc, prev_orb_grad);
-            double prev_grad_dot = energy_grad_->s_inner_product(grad_wfc, prev_orb_grad);
-            const double powell_thr = 0.1;
-            if (std::abs(prev_grad_dot) <= powell_thr * orb_gnorm2)
-            {
-                double beta = std::max(0.0, orb_gnorm2 / prev_orb_gnorm2);
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            orb_dir(ik, ib, mu) += TK(beta) * prev_orb_dir(ik, ib, mu);
-                energy_grad_->project_orbital_gradient(wfc, orb_dir);
-                double dd_check = energy_grad_->s_inner_product(grad_wfc, orb_dir);
-                if (dd_check >= 0.0)
-                {
-                    for (int ik = 0; ik < nk; ++ik)
-                        for (int ib = 0; ib < nb_local; ++ib)
-                            for (int mu = 0; mu < nbs_local; ++mu)
-                                orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
-                }
-            }
+            for (int i = 0; i < n_occ_params; ++i)
+                occ_dir[i] = -grad_params[i];
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        orb_dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+            occ_dd = 0.0;
+            for (int i = 0; i < n_occ_params; ++i)
+                occ_dd += occ_dir[i] * grad_params[i];
+            orb_dd = -orb_gnorm2;
+            dd_total = occ_dd + orb_dd;
         }
 
         // neg_orb_dir = -orb_dir (so retract_orbitals(wfc, neg_orb_dir, alpha)
@@ -671,21 +659,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
             for (int i = 0; i < orb_total_size; ++i) q[i] = -p[i];
         }
 
-        // Directional derivative of the total (augmented) energy along the
-        // packed direction: dd_total = <grad_p, occ_dir> + <grad_C, orb_dir>_S.
-        const double orb_dd = energy_grad_->s_inner_product(grad_wfc, orb_dir);
-        const double dd_total = occ_dd + orb_dd;
-
         // Snapshot the current orbitals for line-search rollback.
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
                     wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
 
-        // Joint Armijo line search along (occ_dir, orb_dir). Initial step
+        // Joint Armijo line search along the packed direction. Initial step
         // is 1.0 for L-BFGS / Adam (already well-scaled) and the configured
         // alpha_init for SD / CG.
-        const double alpha_init = (orb_is_lbfgs || orb_is_adam)
+        const double alpha_init = (joint_is_lbfgs || joint_is_adam)
                                       ? 1.0
                                       : config_.line_search_alpha_init;
         double alpha = alpha_init;
@@ -722,22 +705,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         if (!ls_success)
         {
-            // Line search failed: roll back both blocks, restart the optimiser
-            // states and continue with steepest descent at the next iteration.
+            // Line search failed: roll back, restart the optimiser state and
+            // continue with steepest descent at the next iteration.
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
             energy_grad_->invalidate_hone_cache();
 
-            occ_opt.init(n_occ_params);
-            if (orb_is_lbfgs || orb_is_adam) orb_opt.init(orb_flat_size);
-            if (orb_is_cg)
-            {
-                prev_orb_gnorm2 = 0.0;
-                prev_orb_dir.zero_out();
-                prev_orb_grad.zero_out();
-            }
+            joint_opt.init(packed_size);
 
             std::cout << "  RDMFT joint-iter " << iter + 1
                       << "  line search failed, restarting optimiser state"
@@ -748,16 +724,25 @@ double RDMFTSolver<TK, TR>::solve_joint(
             continue;
         }
 
-        // Commit occupation step.
-        std::vector<double> occ_step_vec(n_occ_params);
+        // Commit occupation step (orbitals are already retracted by the
+        // final, successful line-search trial above).
         for (int i = 0; i < n_occ_params; ++i)
         {
-            occ_step_vec[i] = alpha * occ_dir[i];
-            params[i] += occ_step_vec[i];
+            packed_step[i] = alpha * occ_dir[i];
+            params[i] += packed_step[i];
         }
         occ_param_->params_to_occ(params, occ_flat);
 
-        // Update occupation optimiser history with the new gradient.
+        // Build the packed step for the orbital block: step = alpha * orb_dir
+        // in the same flat layout used by the optimiser.
+        {
+            std::vector<double> orb_dir_flat;
+            psi_to_flat(orb_dir, orb_dir_flat);
+            for (int i = 0; i < orb_flat_size; ++i)
+                packed_step[n_occ_params + i] = alpha * orb_dir_flat[i];
+        }
+
+        // Update the unified optimiser's history with the new packed gradient.
         {
             std::vector<double> new_grad_occ;
             psi::Psi<TK> new_grad_wfc;
@@ -771,31 +756,18 @@ double RDMFTSolver<TK, TR>::solve_joint(
             }
             std::vector<double> new_grad_params;
             occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
-            occ_opt.update(new_grad_params, occ_step_vec);
+            energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
 
-            // Refresh orbital optimiser state.
-            if (orb_is_lbfgs)
-            {
-                energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
-                std::vector<double> new_grad_flat, step_flat, dir_flat_step;
-                psi_to_flat(new_grad_wfc, new_grad_flat);
-                psi_to_flat(orb_dir, dir_flat_step);
-                step_flat.resize(dir_flat_step.size());
-                for (size_t i = 0; i < step_flat.size(); ++i)
-                    step_flat[i] = alpha * dir_flat_step[i];
-                orb_opt.update(new_grad_flat, step_flat);
-            }
-            if (orb_is_cg)
-            {
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                        {
-                            prev_orb_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
-                            prev_orb_dir(ik, ib, mu)  = orb_dir(ik, ib, mu);
-                        }
-                prev_orb_gnorm2 = orb_gnorm2;
-            }
+            std::vector<double> new_grad_orb_flat;
+            psi_to_flat(new_grad_wfc, new_grad_orb_flat);
+
+            std::vector<double> new_packed_grad(packed_size);
+            for (int i = 0; i < n_occ_params; ++i)
+                new_packed_grad[i] = new_grad_params[i];
+            for (int i = 0; i < orb_flat_size; ++i)
+                new_packed_grad[n_occ_params + i] = new_grad_orb_flat[i];
+
+            joint_opt.update(new_packed_grad, packed_step);
         }
 
         // Augmented-Lagrangian multiplier refresh.
@@ -810,9 +782,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
 
         const double dE = std::abs(E_new - E_prev);
-        double gnorm2 = 0.0;
-        for (auto g : grad_params) gnorm2 += g * g;
-        const double gnorm_total = std::sqrt(gnorm2 + std::max(0.0, orb_gnorm2));
+        double gnorm2_occ = 0.0;
+        for (auto g : grad_params) gnorm2_occ += g * g;
+        const double gnorm_total = std::sqrt(gnorm2_occ + std::max(0.0, orb_gnorm2));
 
         std::cout << std::fixed << std::setprecision(10)
             << "  RDMFT joint-iter " << iter + 1
@@ -827,7 +799,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             << "  E = " << E_new
             << "  dE = " << std::scientific << dE
             << "  alpha = " << alpha
-            << "  |grad_occ| = " << std::sqrt(gnorm2)
+            << "  |grad_occ| = " << std::sqrt(gnorm2_occ)
             << "  |grad_orb| = " << std::sqrt(std::max(0.0, orb_gnorm2))
             << "  |grad_total| = " << gnorm_total
             << std::endl;
@@ -836,7 +808,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_last_E = E_new;
         joint_last_dE = dE;
         joint_last_abs_c = abs_c_joint;
-        joint_gn_occ = std::sqrt(gnorm2);
+        joint_gn_occ = std::sqrt(gnorm2_occ);
         joint_gn_orb = std::sqrt(std::max(0.0, orb_gnorm2));
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;

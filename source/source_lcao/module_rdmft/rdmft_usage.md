@@ -57,11 +57,18 @@ The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMF
   the most robust.
 - **`joint`** — Pack occupations (Euclidean space, after parameterisation)
   and orbitals (Stiefel manifold) into a single point on the product manifold
-  and optimise everything simultaneously.  Each outer step computes a joint
-  descent direction using the configured `rdmft_occ_optimizer` for the
-  occupation block and `rdmft_orb_optimizer` for the orbital block, then runs a
-  single Armijo line search along the packed direction.  The legacy value
-  `product_manifold` is still accepted as an alias for `joint`.
+  and optimise everything simultaneously.  The packed variable
+  `z = (p, C^1, ..., C^{Nk})` is optimised by **one** unified optimiser,
+  configured via `rdmft_joint_optimizer`.  The optimiser consumes the packed
+  gradient `g = (dE/dp, G_R^1, ..., G_R^{Nk})`, where `dE/dp` is the
+  chain-rule transformation of `dE/dn` through the occupation parameterisation
+  and each `G_R^k` is the Riemannian (tangent-space) projection of the
+  Euclidean orbital gradient at `C^k`.  The produced search direction is
+  re-projected onto each tangent space and a single Armijo line search runs
+  along the packed direction (linear update for the parameters, Stiefel
+  retraction for each `C^k`).  `rdmft_occ_optimizer` and `rdmft_orb_optimizer`
+  are ignored by this strategy.  The legacy value `product_manifold` is still
+  accepted as an alias for `joint`.
 
 ### Occupation parameterisation
 
@@ -100,6 +107,13 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
 |---------|------|---------|----------------|
 | `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
 | `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_joint_optimizer` | string | `lbfgs` | `sd`, `cg`, `lbfgs`, `adam` |
+
+`rdmft_occ_optimizer` and `rdmft_orb_optimizer` control the two sub-problem
+optimisers used by the `alternating` strategy.  `rdmft_joint_optimizer`
+selects the **single** unified optimiser used by the `joint` strategy on the
+packed `(p, C)` variable.  Only the keyword matching the active strategy is
+consulted; the others are ignored.
 
 You can choose different optimisers for the occupation and orbital
 sub-problems:
@@ -207,20 +221,19 @@ rdmft               1
 rdmft_solver_strategy   joint
 rdmft_occ_param         logistic
 rdmft_constraint        augmented_lagrangian
-rdmft_occ_optimizer     adam
-rdmft_orb_optimizer     sd
-rdmft_adam_lr            0.005
+rdmft_joint_optimizer   lbfgs
 rdmft_alpha_step         0.01
 rdmft_outer_maxiter        300
 ```
 
 Here occupations and orbitals are optimised simultaneously on the product
 manifold (new `joint` keyword; `product_manifold` is still accepted as a
-deprecated alias).  Occupations use the logistic parameterisation with Adam,
-while orbitals use steepest descent.  Every outer iteration builds a joint
-descent direction by asking each optimiser for its block of the step and then
-runs one Armijo line search along the packed direction (linear update for the
-occupation parameters, Stiefel retraction for the orbitals).
+deprecated alias).  The packed variable `(p, C)` is handled by a single
+L-BFGS optimiser (`rdmft_joint_optimizer lbfgs`): every outer iteration the
+solver evaluates the packed gradient `(dE/dp, G_R)`, asks L-BFGS for a
+descent direction, re-projects the orbital block onto the Stiefel tangent
+space, and runs one Armijo line search along the packed direction (linear
+update for the occupation parameters, Stiefel retraction for the orbitals).
 
 ### Example 4: Gamma-only solid with projected gradient
 

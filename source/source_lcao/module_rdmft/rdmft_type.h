@@ -80,6 +80,11 @@ struct RDMFTConfig
 
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
+    /// Single unified optimiser used by SolverStrategy::Joint. The joint
+    /// strategy packs (occupation parameters, orbital coefficients) into one
+    /// point on the product manifold and applies a single optimiser of this
+    /// type to the packed gradient (dE/dp, Riemannian dE/dC).
+    OptimizerType joint_optimizer = OptimizerType::LBFGS;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 

@@ -605,6 +605,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         };
         rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
         rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
+        rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
 
         // Initialise solver (lightweight)
         const double n_electrons = PARAM.inp.nelec;

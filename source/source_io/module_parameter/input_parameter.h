@@ -670,6 +670,7 @@ struct Input_para
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
     std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
+    std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
     int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
     int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)

@@ -955,6 +955,33 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_joint_optimizer");
+        item.annotation = "Single unified optimiser for the RDMFT joint strategy: sd, cg, lbfgs, adam";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "For rdmft_solver_strategy = joint, the occupation parameters and "
+                           "orbital coefficients are packed into one point on the product manifold "
+                           "and stepped simultaneously by a single optimiser of this type. "
+                           "Allowed values: sd (steepest descent), cg (conjugate gradient), "
+                           "lbfgs (L-BFGS), adam.";
+        item.default_value = "lbfgs";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_joint_optimizer);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_joint_optimizer;
+                if (s != "sd" && s != "cg" && s != "lbfgs" && s != "adam")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_joint_optimizer must be one of: sd, cg, lbfgs, adam");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_outer_maxiter");
         item.annotation = "Maximum RDMFT outer iterations (alternating / product-manifold)";
         item.category = "Reduced Density Matrix Functional Theory";

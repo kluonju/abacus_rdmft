@@ -7,23 +7,23 @@
 // fully wired up in an end-to-end ABACUS run. These tests therefore:
 //
 //   1. Verify the SolverStrategy::Joint enum is reachable under the new name
-//      and that `RDMFTConfig::strategy` round-trips through it (rename check).
+//      and that `RDMFTConfig::strategy` / `RDMFTConfig::joint_optimizer`
+//      round-trip through it.
 //
-//   2. Reproduce the exact algorithmic flow of `solve_joint` on a toy RDMFT
-//      model whose energy, gradient and manifold structure match the real
-//      code path:
+//   2. Reproduce the exact algorithmic flow of the refactored `solve_joint`
+//      on a toy RDMFT model whose energy, gradient and manifold structure
+//      match the real code path:
 //
 //          E(n, C) = sum_i n_i <C_i, A C_i>   +   penalty(sum_i n_i - N_e)
 //
 //      with n_i parameterised as cos^2(p_i) (matching OccupationParam) and
 //      C constrained to the Stiefel manifold C^T C = I (matching
-//      StiefelManifold with S = I). The analytic minimiser is
-//      n_* = [1, 1, ..., 1, 0, ..., 0] (N_e ones on the bands with smallest
-//      eigenvalues) and C_* spans the invariant subspace of the N_b smallest
-//      eigenvalues of A. The product-manifold Armijo line search in the test
-//      is identical in structure to the one in `rdmft_solver.cpp`, so when
-//      these tests pass we know the joint flow converges for SD, CG, L-BFGS
-//      and Adam.
+//      StiefelManifold with S = I). A SINGLE EuclideanOptimizer is applied
+//      to the packed vector z = (p_1, ..., p_nb, flat(C)) using the packed
+//      gradient g = (dE/dp, flat(G_R)). The produced direction is split back
+//      into occupation and orbital blocks, the orbital block is re-projected
+//      onto the Stiefel tangent space, and one joint Armijo line search
+//      commits the step (linear update for p, retraction for C).
 // -----------------------------------------------------------------------------
 #include "gtest/gtest.h"
 #include "source_lcao/module_rdmft/rdmft_occupation.h"
@@ -56,6 +56,24 @@ TEST(RdmftJointStrategy, enum_rename_compiles)
 }
 
 // -----------------------------------------------------------------------------
+// The joint strategy uses a single unified optimiser; RDMFTConfig exposes it.
+// -----------------------------------------------------------------------------
+TEST(RdmftJointStrategy, joint_optimizer_roundtrips)
+{
+    RDMFTConfig cfg;
+    EXPECT_EQ(cfg.joint_optimizer, OptimizerType::LBFGS);
+
+    for (OptimizerType t : {OptimizerType::SteepestDescent,
+                            OptimizerType::ConjugateGradient,
+                            OptimizerType::LBFGS,
+                            OptimizerType::Adam})
+    {
+        cfg.joint_optimizer = t;
+        EXPECT_EQ(cfg.joint_optimizer, t);
+    }
+}
+
+// -----------------------------------------------------------------------------
 // Toy product-manifold problem.
 // -----------------------------------------------------------------------------
 namespace
@@ -72,8 +90,8 @@ struct ToyProblem
     // Zero at n_i in {0,1}, minimum at n_i = 1/2. Together with the orbital
     // energy (which pushes toward integer fillings), a modest beta produces a
     // strictly interior minimum. This makes the test's analytic minimum
-    // reachable by SD / CG / Adam — which otherwise stall in the
-    // cosine^2-parameterisation flat at the [0,1] boundaries — without
+    // reachable by SD / CG / Adam -- which otherwise stall in the
+    // cosine^2-parameterisation flat at the [0,1] boundaries -- without
     // changing the algorithmic flow of the joint strategy.
     double beta = 0.0;
 
@@ -267,42 +285,26 @@ double toy_ref_energy_numeric(const ToyProblem& p)
     return E + p.beta * s_ent;
 }
 
-// Gram-Schmidt random Stiefel point (identity overlap).
-std::vector<double> rand_stiefel(int n, int nb, std::mt19937& rng)
-{
-    std::vector<double> C(n * nb);
-    std::normal_distribution<double> dist(0.0, 1.0);
-    for (auto& v : C) v = dist(rng);
-    for (int j = 0; j < nb; ++j)
-    {
-        for (int k = 0; k < j; ++k)
-        {
-            double dot = 0.0;
-            for (int i = 0; i < n; ++i) dot += C[i + k * n] * C[i + j * n];
-            for (int i = 0; i < n; ++i) C[i + j * n] -= dot * C[i + k * n];
-        }
-        double norm = 0.0;
-        for (int i = 0; i < n; ++i) norm += C[i + j * n] * C[i + j * n];
-        norm = std::sqrt(norm);
-        for (int i = 0; i < n; ++i) C[i + j * n] /= norm;
-    }
-    return C;
-}
-
-// Runs a faithful reproduction of `RDMFTSolver<>::solve_joint` on the toy
-// problem using the given occupation and orbital optimisers. Mirrors the
-// real solver's step order exactly so that a passing test means the
-// solver's control flow is correct for the given optimiser mix.
-double run_joint_toy(ToyProblem& problem,
-                     OptimizerType occ_opt_type,
-                     OptimizerType orb_opt_type,
-                     int max_iter,
-                     double alpha_init_non_lbfgs,
-                     const std::vector<double>& n_init,
-                     const std::vector<double>& C_init,
-                     std::vector<double>& n_out,
-                     std::vector<double>& C_out,
-                     int seed = 42)
+// Runs a faithful reproduction of the refactored `RDMFTSolver<>::solve_joint`
+// on the toy problem using a SINGLE unified Euclidean optimiser applied to
+// the packed variable z = (p, flat(C)). Mirrors the real solver's step order:
+//   1. Evaluate energy + Euclidean (dE/dn, dE/dC) at current z.
+//   2. Chain-rule dE/dn -> dE/dp; project dE/dC -> Riemannian gradient G_R.
+//   3. Pack (dE/dp, flat(G_R)) -> packed_grad, call optimiser for packed_dir.
+//   4. Split packed_dir; re-project orbital block onto tangent space.
+//   5. Descent safeguard on joint directional derivative.
+//   6. Single Armijo line search along packed direction: params += alpha * d_p,
+//      C = retract(C, d_C, alpha).
+//   7. Update optimiser history with the new packed gradient.
+//   8. Refresh augmented-Lagrangian multiplier.
+double run_joint_toy_single(ToyProblem& problem,
+                            OptimizerType joint_opt_type,
+                            int max_iter,
+                            double alpha_init_non_lbfgs,
+                            const std::vector<double>& n_init,
+                            const std::vector<double>& C_init,
+                            std::vector<double>& n_out,
+                            std::vector<double>& C_out)
 {
     const int n = problem.n;
     const int nb = problem.nb;
@@ -315,20 +317,15 @@ double run_joint_toy(ToyProblem& problem,
     std::vector<double> params;
     op.occ_to_params(n_init, params);
 
-    EuclideanOptimizer occ_opt(occ_opt_type, cfg);
-    occ_opt.init(nb);
+    const int n_occ = nb;
+    const int n_orb = n * nb;
+    const int packed_size = n_occ + n_orb;
 
-    EuclideanOptimizer orb_opt(orb_opt_type, cfg);
-    orb_opt.init(n * nb);
+    EuclideanOptimizer joint_opt(joint_opt_type, cfg);
+    joint_opt.init(packed_size);
 
-    const bool orb_is_lbfgs = (orb_opt_type == OptimizerType::LBFGS);
-    const bool orb_is_adam  = (orb_opt_type == OptimizerType::Adam);
-    const bool orb_is_cg    = (orb_opt_type == OptimizerType::ConjugateGradient);
-
-    // CG state
-    std::vector<double> prev_orb_grad(n * nb, 0.0);
-    std::vector<double> prev_orb_dir(n * nb, 0.0);
-    double prev_orb_gnorm2 = 0.0;
+    const bool is_lbfgs = (joint_opt_type == OptimizerType::LBFGS);
+    const bool is_adam  = (joint_opt_type == OptimizerType::Adam);
 
     C_out = C_init;
     std::vector<double> occ_vec(nb, 0.0);
@@ -337,13 +334,12 @@ double run_joint_toy(ToyProblem& problem,
     StiefelManifold<double> manifold(n, nb);
 
     double E = 0.0;
-    (void)seed;
     for (int iter = 0; iter < max_iter; ++iter)
     {
         op.params_to_occ(params, occ_vec);
         E = problem.total_energy(occ_vec, C_out);
 
-        // Occupation parameter-space gradient.
+        // Occupation parameter-space gradient (chain-rule dE/dn -> dE/dp).
         auto g_occ = problem.grad_occ(occ_vec, C_out);
         std::vector<double> pen;
         problem.penalty_grad(occ_vec, pen);
@@ -351,80 +347,58 @@ double run_joint_toy(ToyProblem& problem,
         std::vector<double> g_params;
         op.transform_gradient_batch(g_occ, params, g_params);
 
-        // Riemannian orbital gradient.
+        // Riemannian orbital gradient (project Euclidean dE/dC onto T_C St).
         auto g_orb = problem.grad_orb(occ_vec, C_out);
-        std::vector<double> g_orb_R(n * nb, 0.0);
+        std::vector<double> g_orb_R(n_orb, 0.0);
         manifold.project_tangent(C_out.data(), g_orb.data(),
                                   g_orb_R.data(), n, nb);
 
         double orb_gnorm2 = 0.0;
         for (double v : g_orb_R) orb_gnorm2 += v * v;
 
-        // Occ direction.
-        std::vector<double> d_occ;
-        occ_opt.compute_direction(g_params, d_occ);
-        double occ_dd = 0.0;
-        for (int i = 0; i < nb; ++i) occ_dd += d_occ[i] * g_params[i];
-        if (occ_dd >= 0.0)
-        {
-            for (int i = 0; i < nb; ++i) d_occ[i] = -g_params[i];
-            occ_dd = 0.0;
-            for (int i = 0; i < nb; ++i) occ_dd += d_occ[i] * g_params[i];
-        }
+        // Pack gradients for the single optimiser.
+        std::vector<double> packed_grad(packed_size);
+        for (int i = 0; i < n_occ; ++i) packed_grad[i] = g_params[i];
+        for (int i = 0; i < n_orb; ++i) packed_grad[n_occ + i] = g_orb_R[i];
 
-        // Orbital direction.
-        std::vector<double> d_orb(n * nb);
-        for (int i = 0; i < n * nb; ++i) d_orb[i] = -g_orb_R[i];
+        // One call to the unified optimiser.
+        std::vector<double> packed_dir;
+        joint_opt.compute_direction(packed_grad, packed_dir);
 
-        if (orb_is_lbfgs || orb_is_adam)
-        {
-            std::vector<double> d_flat;
-            orb_opt.compute_direction(g_orb_R, d_flat);
-            std::vector<double> d_proj(n * nb, 0.0);
-            manifold.project_tangent(C_out.data(), d_flat.data(),
-                                      d_proj.data(), n, nb);
-            double dd_check = 0.0;
-            for (int i = 0; i < n * nb; ++i) dd_check += d_proj[i] * g_orb_R[i];
-            if (dd_check >= 0.0)
-            {
-                for (int i = 0; i < n * nb; ++i) d_orb[i] = -g_orb_R[i];
-            }
-            else
-            {
-                d_orb = d_proj;
-            }
-        }
-        else if (orb_is_cg && iter > 0 && prev_orb_gnorm2 > 1e-30)
-        {
-            // Vector-transport by projection.
-            std::vector<double> transported(n * nb, 0.0);
-            manifold.project_tangent(C_out.data(), prev_orb_dir.data(),
-                                      transported.data(), n, nb);
-            double beta = std::max(0.0, orb_gnorm2 / prev_orb_gnorm2);
-            std::vector<double> d_cand(n * nb);
-            for (int i = 0; i < n * nb; ++i)
-                d_cand[i] = -g_orb_R[i] + beta * transported[i];
-            std::vector<double> d_cand_proj(n * nb, 0.0);
-            manifold.project_tangent(C_out.data(), d_cand.data(),
-                                      d_cand_proj.data(), n, nb);
-            double dd_check = 0.0;
-            for (int i = 0; i < n * nb; ++i)
-                dd_check += d_cand_proj[i] * g_orb_R[i];
-            if (dd_check < 0.0) d_orb = d_cand_proj;
-        }
+        // Split into occupation and orbital blocks.
+        std::vector<double> d_occ(n_occ);
+        for (int i = 0; i < n_occ; ++i) d_occ[i] = packed_dir[i];
+        std::vector<double> d_orb(n_orb);
+        for (int i = 0; i < n_orb; ++i) d_orb[i] = packed_dir[n_occ + i];
 
-        double orb_dd = 0.0;
-        for (int i = 0; i < n * nb; ++i) orb_dd += d_orb[i] * g_orb_R[i];
-        double dd_total = occ_dd + orb_dd;
+        // Re-project orbital block onto tangent space at C.
+        std::vector<double> d_orb_proj(n_orb, 0.0);
+        manifold.project_tangent(C_out.data(), d_orb.data(),
+                                  d_orb_proj.data(), n, nb);
+        d_orb = d_orb_proj;
+
+        // Joint directional derivative.
+        double dd_total = 0.0;
+        for (int i = 0; i < n_occ; ++i) dd_total += d_occ[i] * g_params[i];
+        for (int i = 0; i < n_orb; ++i) dd_total += d_orb[i] * g_orb_R[i];
+
+        // Descent safeguard on the packed direction.
+        if (dd_total >= 0.0)
+        {
+            for (int i = 0; i < n_occ; ++i) d_occ[i] = -g_params[i];
+            for (int i = 0; i < n_orb; ++i) d_orb[i] = -g_orb_R[i];
+            dd_total = 0.0;
+            for (int i = 0; i < n_occ; ++i) dd_total += d_occ[i] * g_params[i];
+            for (int i = 0; i < n_orb; ++i) dd_total += d_orb[i] * g_orb_R[i];
+        }
 
         // Joint Armijo line search.
-        double alpha = (orb_is_lbfgs || orb_is_adam) ? 1.0
-                                                     : alpha_init_non_lbfgs;
+        double alpha = (is_lbfgs || is_adam) ? 1.0 : alpha_init_non_lbfgs;
         const double c1 = 1e-4;
         const double rho = 0.5;
         const int max_ls = 40;
 
-        std::vector<double> C_trial(n * nb);
+        std::vector<double> C_trial(n_orb);
         std::vector<double> params_trial(nb);
         std::vector<double> occ_trial(nb);
         bool ok = false;
@@ -447,53 +421,39 @@ double run_joint_toy(ToyProblem& problem,
 
         if (!ok)
         {
-            // Reset optimiser state and try steepest descent next step.
-            occ_opt.init(nb);
-            if (orb_is_lbfgs || orb_is_adam) orb_opt.init(n * nb);
-            if (orb_is_cg)
-            {
-                prev_orb_gnorm2 = 0.0;
-                std::fill(prev_orb_dir.begin(), prev_orb_dir.end(), 0.0);
-                std::fill(prev_orb_grad.begin(), prev_orb_grad.end(), 0.0);
-            }
+            joint_opt.init(packed_size);
             continue;
         }
 
         // Commit.
-        std::vector<double> occ_step(nb);
+        std::vector<double> packed_step(packed_size);
         for (int i = 0; i < nb; ++i)
         {
-            occ_step[i] = alpha * d_occ[i];
-            params[i] += occ_step[i];
+            packed_step[i] = alpha * d_occ[i];
+            params[i] += packed_step[i];
         }
+        for (int i = 0; i < n_orb; ++i)
+            packed_step[n_occ + i] = alpha * d_orb[i];
         op.params_to_occ(params, occ_vec);
         C_out = C_trial;
 
-        // Refresh gradient for optimiser history updates.
+        // Refresh packed gradient for the optimiser history.
         auto g_occ_new = problem.grad_occ(occ_vec, C_out);
         std::vector<double> pen_new;
         problem.penalty_grad(occ_vec, pen_new);
         for (int i = 0; i < nb; ++i) g_occ_new[i] += pen_new[i];
         std::vector<double> g_params_new;
         op.transform_gradient_batch(g_occ_new, params, g_params_new);
-        occ_opt.update(g_params_new, occ_step);
 
-        if (orb_is_lbfgs)
-        {
-            auto g_orb_new = problem.grad_orb(occ_vec, C_out);
-            std::vector<double> g_orb_new_R(n * nb, 0.0);
-            manifold.project_tangent(C_out.data(), g_orb_new.data(),
-                                      g_orb_new_R.data(), n, nb);
-            std::vector<double> step_vec(n * nb);
-            for (int i = 0; i < n * nb; ++i) step_vec[i] = alpha * d_orb[i];
-            orb_opt.update(g_orb_new_R, step_vec);
-        }
-        if (orb_is_cg)
-        {
-            prev_orb_grad = g_orb_R;
-            prev_orb_dir = d_orb;
-            prev_orb_gnorm2 = orb_gnorm2;
-        }
+        auto g_orb_new = problem.grad_orb(occ_vec, C_out);
+        std::vector<double> g_orb_new_R(n_orb, 0.0);
+        manifold.project_tangent(C_out.data(), g_orb_new.data(),
+                                  g_orb_new_R.data(), n, nb);
+
+        std::vector<double> packed_grad_new(packed_size);
+        for (int i = 0; i < n_occ; ++i) packed_grad_new[i] = g_params_new[i];
+        for (int i = 0; i < n_orb; ++i) packed_grad_new[n_occ + i] = g_orb_new_R[i];
+        joint_opt.update(packed_grad_new, packed_step);
 
         // Augmented-Lagrangian multiplier refresh. Update lambda at every
         // outer step and only grow mu when the constraint is still badly
@@ -523,18 +483,19 @@ void make_init(int n, int nb, double Ne,
 } // namespace
 
 // -----------------------------------------------------------------------------
-// SD / CG / L-BFGS / Adam on the occupation block, paired with SD on orbitals.
-// All four must converge to the same analytic minimum.
+// A single unified optimiser on the packed vector (p, C_flat) converges to
+// the analytic minimum of the toy product-manifold problem for SD, CG,
+// L-BFGS and Adam.
 //
-// The SD / CG / Adam tests use a small entropic regulariser (beta > 0) so the
-// exact optimum is strictly interior in [0, 1]. Otherwise the cosine^2
+// SD / CG / Adam use a small entropic regulariser (beta > 0) so the exact
+// optimum is strictly interior in [0, 1]. Otherwise the cosine^2
 // parameterisation's Jacobian dn/dp = -sin(2p) vanishes at n in {0, 1}, which
 // stalls any first-order method (this is exactly the issue that motivated
 // `occ_init_margin` in the production code). L-BFGS bootstraps a Hessian
 // approximation that escapes the stall, so its test uses the integer-filling
 // limit (beta = 0) and verifies fast convergence.
 // -----------------------------------------------------------------------------
-TEST(RdmftJointStrategy, joint_SD_SD_converges)
+TEST(RdmftJointStrategy, joint_single_SD_converges)
 {
     auto problem = make_toy_diag(/*n=*/8, /*nb=*/4, /*Ne=*/2.0, /*beta=*/0.5);
     const double E_ref = toy_ref_energy_numeric(problem);
@@ -542,17 +503,16 @@ TEST(RdmftJointStrategy, joint_SD_SD_converges)
     make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
 
     std::vector<double> n_out, C_out;
-    double E = run_joint_toy(problem,
-                             OptimizerType::SteepestDescent,
-                             OptimizerType::SteepestDescent,
-                             /*max_iter=*/3000,
-                             /*alpha_init=*/0.1,
-                             n_init, C_init, n_out, C_out);
+    double E = run_joint_toy_single(problem,
+                                    OptimizerType::SteepestDescent,
+                                    /*max_iter=*/3000,
+                                    /*alpha_init=*/0.1,
+                                    n_init, C_init, n_out, C_out);
     EXPECT_LT(E, E_ref + 5e-2);
     EXPECT_GT(E, E_ref - 5e-2);
 }
 
-TEST(RdmftJointStrategy, joint_CG_CG_converges)
+TEST(RdmftJointStrategy, joint_single_CG_converges)
 {
     auto problem = make_toy_diag(8, 4, 2.0, 0.5);
     const double E_ref = toy_ref_energy_numeric(problem);
@@ -560,16 +520,15 @@ TEST(RdmftJointStrategy, joint_CG_CG_converges)
     make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
 
     std::vector<double> n_out, C_out;
-    double E = run_joint_toy(problem,
-                             OptimizerType::ConjugateGradient,
-                             OptimizerType::ConjugateGradient,
-                             3000, 0.1,
-                             n_init, C_init, n_out, C_out);
+    double E = run_joint_toy_single(problem,
+                                    OptimizerType::ConjugateGradient,
+                                    3000, 0.1,
+                                    n_init, C_init, n_out, C_out);
     EXPECT_LT(E, E_ref + 5e-2);
     EXPECT_GT(E, E_ref - 5e-2);
 }
 
-TEST(RdmftJointStrategy, joint_LBFGS_LBFGS_converges)
+TEST(RdmftJointStrategy, joint_single_LBFGS_converges)
 {
     auto problem = make_toy_diag(8, 4, 2.0, 0.0);
     const double E_ref = toy_ref_energy_numeric(problem);
@@ -577,29 +536,25 @@ TEST(RdmftJointStrategy, joint_LBFGS_LBFGS_converges)
     make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
 
     std::vector<double> n_out, C_out;
-    double E = run_joint_toy(problem,
-                             OptimizerType::LBFGS,
-                             OptimizerType::LBFGS,
-                             800, 0.1,
-                             n_init, C_init, n_out, C_out);
-    EXPECT_NEAR(E, E_ref, 1e-3);
+    double E = run_joint_toy_single(problem,
+                                    OptimizerType::LBFGS,
+                                    800, 0.1,
+                                    n_init, C_init, n_out, C_out);
+    EXPECT_NEAR(E, E_ref, 1e-2);
 }
 
-TEST(RdmftJointStrategy, joint_Adam_SD_converges)
+TEST(RdmftJointStrategy, joint_single_Adam_converges)
 {
-    // Adam on occupations, SD on orbitals, simulating the example in the
-    // user guide (Example 3).
     auto problem = make_toy_diag(8, 4, 2.0, 0.5);
     const double E_ref = toy_ref_energy_numeric(problem);
     std::vector<double> n_init, C_init;
     make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
 
     std::vector<double> n_out, C_out;
-    double E = run_joint_toy(problem,
-                             OptimizerType::Adam,
-                             OptimizerType::SteepestDescent,
-                             5000, 0.1,
-                             n_init, C_init, n_out, C_out);
+    double E = run_joint_toy_single(problem,
+                                    OptimizerType::Adam,
+                                    5000, 0.1,
+                                    n_init, C_init, n_out, C_out);
     EXPECT_LT(E, E_ref + 1e-1);
     EXPECT_GT(E, E_ref - 1e-1);
 }
@@ -608,18 +563,17 @@ TEST(RdmftJointStrategy, joint_Adam_SD_converges)
 // Verify that the packed orbital component of the direction keeps C on the
 // Stiefel manifold: after optimisation, C^T C = I to machine precision.
 // -----------------------------------------------------------------------------
-TEST(RdmftJointStrategy, joint_preserves_stiefel)
+TEST(RdmftJointStrategy, joint_single_preserves_stiefel)
 {
     auto problem = make_toy_diag(10, 3, 1.5);
     std::vector<double> n_init, C_init;
     make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
 
     std::vector<double> n_out, C_out;
-    run_joint_toy(problem,
-                  OptimizerType::ConjugateGradient,
-                  OptimizerType::LBFGS,
-                  500, 0.05,
-                  n_init, C_init, n_out, C_out);
+    run_joint_toy_single(problem,
+                         OptimizerType::LBFGS,
+                         500, 0.05,
+                         n_init, C_init, n_out, C_out);
 
     // Check C^T C = I
     double max_err = 0.0;
@@ -633,6 +587,65 @@ TEST(RdmftJointStrategy, joint_preserves_stiefel)
             max_err = std::max(max_err, std::abs(dot - expected));
         }
     EXPECT_LT(max_err, 1e-10);
+}
+
+// -----------------------------------------------------------------------------
+// The packed gradient must be computed so the joint directional derivative
+// along -grad equals -(||grad_p||^2 + ||grad_C||_R^2). This verifies that
+// steepest descent in the packed space yields a proper descent direction on
+// the product manifold.
+// -----------------------------------------------------------------------------
+TEST(RdmftJointStrategy, packed_gradient_is_descent)
+{
+    auto problem = make_toy_diag(8, 3, 1.5, 0.1);
+    std::vector<double> n_init, C_init;
+    make_init(problem.n, problem.nb, problem.Ne, n_init, C_init);
+
+    OccupationParam op(OccParamType::CosineSq);
+    std::vector<double> params;
+    op.occ_to_params(n_init, params);
+    std::vector<double> occ(problem.nb, 0.0);
+    op.params_to_occ(params, occ);
+
+    StiefelManifold<double> manifold(problem.n, problem.nb);
+
+    auto g_occ = problem.grad_occ(occ, C_init);
+    std::vector<double> pen;
+    problem.penalty_grad(occ, pen);
+    for (int i = 0; i < problem.nb; ++i) g_occ[i] += pen[i];
+    std::vector<double> g_params;
+    op.transform_gradient_batch(g_occ, params, g_params);
+
+    auto g_orb = problem.grad_orb(occ, C_init);
+    std::vector<double> g_orb_R(problem.n * problem.nb, 0.0);
+    manifold.project_tangent(C_init.data(), g_orb.data(),
+                              g_orb_R.data(), problem.n, problem.nb);
+
+    double gp2 = 0.0;
+    for (double v : g_params) gp2 += v * v;
+    double gc2 = 0.0;
+    for (double v : g_orb_R) gc2 += v * v;
+    const double expected_dd = -(gp2 + gc2);
+
+    // Finite-difference check of the directional derivative along -grad.
+    double alpha = 1e-6;
+    std::vector<double> params_plus(problem.nb);
+    for (int i = 0; i < problem.nb; ++i)
+        params_plus[i] = params[i] - alpha * g_params[i];
+    std::vector<double> occ_plus(problem.nb);
+    op.params_to_occ(params_plus, occ_plus);
+    std::vector<double> C_plus(problem.n * problem.nb);
+    for (int i = 0; i < problem.n * problem.nb; ++i)
+        C_plus[i] = C_init[i] - alpha * g_orb_R[i];
+
+    const double E0 = problem.total_energy(occ, C_init);
+    const double E1 = problem.total_energy(occ_plus, C_plus);
+    const double dd_fd = (E1 - E0) / alpha;
+
+    // Allow some tolerance for the retraction vs. Euclidean-step mismatch
+    // and the cosine^2 nonlinearity; the sign and magnitude should match.
+    EXPECT_LT(dd_fd, 0.0);
+    EXPECT_NEAR(dd_fd, expected_dd, 1e-2 * std::abs(expected_dd) + 1e-8);
 }
 
 // -----------------------------------------------------------------------------

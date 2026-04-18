@@ -438,28 +438,40 @@ $\eta^{\mathbf{k}} \in T_{C^{\mathbf{k}}} \mathrm{St}$.
 
 Retraction: apply Euclidean update to $\boldsymbol{\theta}$ and Stiefel retraction to each $C^{\mathbf{k}}$.
 
-In the implementation (`rdmft_solver.cpp::solve_joint`), each outer iteration:
+In the implementation (`rdmft_solver.cpp::solve_joint`), the occupation
+parameters and orbital coefficients are packed into **one** vector
+$z = (\,p\,,\,\mathrm{flat}(C^1), \ldots, \mathrm{flat}(C^{N_k})\,)$ and a
+**single** Euclidean optimiser, selected via the `rdmft_joint_optimizer`
+keyword (default L-BFGS), drives its evolution. Each outer iteration:
 
-1. evaluates the energy $E$ and gradients $(\nabla_p E, \nabla_C E)$;
-2. projects $\nabla_C E$ onto the Stiefel tangent space at $C^{\mathbf{k}}$;
-3. asks the configured `rdmft_occ_optimizer` for a descent direction in the
-   occupation parameter block and the configured `rdmft_orb_optimizer` for a
-   descent direction in the orbital block (with a descent-direction safeguard
-   that falls back to steepest descent);
-4. computes the directional derivative of the total (augmented) energy along
-   the packed direction
-   $dd_{\text{total}} = \langle \nabla_p, d_p\rangle + \langle \nabla_C, d_C\rangle_S$;
+1. evaluates the energy $E$ and Euclidean gradients $(\nabla_n E, \nabla_C E)$;
+2. chain-rules $\nabla_n E \to \nabla_p E$ through the occupation
+   parameterisation, and projects $\nabla_C E$ onto the Stiefel tangent space
+   at $C^{\mathbf{k}}$ to obtain $G_R^{\mathbf{k}}$;
+3. packs the gradient as $g = (\nabla_p E,\,\mathrm{flat}(G_R^1), \ldots)$
+   and asks the single unified optimiser for a packed descent direction
+   $d = (d_p, \mathrm{flat}(d_{C^1}), \ldots)$;
+4. re-projects each orbital block $d_{C^{\mathbf{k}}}$ onto the tangent space
+   at the current $C^{\mathbf{k}}$ (necessary because Euclidean preconditioners
+   used by L-BFGS / Adam generally leave the tangent space) and falls back to
+   the packed steepest-descent direction $d = -g$ if the joint directional
+   derivative
+   $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
+   is not negative;
 5. performs a single Armijo backtracking line search along the packed
    direction: the occupation parameters are updated linearly
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
-   $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_C)$;
-6. refreshes the optimiser state (L-BFGS (s, y) history, Adam moments, CG
-   vector transport) and updates the augmented-Lagrangian multiplier.
+   $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_{C^{\mathbf{k}}})$;
+6. builds the new packed gradient at the step's end-point and feeds
+   $(g_\text{new}, \alpha\, d)$ to the unified optimiser's `update()`, so its
+   history (L-BFGS $(s,y)$ pairs, Adam moments, CG previous gradient) is
+   updated once with a coherent product-manifold view; then refreshes the
+   augmented-Lagrangian multiplier.
 
 This is precisely Riemannian optimisation on the product manifold
-$\mathcal{M}$ with a shared line search, rather than two independent block
-updates.
+$\mathcal{M}$ with a single shared optimiser and line search, rather than
+two independent block updates.
 
 ---
 
