@@ -670,8 +670,8 @@ struct Input_para
     std::string rdmft_solver_strategy = "alternating"; // alternating or product_manifold
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
     std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
-    int rdmft_max_iter = 200;                       // maximum number of outer iterations
-    int rdmft_max_inner_iter = 50;                  // maximum inner iterations per sub-problem
+    int rdmft_orb_maxiter = 200;                    // maximum number of orbital outer iterations
+    int rdmft_occ_maxiter = 50;                     // maximum occupation iterations per outer step
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
     double rdmft_grad_tol = 1e-6;                  // convergence threshold on gradient norm
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic

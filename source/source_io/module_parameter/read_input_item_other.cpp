@@ -947,27 +947,27 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_max_iter");
-        item.annotation = "Maximum number of outer RDMFT iterations";
+        Input_Item item("rdmft_orb_maxiter");
+        item.annotation = "Maximum number of outer RDMFT orbital iterations";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
         item.description = "Maximum number of outer iterations (alternating cycles or product-manifold steps).";
         item.default_value = "200";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_int(input.rdmft_max_iter);
+        read_sync_int(input.rdmft_orb_maxiter);
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_max_inner_iter");
-        item.annotation = "Maximum inner iterations per RDMFT sub-problem";
+        Input_Item item("rdmft_occ_maxiter");
+        item.annotation = "Maximum occupation iterations per RDMFT outer step";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Maximum iterations per occupation or orbital sub-problem within one outer step.";
+        item.description = "Maximum iterations for the occupation sub-problem within one outer step.";
         item.default_value = "50";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_int(input.rdmft_max_inner_iter);
+        read_sync_int(input.rdmft_occ_maxiter);
         this->add_item(item);
     }
     {

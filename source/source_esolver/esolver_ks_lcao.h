@@ -101,6 +101,8 @@ class ESolver_KS_LCAO : public ESolver_KS
     //! Energy/gradient oracle for the new RDMFT optimisation engine
     rdmft::EnergyGradient<TK, TR> rdmft_eg;
     bool rdmft_eg_initialized = false;
+    /// Set after first lazy init in after_scf (post-KS); before_scf must not call update_ion until true.
+    bool rdmft_module_initialized = false;
   #endif
 
     //! For linear-response TDDFT

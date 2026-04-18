@@ -6,7 +6,7 @@ symmetry         1
 
 #Parameters (2.Iteration)
 scf_thr          1e-5
-scf_nmax         50
+scf_nmax         10
 cal_force        0
 cal_stress       0
 
@@ -46,8 +46,8 @@ rdmft_functional       muller
 rdmft_solver_strategy  alternating
 rdmft_occ_optimizer    cg
 rdmft_orb_optimizer    cg
-rdmft_max_iter         20
-rdmft_max_inner_iter   20
+rdmft_orb_maxiter      20
+rdmft_occ_maxiter      20
 rdmft_energy_tol       1e-6
 
 # Power-functional exponent alpha (0<alpha<1). For hf and muller this

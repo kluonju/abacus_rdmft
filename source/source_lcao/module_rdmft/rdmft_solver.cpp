@@ -4,15 +4,49 @@
 
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <cmath>
 #include <algorithm>
-#include <numeric>
 #include <cassert>
 #include <memory>
 #include <type_traits>
 
 namespace rdmft
 {
+namespace
+{
+void log_occ_inner_line(const std::string& line)
+{
+    GlobalV::ofs_running << line << std::endl;
+    std::cout << line << std::endl;
+}
+
+/// One summary line, then per-ik lines listing each n(ik,ib) and step change dn from the
+/// previous inner-iteration start (occ_prev_for_dn empty => first step, dn = 0).
+void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
+                                     const std::vector<double>& occ_flat,
+                                     const std::vector<double>& occ_prev_for_dn,
+                                     const int nk,
+                                     const int nbands)
+{
+    log_occ_inner_line(summary_first_line);
+    const bool have_prev = (occ_prev_for_dn.size() == occ_flat.size());
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        std::ostringstream row;
+        row << "        ik=" << ik;
+        for (int ib = 0; ib < nbands; ++ib)
+        {
+            const int idx = ik * nbands + ib;
+            const double n = occ_flat[idx];
+            const double dn = have_prev ? (n - occ_prev_for_dn[idx]) : 0.0;
+            row << "  n(" << ik << "," << ib << ")=" << std::fixed << std::setprecision(8) << n
+                << " dn=" << dn;
+        }
+        log_occ_inner_line(row.str());
+    }
+}
+} // namespace
 
 // Helper to get |x|^2 for both real and complex types
 inline double abs2(double x) { return x * x; }
@@ -198,7 +232,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double E_prev = 1e30;
     double E = 0.0;
 
-    for (int iter = 0; iter < config_.max_iter; ++iter)
+    for (int iter = 0; iter < config_.orb_maxiter; ++iter)
     {
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
@@ -276,7 +310,7 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
     double E_prev = 1e30;
     double E = 0.0;
 
-    for (int iter = 0; iter < config_.max_iter; ++iter)
+    for (int iter = 0; iter < config_.orb_maxiter; ++iter)
     {
         // Convert params -> occupations
         occ_param_->params_to_occ(params, occ_flat);
@@ -422,15 +456,27 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             EuclideanOptimizer opt(config_.occ_optimizer, config_);
             opt.init(params.size());
 
-            for (int inner = 0; inner < config_.max_inner_iter; ++inner)
+            double L_prev = 0.0;
+            bool have_L_prev = false;
+            std::vector<double> occ_snap_start;
+
+            for (int inner = 0; inner < config_.occ_maxiter; ++inner)
             {
                 occ_param_->params_to_occ(params, occ_flat);
 
+                const std::vector<double> occ_prev_for_dn = occ_snap_start;
+                occ_snap_start = occ_flat;
+
                 std::vector<double> grad_occ;
                 psi::Psi<TK> grad_wfc_dummy;
-                double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                                  grad_occ, grad_wfc_dummy);
-                E += occ_constraint_->augmented_lagrangian_penalty(occ_flat);
+                const double E_phys = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                                              grad_occ, grad_wfc_dummy);
+                const double c = occ_constraint_->constraint_violation(occ_flat);
+                const double pen = occ_constraint_->augmented_lagrangian_penalty(occ_flat);
+                const double L = E_phys + pen;
+                const double dL = have_L_prev ? (L - L_prev) : 0.0;
+                L_prev = L;
+                have_L_prev = true;
 
                 std::vector<double> penalty_grad;
                 occ_constraint_->augmented_lagrangian_gradient(occ_flat, penalty_grad);
@@ -444,15 +490,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 for (auto g : grad_params) result.grad_norm += g * g;
                 result.grad_norm = std::sqrt(result.grad_norm);
 
-                GlobalV::ofs_running << "      occ inner " << inner + 1
-                    << "  E=" << std::fixed << std::setprecision(10) << E
-                    << "  gnorm=" << std::scientific << result.grad_norm << std::endl;
+                {
+                    std::ostringstream os;
+                    os << "      occ inner " << (inner + 1) << "  E_phys=" << std::fixed
+                       << std::setprecision(10) << E_phys << "  L_aug=" << L << "  dL=" << std::scientific
+                       << dL << "  |c|=" << std::abs(c) << "  gnorm=" << result.grad_norm;
+                    log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
 
                 if (result.grad_norm < config_.grad_tol)
                 {
                     result.converged = true;
                     result.iterations = inner + 1;
-                    result.final_energy = E;
+                    result.final_energy = L;
                     break;
                 }
 
@@ -475,7 +525,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     return Et;
                 };
 
-                auto ls = armijo_line_search(f_at_step, E, dd,
+                auto ls = armijo_line_search(f_at_step, L, dd,
                     config_.line_search_alpha_init, config_.line_search_c1,
                     config_.line_search_rho, config_.line_search_max_iter);
 
@@ -508,18 +558,44 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
         case ConstraintMethod::ProjectedGradient:
         {
-            for (int inner = 0; inner < config_.max_inner_iter; ++inner)
+            std::vector<double> occ_snap_start;
+            double E_prev = 0.0;
+            bool have_E_prev = false;
+
+            for (int inner = 0; inner < config_.occ_maxiter; ++inner)
             {
+                const std::vector<double> occ_prev_for_dn = occ_snap_start;
+                occ_snap_start = occ_flat;
+
                 std::vector<double> grad_occ;
                 psi::Psi<TK> grad_wfc_dummy;
-                double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                                  grad_occ, grad_wfc_dummy);
+                const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                                       grad_occ, grad_wfc_dummy);
+
+                const double c_abs = std::abs(occ_constraint_->constraint_violation(occ_flat));
+                const double dE = have_E_prev ? (E - E_prev) : 0.0;
+                E_prev = E;
+                have_E_prev = true;
 
                 result.grad_norm = 0.0;
                 for (auto g : grad_occ) result.grad_norm += g * g;
                 result.grad_norm = std::sqrt(result.grad_norm);
 
-                if (result.grad_norm < config_.grad_tol) break;
+                {
+                    std::ostringstream os;
+                    os << "      occ inner " << (inner + 1) << "  E=" << std::fixed
+                       << std::setprecision(10) << E << "  dE=" << std::scientific << dE
+                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm;
+                    log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (result.grad_norm < config_.grad_tol)
+                {
+                    result.converged = true;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    break;
+                }
 
                 double step = config_.line_search_alpha_init;
                 for (size_t i = 0; i < occ_flat.size(); ++i)
@@ -534,21 +610,47 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
         case ConstraintMethod::ActiveSet:
         {
-            for (int inner = 0; inner < config_.max_inner_iter; ++inner)
+            std::vector<double> occ_snap_start;
+            double E_prev = 0.0;
+            bool have_E_prev = false;
+
+            for (int inner = 0; inner < config_.occ_maxiter; ++inner)
             {
+                const std::vector<double> occ_prev_for_dn = occ_snap_start;
+                occ_snap_start = occ_flat;
+
                 std::vector<double> grad_occ;
                 psi::Psi<TK> grad_wfc_dummy;
-                double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                                  grad_occ, grad_wfc_dummy);
+                const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                                       grad_occ, grad_wfc_dummy);
 
                 auto as_info = occ_constraint_->identify_active_set(occ_flat, grad_occ);
                 occ_constraint_->apply_active_set(as_info, grad_occ);
+
+                const double c_abs = std::abs(occ_constraint_->constraint_violation(occ_flat));
+                const double dE = have_E_prev ? (E - E_prev) : 0.0;
+                E_prev = E;
+                have_E_prev = true;
 
                 result.grad_norm = 0.0;
                 for (auto g : grad_occ) result.grad_norm += g * g;
                 result.grad_norm = std::sqrt(result.grad_norm);
 
-                if (result.grad_norm < config_.grad_tol) break;
+                {
+                    std::ostringstream os;
+                    os << "      occ inner " << (inner + 1) << "  E=" << std::fixed
+                       << std::setprecision(10) << E << "  dE=" << std::scientific << dE
+                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm;
+                    log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (result.grad_norm < config_.grad_tol)
+                {
+                    result.converged = true;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    break;
+                }
 
                 double step = config_.line_search_alpha_init;
                 for (size_t i = 0; i < occ_flat.size(); ++i)
@@ -616,7 +718,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
     double prev_gnorm2 = 0.0;
 
-    for (int inner = 0; inner < config_.max_inner_iter; ++inner)
+    for (int inner = 0; inner < config_.occ_maxiter; ++inner)
     {
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;

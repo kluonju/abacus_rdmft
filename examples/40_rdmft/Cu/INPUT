@@ -36,6 +36,6 @@ rdmft_power_alpha 0.656
 rdmft_solver_strategy   alternating
 rdmft_occ_optimizer     cg
 rdmft_orb_optimizer     cg
-rdmft_max_iter          100
+rdmft_orb_maxiter       100
 rdmft_energy_tol        1e-7
 

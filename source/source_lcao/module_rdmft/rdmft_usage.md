@@ -115,8 +115,8 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_max_iter` | int | `200` | Maximum number of outer iterations (alternating cycles or product-manifold steps). |
-| `rdmft_max_inner_iter` | int | `50` | Maximum iterations per occupation or orbital sub-problem within one outer step. |
+| `rdmft_orb_maxiter` | int | `200` | Maximum number of outer iterations (alternating cycles or product-manifold steps). |
+| `rdmft_occ_maxiter` | int | `50` | Maximum iterations for the occupation sub-problem within one outer step. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
 | `rdmft_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
 
@@ -150,7 +150,7 @@ rdmft               1
 rdmft_solver_strategy   alternating
 rdmft_occ_optimizer     cg
 rdmft_orb_optimizer     cg
-rdmft_max_iter          100
+rdmft_orb_maxiter          100
 rdmft_energy_tol        1e-7
 ```
 
@@ -172,7 +172,7 @@ rdmft_solver_strategy   alternating
 rdmft_occ_optimizer     lbfgs
 rdmft_orb_optimizer     lbfgs
 rdmft_lbfgs_memory      20
-rdmft_max_iter          200
+rdmft_orb_maxiter          200
 rdmft_energy_tol        1e-8
 rdmft_grad_check        1
 ```
@@ -198,7 +198,7 @@ rdmft_occ_optimizer     adam
 rdmft_orb_optimizer     sd
 rdmft_adam_lr            0.005
 rdmft_alpha_step         0.01
-rdmft_max_iter           300
+rdmft_orb_maxiter           300
 ```
 
 Here occupations and orbitals are optimised simultaneously on the product
@@ -219,7 +219,7 @@ rdmft_power_alpha       0.656
 rdmft_constraint        projected_gradient
 rdmft_occ_optimizer     sd
 rdmft_orb_optimizer     cg
-rdmft_max_iter          150
+rdmft_orb_maxiter          150
 ```
 
 For gamma-only calculations all matrices are real (`double`), which is
@@ -321,6 +321,6 @@ The shipped `INPUT` uses the pseudopotential's native LDA for the KS-SCF
 and `rdmft_functional muller` for the RDMFT stage.  On a single MPI rank
 the first ≈2 min are spent initialising LibRI for the RDMFT Fock operator,
 then the KS-SCF converges in ~25 iterations and the RDMFT alternating
-CG optimisation runs for `rdmft_max_iter` outer steps, printing
+CG optimisation runs for `rdmft_orb_maxiter` outer steps, printing
 intermediate occupation and orbital sub-problem progress before writing
 the final `Etotal_RDMFT` and `!FINAL_ETOT_IS` lines.

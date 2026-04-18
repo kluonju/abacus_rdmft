@@ -90,26 +90,6 @@ void ESolver_KS_LCAO<TK, TR>::before_all_runners(UnitCell& ucell, const Input_pa
     //! if kpar is not divisible by nks, print a warning
     ModuleIO::print_kpar(this->kv.get_nks(), PARAM.globalv.kpar_lcao);
 
-#ifdef __RDMFT
-    //! init rdmft, added by jghan
-    if (inp.rdmft == true)
-    {
-        rdmft_solver.init(this->pv, ucell,
-          this->gd, this->kv, *(this->pelec), this->orb_,
-          two_center_bundle_, inp.dft_functional, inp.rdmft_power_alpha);
-
-        // Init new RDMFT energy/gradient engine when rdmft_functional is specified
-        if (!inp.rdmft_functional.empty())
-        {
-            rdmft::XCFunctionalType xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
-            rdmft::XCFunctional xc_func(xc_type, inp.rdmft_power_alpha);
-            rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv,
-                          this->pelec, &this->orb_, &two_center_bundle_, xc_func);
-            rdmft_eg_initialized = true;
-        }
-    }
-#endif
-
     ModuleBase::timer::end("ESolver_KS_LCAO", "before_all_runners");
     return;
 }
@@ -219,8 +199,8 @@ void ESolver_KS_LCAO<TK, TR>::before_scf(UnitCell& ucell, const int istep)
     Symmetry_rho::symmetrize_rho(PARAM.inp.nspin, this->chr, this->pw_rho, ucell.symm);
 
 #ifdef __RDMFT
-    // 17) update of RDMFT, added by jghan
-    if (PARAM.inp.rdmft == true)
+    // 17) update of RDMFT (only after first init in after_scf, post-KS)
+    if (PARAM.inp.rdmft == true && this->rdmft_module_initialized)
     {
         rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
         if (rdmft_eg_initialized)
@@ -525,6 +505,32 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
     //! 1) call after_scf() of ESolver_KS
     ESolver_KS::after_scf(ucell, istep, conv_esolver);
 
+#ifdef __RDMFT
+    //! Lazy-init RDMFT after KS has finished for this SCF (not in before_all_runners).
+    if (PARAM.inp.rdmft == true && !this->rdmft_module_initialized)
+    {
+        const Input_para& inp_rdmft = PARAM.inp;
+        this->rdmft_solver.init(this->pv, ucell, this->gd, this->kv, *(this->pelec), this->orb_,
+                                two_center_bundle_, inp_rdmft.dft_functional, inp_rdmft.rdmft_power_alpha);
+        if (!inp_rdmft.rdmft_functional.empty())
+        {
+            const rdmft::XCFunctionalType xc_type = rdmft::parse_xc_type(inp_rdmft.rdmft_functional);
+            const rdmft::XCFunctional xc_func(xc_type, inp_rdmft.rdmft_power_alpha);
+            this->rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv, this->pelec, &this->orb_,
+                                &two_center_bundle_, xc_func);
+            this->rdmft_eg_initialized = true;
+        }
+        // Build ion-dependent one-body terms and set EnergyGradient::ion_initialized_ (was skipped in
+        // before_scf because rdmft_module_initialized was false until now).
+        this->rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+        if (this->rdmft_eg_initialized)
+        {
+            this->rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+        }
+        this->rdmft_module_initialized = true;
+    }
+#endif
+
     //! 1.5) Run RDMFT optimization when the new engine is active
     if (rdmft_eg_initialized && this->psi != nullptr)
     {
@@ -556,8 +562,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft::RDMFTConfig rdmft_config;
         rdmft_config.xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
-        rdmft_config.max_iter = inp.rdmft_max_iter;
-        rdmft_config.max_inner_iter = inp.rdmft_max_inner_iter;
+        rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
+        rdmft_config.occ_maxiter = inp.rdmft_occ_maxiter;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.grad_tol = inp.rdmft_grad_tol;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;

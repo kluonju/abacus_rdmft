@@ -79,8 +79,8 @@ struct RDMFTConfig
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
-    int max_iter = 200;
-    int max_inner_iter = 50;
+    int orb_maxiter = 200;
+    int occ_maxiter = 50;
     double energy_tol = 1e-8;
     double grad_tol = 1e-6;
 
