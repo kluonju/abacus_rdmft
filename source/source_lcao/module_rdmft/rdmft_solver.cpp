@@ -18,7 +18,6 @@ namespace
 void log_occ_inner_line(const std::string& line)
 {
     GlobalV::ofs_running << line << std::endl;
-    std::cout << line << std::endl;
 }
 
 /// One summary line, then per-ik lines listing each n(ik,ib) and step change dn from the
@@ -170,10 +169,22 @@ double RDMFTSolver<TK, TR>::solve(
     const double m = config_.occ_init_margin;
     if (m > 0.0 && m < 0.5)
     {
-        for (auto& n : occ_flat) n = std::max(m, std::min(1.0 - m, n));
+        // occ_init_nbands_top == 0: all bands (legacy). K > 0: only top K bands per k.
+        const int K_cfg = config_.occ_init_nbands_top;
+        const int K_eff = (K_cfg == 0) ? nbands_ : std::min(K_cfg, nbands_);
+        const int ib_min_target = nbands_ - K_eff;
+
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            for (int ib = ib_min_target; ib < nbands_; ++ib)
+            {
+                double& n = occ_flat[ik * nbands_ + ib];
+                n = std::max(m, std::min(1.0 - m, n));
+            }
+        }
 
         // Re-scale to restore the electron-number constraint  sum wk n = Ne.
-        // Only scale values in (m, 1-m); values at the clamped boundaries are
+        // Only scale target-band values in (m, 1-m); values at the clamped boundaries are
         // held fixed so they stay feasible under a uniform rescale.
         double current = 0.0;
         double free_sum = 0.0;
@@ -184,7 +195,10 @@ double RDMFTSolver<TK, TR>::solve(
             {
                 const double n = occ_flat[ik * nbands_ + ib];
                 current += wk * n;
-                if (n > m && n < 1.0 - m) free_sum += wk * n;
+                if (ib >= ib_min_target && n > m && n < 1.0 - m)
+                {
+                    free_sum += wk * n;
+                }
             }
         }
         const double delta = n_electrons_ - current;
@@ -193,7 +207,7 @@ double RDMFTSolver<TK, TR>::solve(
             const double scale = (free_sum + delta) / free_sum;
             for (int ik = 0; ik < nk_; ++ik)
             {
-                for (int ib = 0; ib < nbands_; ++ib)
+                for (int ib = ib_min_target; ib < nbands_; ++ib)
                 {
                     double& n = occ_flat[ik * nbands_ + ib];
                     if (n > m && n < 1.0 - m)
@@ -226,13 +240,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
-    std::cout << "\n===== RDMFT Alternating Optimization =====" << std::endl;
     GlobalV::ofs_running << "\n===== RDMFT Alternating Optimization =====" << std::endl;
 
     double E_prev = 1e30;
     double E = 0.0;
 
-    for (int iter = 0; iter < config_.orb_maxiter; ++iter)
+    for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
@@ -293,7 +306,6 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
     std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
-    std::cout << "\n===== RDMFT Product Manifold Optimization =====" << std::endl;
     GlobalV::ofs_running << "\n===== RDMFT Product Manifold Optimization =====" << std::endl;
 
     // Convert occupations to unconstrained parameters
@@ -310,7 +322,7 @@ double RDMFTSolver<TK, TR>::solve_product_manifold(
     double E_prev = 1e30;
     double E = 0.0;
 
-    for (int iter = 0; iter < config_.orb_maxiter; ++iter)
+    for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
         // Convert params -> occupations
         occ_param_->params_to_occ(params, occ_flat);
@@ -718,7 +730,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
     double prev_gnorm2 = 0.0;
 
-    for (int inner = 0; inner < config_.occ_maxiter; ++inner)
+    for (int inner = 0; inner < config_.orb_maxiter; ++inner)
     {
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;

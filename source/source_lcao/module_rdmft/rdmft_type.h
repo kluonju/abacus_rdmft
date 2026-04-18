@@ -79,7 +79,11 @@ struct RDMFTConfig
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
-    int orb_maxiter = 200;
+    /// Outer alternating / product-manifold cycles (occ then orb per cycle).
+    int outer_maxiter = 200;
+    /// Inner iterations for optimize_orbitals (fixed occupations).
+    int orb_maxiter = 50;
+    /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
     double energy_tol = 1e-8;
     double grad_tol = 1e-6;
@@ -115,6 +119,8 @@ struct RDMFTConfig
     /// Use 0.0 to disable; default 1e-3 is small enough to leave the
     /// physical answer unchanged once the optimiser converges.
     double occ_init_margin = 1e-3;
+    /// 0: clamp/rescale all bands. K>0: only bands ib >= nbands-K (per k). Default 5 in INPUT.
+    int occ_init_nbands_top = 5;
 };
 
 } // namespace rdmft

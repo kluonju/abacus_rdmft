@@ -3,6 +3,7 @@ INPUT_PARAMETERS
 #suffix           autotest
 calculation      scf
 symmetry         1
+#gamma_only   1
 
 #Parameters (2.Iteration)
 scf_thr          1e-5
@@ -46,8 +47,9 @@ rdmft_functional       muller
 rdmft_solver_strategy  alternating
 rdmft_occ_optimizer    cg
 rdmft_orb_optimizer    cg
-rdmft_orb_maxiter      20
-rdmft_occ_maxiter      20
+rdmft_outer_maxiter    20
+rdmft_occ_maxiter      50
+rdmft_orb_maxiter      10
 rdmft_energy_tol       1e-6
 
 # Power-functional exponent alpha (0<alpha<1). For hf and muller this

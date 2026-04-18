@@ -20,4 +20,4 @@ export OMPI_MCA_btl_vader_single_copy_mechanism=none
 export PATH=/home/kluo/Documents/repo/abacus-develop/build:$PATH
 ABACUS=${ABACUS:-abacus_3p}
 
-mpirun -np ${NP:-4} ${ABACUS} | tee log
+mpirun -np ${NP:-8} ${ABACUS} | tee log

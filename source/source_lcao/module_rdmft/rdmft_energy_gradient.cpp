@@ -73,6 +73,16 @@ inline char trans_char(double) { return 'T'; }
 inline char trans_char(std::complex<double>) { return 'C'; }
 } // namespace detail
 
+namespace {
+/// Threshold below which multiplicative weights (n, g(n)) are treated as zero.
+constexpr double rdmft_occ_weight_eps = 1e-12;
+/// Skip multiplicative contributions when |weight| is negligible (e.g. |n| < eps).
+inline bool rdmft_skip_occ_weight(double x)
+{
+    return std::fabs(x) < rdmft_occ_weight_eps;
+}
+} // namespace
+
 // ---- Forward declarations for Veff_rdmft (local to this TU) ----
 template <typename TK, typename TR>
 class Veff_rdmft_local : public hamilt::OperatorLCAO<TK, TR>
@@ -508,11 +518,16 @@ void EnergyGradient<TK, TR>::build_DM_xc(
 {
     DM_XC.resize(nk_, std::vector<TK>(ParaV_->nloc, TK(0)));
 
-    // Build wk_g matrix: wk[ik] * g(n(ik, ib))
+    // Build wk_g matrix: wk[ik] * g(n(ik, ib)). Bands with g(n)=0 do not enter the XC density matrix.
     ModuleBase::matrix wk_g(nk_, nbands_);
     for (int ik = 0; ik < nk_; ++ik)
+    {
         for (int ib = 0; ib < nbands_; ++ib)
-            wk_g(ik, ib) = kv_->wk[ik] * xc_func_.g(occ_flat[ik * nbands_ + ib]);
+        {
+            const double gn = xc_func_.g(occ_flat[ik * nbands_ + ib]);
+            wk_g(ik, ib) = rdmft_skip_occ_weight(gn) ? 0.0 : kv_->wk[ik] * gn;
+        }
+    }
 
     // DM_XC(k) = sum_i wk*g(n_i) * conj(C_i) * C_i^T
     // Using psiMulPsi with the modified weights
@@ -626,6 +641,7 @@ inline double real_of_conj_prod(std::complex<double> a, std::complex<double> b)
     // Re(conj(a) * b)
     return a.real() * b.real() + a.imag() * b.imag();
 }
+
 } // namespace
 
 template <typename TK, typename TR>
@@ -1002,14 +1018,20 @@ double EnergyGradient<TK, TR>::compute(
 
         double wk = kv_->wk[ik];
 
-        // Accumulate energies
+        // Accumulate energies (skip terms that are identically zero when n=0 or g(n)=0)
         for (int ib = 0; ib < nbands_; ++ib)
         {
-            double n = occ_flat[ik * nbands_ + ib];
-            double gn = xc_func_.g(n);
-            E_one_ += wk * n * h_one_diag[ib];
-            E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
-            E_xc_ += wk * gn * vx_diag[ib] * 0.5;     // factor 1/2 for exchange
+            const double n = occ_flat[ik * nbands_ + ib];
+            const double gn = xc_func_.g(n);
+            if (!rdmft_skip_occ_weight(n))
+            {
+                E_one_ += wk * n * h_one_diag[ib];
+                E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
+            }
+            if (!rdmft_skip_occ_weight(gn))
+            {
+                E_xc_ += wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
+            }
         }
 
         // Occupation gradient: dE/dn_ik
@@ -1022,13 +1044,20 @@ double EnergyGradient<TK, TR>::compute(
         }
 
         // Orbital gradient: dE/dC*(ik) = wk * [n * (H_one + V_H) * C + g(n) * H_exx * C]
+        // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {
             int ib_global = ParaV_->local2global_col(ib_local);
             if (ib_global >= nbands_) continue;
 
-            double n = occ_flat[ik * nbands_ + ib_global];
-            double gn = xc_func_.g(n);
+            const double n = occ_flat[ik * nbands_ + ib_global];
+            const double gn = xc_func_.g(n);
+            const bool use_one_hart = !rdmft_skip_occ_weight(n);
+            const bool use_exx = !rdmft_skip_occ_weight(gn);
+            if (!use_one_hart && !use_exx)
+            {
+                continue;
+            }
 
             TK* grad_ptr = &grad_wfc(ik, ib_local, 0);
             const TK* hone_ptr = &Hpsi_one[ib_local * nbs_local];
@@ -1037,7 +1066,16 @@ double EnergyGradient<TK, TR>::compute(
 
             for (int mu = 0; mu < nbs_local; ++mu)
             {
-                grad_ptr[mu] = wk * (n * (hone_ptr[mu] + hh_ptr[mu]) + gn * hx_ptr[mu]);
+                TK acc = TK(0);
+                if (use_one_hart)
+                {
+                    acc += TK(n) * (hone_ptr[mu] + hh_ptr[mu]);
+                }
+                if (use_exx)
+                {
+                    acc += TK(gn) * hx_ptr[mu];
+                }
+                grad_ptr[mu] = wk * acc;
             }
         }
     }
@@ -1196,11 +1234,17 @@ double EnergyGradient<TK, TR>::compute_energy(
         double wk = kv_->wk[ik];
         for (int ib = 0; ib < nbands_; ++ib)
         {
-            double n = occ_flat[ik * nbands_ + ib];
-            double gn = xc_func_.g(n);
-            E_one_ += wk * n * cached_h_one_diag_[ik][ib];
-            E_hartree_ += wk * n * vh_diag[ib] * 0.5;
-            E_xc_ += wk * gn * vx_diag[ib] * 0.5;
+            const double n = occ_flat[ik * nbands_ + ib];
+            const double gn = xc_func_.g(n);
+            if (!rdmft_skip_occ_weight(n))
+            {
+                E_one_ += wk * n * cached_h_one_diag_[ik][ib];
+                E_hartree_ += wk * n * vh_diag[ib] * 0.5;
+            }
+            if (!rdmft_skip_occ_weight(gn))
+            {
+                E_xc_ += wk * gn * vx_diag[ib] * 0.5;
+            }
         }
     }
 

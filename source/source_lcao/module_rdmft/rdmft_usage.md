@@ -115,10 +115,19 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_orb_maxiter` | int | `200` | Maximum number of outer iterations (alternating cycles or product-manifold steps). |
-| `rdmft_occ_maxiter` | int | `50` | Maximum iterations for the occupation sub-problem within one outer step. |
+| `rdmft_outer_maxiter` | int | `200` | Maximum **outer** RDMFT cycles: each cycle is one occupation optimisation plus one orbital optimisation (`alternating`), or one joint product-manifold step (`product_manifold`). |
+| `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
+| `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
 | `rdmft_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
+
+### Initial KS occupation adjustment
+
+Before RDMFT optimisation starts, occupations may be pushed slightly away from 0 and 1 (margin `m` in `RDMFTConfig`, default `1e-3`) so the cosine-squared / logistic parameterisation has a non-vanishing Jacobian at the KS seed. By default only the **highest** bands are perturbed; lower bands keep the KS values.
+
+| Keyword | Type | Default | Description |
+|---------|------|---------|-------------|
+| `rdmft_occ_init_nbands_top` | int | `5` | Number of **highest** bands (per k-point) that receive the `[m, 1−m]` clamp and participate in the electron-count rescaling. Bands with index `ib < nbands − K` are left unchanged. Set to `0` to apply the adjustment to **all** bands (legacy behaviour). |
 
 ### Line search and optimiser tuning
 
@@ -150,7 +159,7 @@ rdmft               1
 rdmft_solver_strategy   alternating
 rdmft_occ_optimizer     cg
 rdmft_orb_optimizer     cg
-rdmft_orb_maxiter          100
+rdmft_outer_maxiter        100
 rdmft_energy_tol        1e-7
 ```
 
@@ -172,7 +181,7 @@ rdmft_solver_strategy   alternating
 rdmft_occ_optimizer     lbfgs
 rdmft_orb_optimizer     lbfgs
 rdmft_lbfgs_memory      20
-rdmft_orb_maxiter          200
+rdmft_outer_maxiter        200
 rdmft_energy_tol        1e-8
 rdmft_grad_check        1
 ```
@@ -198,7 +207,7 @@ rdmft_occ_optimizer     adam
 rdmft_orb_optimizer     sd
 rdmft_adam_lr            0.005
 rdmft_alpha_step         0.01
-rdmft_orb_maxiter           300
+rdmft_outer_maxiter        300
 ```
 
 Here occupations and orbitals are optimised simultaneously on the product
@@ -219,7 +228,7 @@ rdmft_power_alpha       0.656
 rdmft_constraint        projected_gradient
 rdmft_occ_optimizer     sd
 rdmft_orb_optimizer     cg
-rdmft_orb_maxiter          150
+rdmft_outer_maxiter        150
 ```
 
 For gamma-only calculations all matrices are real (`double`), which is
@@ -252,6 +261,8 @@ occupations after every step.
 ---
 
 ## Tips
+
+- **Three iteration limits.** `rdmft_outer_maxiter` limits the **outer** RDMFT loop (each cycle: occupation step + orbital step in `alternating`, or one joint step in `product_manifold`). `rdmft_occ_maxiter` and `rdmft_orb_maxiter` limit the **inner** optimisations of occupations (fixed orbitals) and orbitals (fixed occupations) within each outer cycle. In older versions, `rdmft_orb_maxiter` incorrectly doubled as the outer-loop limit; use `rdmft_outer_maxiter` for that now.
 
 - **Always set `rdmft_functional`.** Without it only the legacy single-step
   RDMFT evaluator runs, which simply reports the RDMFT energy at the KS
@@ -321,6 +332,6 @@ The shipped `INPUT` uses the pseudopotential's native LDA for the KS-SCF
 and `rdmft_functional muller` for the RDMFT stage.  On a single MPI rank
 the first ≈2 min are spent initialising LibRI for the RDMFT Fock operator,
 then the KS-SCF converges in ~25 iterations and the RDMFT alternating
-CG optimisation runs for `rdmft_orb_maxiter` outer steps, printing
+CG optimisation runs for `rdmft_outer_maxiter` outer steps, printing
 intermediate occupation and orbital sub-problem progress before writing
 the final `Etotal_RDMFT` and `!FINAL_ETOT_IS` lines.

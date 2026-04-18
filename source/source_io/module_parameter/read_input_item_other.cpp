@@ -947,12 +947,26 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_orb_maxiter");
-        item.annotation = "Maximum number of outer RDMFT orbital iterations";
+        Input_Item item("rdmft_outer_maxiter");
+        item.annotation = "Maximum RDMFT outer iterations (alternating / product-manifold)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Maximum number of outer iterations (alternating cycles or product-manifold steps).";
+        item.description = "Maximum number of outer cycles: each cycle is one occupation sub-problem "
+                           "plus one orbital sub-problem (alternating), or one joint step (product_manifold).";
         item.default_value = "200";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_int(input.rdmft_outer_maxiter);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_maxiter");
+        item.annotation = "Maximum iterations per RDMFT orbital sub-problem";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Integer";
+        item.description = "Maximum inner iterations while optimising orbitals with occupations fixed "
+                           "(Stiefel manifold step).";
+        item.default_value = "50";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_orb_maxiter);
@@ -968,6 +982,20 @@ void ReadInput::item_others()
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_occ_maxiter);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_init_nbands_top");
+        item.annotation = "Initial occupation clamp: number of highest bands only";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Integer";
+        item.description = "When >0, only the highest K bands (per k) get the [m,1-m] margin clamp and "
+                           "electron rescaling before RDMFT; lower bands stay at the KS values. "
+                           "0 means all bands are adjusted (legacy behavior). Default 5.";
+        item.default_value = "5";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_int(input.rdmft_occ_init_nbands_top);
         this->add_item(item);
     }
     {
