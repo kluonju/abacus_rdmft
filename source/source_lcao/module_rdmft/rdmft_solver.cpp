@@ -68,6 +68,121 @@ void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
         log_occ_inner_line(row.str());
     }
 }
+
+void print_rdmft_outer_energy_stdout(bool converged, double E)
+{
+    std::cout << std::fixed << std::setprecision(10);
+    if (converged)
+    {
+        std::cout << "  RDMFT outer: converged  E = " << E << std::defaultfloat << std::endl;
+    }
+    else
+    {
+        std::cout << "  RDMFT outer: NOT converged  E = " << E << std::defaultfloat << std::endl;
+    }
+}
+
+void print_occ_table_stdout(const std::vector<double>& occ_flat, int nk, int nbands)
+{
+    std::cout << "  WARNING: RDMFT outer loop did not converge. Occupations n(ik, ib):" << std::endl;
+    std::cout << std::left << std::setw(6) << "ik" << std::setw(8) << "ib" << std::setw(18) << "n"
+              << std::endl;
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        for (int ib = 0; ib < nbands; ++ib)
+        {
+            const int idx = ik * nbands + ib;
+            std::cout << std::left << std::setw(6) << ik << std::setw(8) << ib << std::fixed
+                      << std::setprecision(10) << std::setw(18) << occ_flat[idx] << std::defaultfloat
+                      << std::endl;
+        }
+    }
+}
+
+void print_nonconverged_report_running_alternating(double E,
+                                                   double dE,
+                                                   double abs_c,
+                                                   double occ_gnorm,
+                                                   double orb_gnorm,
+                                                   const std::vector<double>& occ_final,
+                                                   const std::vector<double>& occ_start_last_outer,
+                                                   int nk,
+                                                   int nbands)
+{
+    GlobalV::ofs_running << "\n  WARNING: RDMFT outer loop did not converge." << std::endl;
+    GlobalV::ofs_running << std::fixed << std::setprecision(10) << "  Last outer: E = " << E
+                         << "  dE = " << std::scientific << dE << std::fixed << "  |c| = " << abs_c
+                         << "  occ_gnorm = " << occ_gnorm << "  orb_gnorm = " << orb_gnorm
+                         << std::endl;
+    const bool have_prev = (occ_start_last_outer.size() == occ_final.size());
+    double sum_abs_dn = 0.0;
+    GlobalV::ofs_running << std::left << std::setw(6) << "ik" << std::setw(8) << "ib" << std::setw(18)
+                         << "n" << std::setw(18) << "dn" << std::endl;
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        for (int ib = 0; ib < nbands; ++ib)
+        {
+            const int idx = ik * nbands + ib;
+            const double n = occ_final[idx];
+            const double dn = have_prev ? (n - occ_start_last_outer[idx]) : 0.0;
+            if (have_prev)
+            {
+                sum_abs_dn += std::abs(dn);
+            }
+            GlobalV::ofs_running << std::left << std::setw(6) << ik << std::setw(8) << ib << std::fixed
+                                 << std::setprecision(10) << std::setw(18) << n << std::setw(18) << dn
+                                 << std::endl;
+        }
+    }
+    if (have_prev)
+    {
+        GlobalV::ofs_running << "  sum|dn| (last outer cycle) = " << std::scientific << sum_abs_dn
+                             << std::endl;
+    }
+}
+
+void print_nonconverged_report_running_joint(double E,
+                                             double dE,
+                                             double abs_c,
+                                             double gnorm_occ,
+                                             double gnorm_orb,
+                                             double gnorm_total,
+                                             const std::vector<double>& occ_final,
+                                             const std::vector<double>& occ_start_last_outer,
+                                             int nk,
+                                             int nbands)
+{
+    GlobalV::ofs_running << "\n  WARNING: RDMFT outer loop did not converge." << std::endl;
+    GlobalV::ofs_running << std::fixed << std::setprecision(10) << "  Last outer: E = " << E
+                         << "  dE = " << std::scientific << dE << std::fixed << "  |c| = " << abs_c
+                         << "  |grad_occ| = " << gnorm_occ << "  |grad_orb| = " << gnorm_orb
+                         << "  |grad_total| = " << gnorm_total << std::endl;
+    const bool have_prev = (occ_start_last_outer.size() == occ_final.size());
+    double sum_abs_dn = 0.0;
+    GlobalV::ofs_running << std::left << std::setw(6) << "ik" << std::setw(8) << "ib" << std::setw(18)
+                         << "n" << std::setw(18) << "dn" << std::endl;
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        for (int ib = 0; ib < nbands; ++ib)
+        {
+            const int idx = ik * nbands + ib;
+            const double n = occ_final[idx];
+            const double dn = have_prev ? (n - occ_start_last_outer[idx]) : 0.0;
+            if (have_prev)
+            {
+                sum_abs_dn += std::abs(dn);
+            }
+            GlobalV::ofs_running << std::left << std::setw(6) << ik << std::setw(8) << ib << std::fixed
+                                 << std::setprecision(10) << std::setw(18) << n << std::setw(18) << dn
+                                 << std::endl;
+        }
+    }
+    if (have_prev)
+    {
+        GlobalV::ofs_running << "  sum|dn| (last outer cycle) = " << std::scientific << sum_abs_dn
+                             << std::endl;
+    }
+}
 } // namespace
 
 // Helper to get |x|^2 for both real and complex types
@@ -180,6 +295,7 @@ double RDMFTSolver<TK, TR>::solve(
     psi::Psi<TK>& wfc)
 {
     ModuleBase::timer::start("RDMFT", "solve");
+    last_result_ = {};
 
     // Clamp the initial occupations away from the [0, 1] boundary. With the
     // cosine^2 / logistic parameterisations dn/dp vanishes at n = 0 and n = 1,
@@ -268,8 +384,17 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double E_prev = 1e30;
     double E = 0.0;
 
+    std::vector<double> occ_at_outer_start;
+    double last_dE = 0.0;
+    double last_abs_c = 0.0;
+    double last_occ_gnorm = 0.0;
+    double last_orb_gnorm = 0.0;
+    int outer_iters_done = 0;
+
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
+        occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
+
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
         GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
@@ -308,6 +433,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  orb_gnorm = " << orb_result.grad_norm
             << std::endl;
 
+        last_dE = dE;
+        last_abs_c = std::abs(constraint_viol);
+        last_occ_gnorm = occ_result.grad_norm;
+        last_orb_gnorm = orb_result.grad_norm;
+        outer_iters_done = iter + 1;
+
         if (dE < config_.energy_tol && std::abs(constraint_viol) < 1e-8)
         {
             last_result_.converged = true;
@@ -321,6 +452,26 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     }
 
     last_result_.final_energy = E;
+    if (!last_result_.converged)
+    {
+        last_result_.iterations = outer_iters_done;
+        last_result_.grad_norm = std::max(last_occ_gnorm, last_orb_gnorm);
+    }
+
+    print_rdmft_outer_energy_stdout(last_result_.converged, E);
+    if (!last_result_.converged)
+    {
+        print_occ_table_stdout(occ_flat, nk_, nbands_);
+        print_nonconverged_report_running_alternating(E,
+                                                      last_dE,
+                                                      last_abs_c,
+                                                      last_occ_gnorm,
+                                                      last_orb_gnorm,
+                                                      occ_flat,
+                                                      occ_at_outer_start,
+                                                      nk_,
+                                                      nbands_);
+    }
     return E;
 }
 
@@ -398,6 +549,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
     double E_prev = 1e30;
     double E = 0.0;
 
+    std::vector<double> occ_at_outer_start;
+    double joint_last_E = 0.0;
+    double joint_last_dE = 0.0;
+    double joint_last_abs_c = 0.0;
+    double joint_gn_occ = 0.0;
+    double joint_gn_orb = 0.0;
+    double joint_gn_tot = 0.0;
+    int joint_outer_done = 0;
+
     auto total_energy = [&](const std::vector<double>& occ_in,
                             const psi::Psi<TK>& wfc_in) -> double {
         double E_val = energy_grad_->compute_energy(occ_in,
@@ -412,6 +572,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // Refresh occupations from params so downstream code always sees a
         // consistent (p, n) pair.
         occ_param_->params_to_occ(params, occ_flat);
+        occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
         // Full energy + Euclidean gradients at the current point.
         std::vector<double> grad_occ;
@@ -671,6 +832,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
             << "  |grad_total| = " << gnorm_total
             << std::endl;
 
+        const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
+        joint_last_E = E_new;
+        joint_last_dE = dE;
+        joint_last_abs_c = abs_c_joint;
+        joint_gn_occ = std::sqrt(gnorm2);
+        joint_gn_orb = std::sqrt(std::max(0.0, orb_gnorm2));
+        joint_gn_tot = gnorm_total;
+        joint_outer_done = iter + 1;
+
         if (dE < config_.energy_tol && gnorm_total < config_.grad_tol)
         {
             last_result_.converged = true;
@@ -686,6 +856,27 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
     occ_param_->params_to_occ(params, occ_flat);
     last_result_.final_energy = E;
+    if (!last_result_.converged)
+    {
+        last_result_.iterations = joint_outer_done;
+        last_result_.grad_norm = joint_gn_tot;
+    }
+
+    print_rdmft_outer_energy_stdout(last_result_.converged, E);
+    if (!last_result_.converged)
+    {
+        print_occ_table_stdout(occ_flat, nk_, nbands_);
+        print_nonconverged_report_running_joint(joint_last_E,
+                                                joint_last_dE,
+                                                joint_last_abs_c,
+                                                joint_gn_occ,
+                                                joint_gn_orb,
+                                                joint_gn_tot,
+                                                occ_flat,
+                                                occ_at_outer_start,
+                                                nk_,
+                                                nbands_);
+    }
     return E;
 }
 

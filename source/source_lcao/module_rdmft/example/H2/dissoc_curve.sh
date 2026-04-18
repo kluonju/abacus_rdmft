@@ -73,7 +73,9 @@ for R in ${R_LIST}; do
 	rdir="${RUN_ROOT}/d_${tag}"
 	mkdir -p "${rdir}"
 	write_stru "${R}" "${rdir}/STRU"
-	cp INPUT KPT "${rdir}/"
+	cp KPT "${rdir}/"
+	# Slightly looser SCF cap for stretched bonds (default INPUT uses 10).
+	sed -e 's/^\(scf_nmax[[:space:]]*\).*/\1 40/' INPUT >"${rdir}/INPUT"
 	ln -sf "${EXAMPLE_DIR}/H.LDA.UPF" "${rdir}/H.LDA.UPF"
 	ln -sf "${EXAMPLE_DIR}/H_gga_8au_60Ry_2s1p.orb" "${rdir}/H_gga_8au_60Ry_2s1p.orb"
 

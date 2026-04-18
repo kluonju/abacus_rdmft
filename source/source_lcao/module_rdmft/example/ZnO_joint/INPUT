@@ -1,0 +1,57 @@
+INPUT_PARAMETERS
+#Parameters (1.General)
+#suffix           autotest
+calculation      scf
+symmetry         1
+#gamma_only   1
+
+#Parameters (2.Iteration)
+scf_thr          1e-5
+scf_nmax         10
+cal_force        0
+cal_stress       0
+
+#Parameters (3.Basis)
+basis_type       lcao
+
+#Parameters (4.Smearing)
+smearing_method  gaussian
+smearing_sigma   0.015
+
+#Parameters (5.Mixing)
+mixing_type      broyden
+mixing_beta      0.5
+ks_solver        scalapack_gvx
+
+#Parameters (6.RDMFT)
+# 6.1 Start from a standard KS-SCF. Leave dft_functional unset to use the
+#     functional from the pseudopotential (LDA/PZ here), or set it
+#     explicitly (e.g. pbe) for a GGA KS reference. Do NOT set
+#     dft_functional to a hybrid functional such as muller/hf here unless
+#     you really want the KS-SCF itself to use exact exchange, which is
+#     much more expensive and usually not needed: RDMFT only needs a
+#     reasonable KS starting guess.
+#dft_functional   pbe
+
+# 6.2 Enable the RDMFT stage after KS-SCF has converged.
+rdmft            true
+
+# 6.3 Select the RDMFT XC functional. This activates the new RDMFT
+#     optimisation engine (alternating CG over occupations and orbitals).
+#     Leaving this unset falls back to the legacy single-step evaluator,
+#     which does NOT minimise the RDMFT energy and is only useful for
+#     checking functional values at the KS solution.
+rdmft_functional       muller
+
+# 6.4 Solver / optimiser configuration. Defaults shown; tweak as needed.
+rdmft_solver_strategy  joint
+rdmft_occ_optimizer    cg
+rdmft_orb_optimizer    cg
+rdmft_outer_maxiter    20
+rdmft_occ_maxiter      50
+rdmft_orb_maxiter      10
+rdmft_energy_tol       1e-6
+
+# Power-functional exponent alpha (0<alpha<1). For hf and muller this
+# value is overridden automatically by the reader (1.0 and 0.5 respectively).
+rdmft_power_alpha      0.656
