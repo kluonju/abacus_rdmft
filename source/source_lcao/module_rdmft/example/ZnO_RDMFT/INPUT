@@ -3,38 +3,34 @@ INPUT_PARAMETERS
 #suffix           autotest
 calculation      scf
                  
-#nbands			 8
 symmetry         1
-                 
+
 #Parameters (2.Iteration)
-#ecutwfc          50
 scf_thr          1e-5
 scf_nmax         100
 cal_force        0
 cal_stress       0
+
 #Parameters (3.Basis)
 basis_type       lcao
-                 
+
 #Parameters (4.Smearing)
 smearing_method  gaussian
 smearing_sigma   0.015
-                 
+
 #Parameters (5.Mixing)
 mixing_type      broyden
-#mixing_gg0       0
 mixing_beta      0.5
-#gamma_only       1
-ks_solver        scalapack_gvx #genelpa
+ks_solver        scalapack_gvx
 
-#Parameters (6.rdmft)
+#Parameters (6.RDMFT)
+# Enable RDMFT stage (true/false)
+rdmft            true
 
-rdmft               1
-rdmft_functional muller
+# Use the main DFT functional as the RDMFT functional (set via dft_functional)
+dft_functional muller
+
+# Power-functional exponent alpha (0<alpha<1). For hf/pbe0 and muller
+# this value is overridden automatically by the reader, but you may set it.
 rdmft_power_alpha 0.656
-
-rdmft_solver_strategy   alternating
-rdmft_occ_optimizer     cg
-rdmft_orb_optimizer     cg
-rdmft_max_iter          100
-rdmft_energy_tol        1e-7
 
