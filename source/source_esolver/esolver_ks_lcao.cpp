@@ -15,6 +15,7 @@
 #endif
 #ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h"
+#include "source_lcao/module_rdmft/rdmft_solver.h"
 #endif
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
 #include "source_estate/module_dm/init_dm.h" // init dm from electronic wave functions

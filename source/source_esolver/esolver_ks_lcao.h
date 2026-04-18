@@ -11,6 +11,7 @@
 #include "source_lcao/setup_exx.h" // for exx, mohan add 20251008
 #ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h" // rdmft
+#include "source_lcao/module_rdmft/rdmft_energy_gradient.h"
 #endif
 #include "source_lcao/setup_dm.h" // mohan add 2025-10-30
 
@@ -96,9 +97,11 @@ class ESolver_KS_LCAO : public ESolver_KS
     rdmft::RDMFT<TK, TR> rdmft_solver;
 #endif
 
+  #ifdef __RDMFT
     //! Energy/gradient oracle for the new RDMFT optimisation engine
     rdmft::EnergyGradient<TK, TR> rdmft_eg;
     bool rdmft_eg_initialized = false;
+  #endif
 
     //! For linear-response TDDFT
     friend class LR::ESolver_LR<double, double>;
