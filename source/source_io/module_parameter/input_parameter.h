@@ -675,7 +675,8 @@ struct Input_para
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
     int rdmft_occ_init_nbands_top = 5;             // initial [m,1-m] clamp: 0 = all bands, K>0 = top K bands only (default 5)
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
-    double rdmft_grad_tol = 1e-6;                  // convergence threshold on gradient norm
+    double rdmft_grad_tol = 1e-6;                  // orbital inner: ||G_R||; occupation inner grad: same default
+    double rdmft_occ_dn_sum_tol = 1e-8;            // occupation inner: sum_i |Δn_i| per iteration
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
     std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint method
     double rdmft_alpha_step = 0.1;                 // initial line-search step length

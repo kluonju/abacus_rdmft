@@ -15,6 +15,29 @@ namespace rdmft
 {
 namespace
 {
+double sum_abs_diff(const std::vector<double>& a, const std::vector<double>& b)
+{
+    assert(a.size() == b.size());
+    double s = 0.0;
+    for (size_t i = 0; i < a.size(); ++i)
+        s += std::abs(a[i] - b[i]);
+    return s;
+}
+
+/// Stop occupation inner loop if the parameter-space gradient is small, or if the
+/// total change in occupations sum_i |Δn_i| is small. Exact-zero Δn with a large
+/// gradient (e.g. failed line search) does not count as converged.
+bool occ_inner_should_stop(double sum_abs_dn,
+                           double grad_norm,
+                           double dn_tol,
+                           double occ_grad_tol)
+{
+    if (grad_norm < occ_grad_tol)
+        return true;
+    const double abs_floor = 1e-20;
+    return (sum_abs_dn < dn_tol && sum_abs_dn > abs_floor);
+}
+
 void log_occ_inner_line(const std::string& line)
 {
     GlobalV::ofs_running << line << std::endl;
@@ -478,6 +501,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 const std::vector<double> occ_prev_for_dn = occ_snap_start;
                 occ_snap_start = occ_flat;
+                const std::vector<double> occ_at_step_start(occ_flat);
 
                 std::vector<double> grad_occ;
                 psi::Psi<TK> grad_wfc_dummy;
@@ -510,7 +534,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (result.grad_norm < config_.grad_tol)
+                if (result.grad_norm < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = inner + 1;
@@ -558,6 +582,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 result.iterations = inner + 1;
                 result.final_energy = ls.f_new;
+
+                const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
+                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
+                    << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn,
+                        result.grad_norm,
+                        config_.occ_dn_sum_tol,
+                        config_.occ_grad_tol))
+                {
+                    result.converged = true;
+                    break;
+                }
             }
 
             // Update Lagrange multiplier
@@ -601,7 +637,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (result.grad_norm < config_.grad_tol)
+                if (result.grad_norm < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = inner + 1;
@@ -609,11 +645,25 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
+                const std::vector<double> occ_before_step(occ_flat);
                 double step = config_.line_search_alpha_init;
                 for (size_t i = 0; i < occ_flat.size(); ++i)
                     occ_flat[i] -= step * grad_occ[i];
 
                 occ_constraint_->project(occ_flat);
+                const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
+                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
+                    << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn,
+                        result.grad_norm,
+                        config_.occ_dn_sum_tol,
+                        config_.occ_grad_tol))
+                {
+                    result.converged = true;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    break;
+                }
                 result.iterations = inner + 1;
                 result.final_energy = E;
             }
@@ -656,7 +706,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (result.grad_norm < config_.grad_tol)
+                if (result.grad_norm < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = inner + 1;
@@ -664,6 +714,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
+                const std::vector<double> occ_before_step(occ_flat);
                 double step = config_.line_search_alpha_init;
                 for (size_t i = 0; i < occ_flat.size(); ++i)
                     occ_flat[i] -= step * grad_occ[i];
@@ -672,6 +723,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 for (auto& n : occ_flat)
                     n = std::max(0.0, std::min(1.0, n));
 
+                const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
+                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
+                    << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn,
+                        result.grad_norm,
+                        config_.occ_dn_sum_tol,
+                        config_.occ_grad_tol))
+                {
+                    result.converged = true;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    break;
+                }
                 result.iterations = inner + 1;
                 result.final_energy = E;
             }
@@ -751,6 +815,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             << "  E=" << std::fixed << std::setprecision(10) << E
             << "  gnorm=" << std::scientific << result.grad_norm << std::endl;
 
+        // Orbital sub-problem: exit when Riemannian gradient norm is below threshold.
         if (result.grad_norm < config_.grad_tol)
         {
             result.converged = true;

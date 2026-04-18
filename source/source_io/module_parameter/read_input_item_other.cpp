@@ -1015,11 +1015,27 @@ void ReadInput::item_others()
         item.annotation = "RDMFT convergence threshold on gradient norm";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Convergence threshold on the norm of the combined occupation and orbital gradient.";
+        item.description = "Orbital inner loop: Riemannian gradient norm ||G_R||. Occupation inner loop: same "
+                             "threshold on the occupation gradient (parameter or n-space). "
+                             "Occupations also stop when sum_i |Δn_i| < rdmft_occ_dn_sum_tol (see there).";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_grad_tol);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_dn_sum_tol");
+        item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Stop the occupation sub-iteration when sum_i |n_i^{new}-n_i^{old}| "
+                           "in one inner step is below this (unless the step is exactly zero "
+                           "and the occupation gradient is still large).";
+        item.default_value = "1e-8";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_dn_sum_tol);
         this->add_item(item);
     }
     {

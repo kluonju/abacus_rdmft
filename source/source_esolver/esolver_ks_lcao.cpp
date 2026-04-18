@@ -568,6 +568,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.grad_tol = inp.rdmft_grad_tol;
+        rdmft_config.occ_grad_tol = inp.rdmft_grad_tol;
+        rdmft_config.occ_dn_sum_tol = inp.rdmft_occ_dn_sum_tol;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
         rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
