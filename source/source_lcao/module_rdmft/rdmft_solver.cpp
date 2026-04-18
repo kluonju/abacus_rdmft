@@ -591,17 +591,32 @@ double RDMFTSolver<TK, TR>::solve_joint(
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
         // ---- Pack gradients into the unified vector ----
+        //
+        // We multiply the orbital block by joint_orb_scale both on the way
+        // in (gradient) and on the way out (direction) so that the packed
+        // optimiser effectively works with a rescaled orbital coefficient
+        //   C_internal = C / joint_orb_scale
+        // while alpha remains a single scalar. This is exactly a diagonal
+        // preconditioner on the packed vector; it does not change the
+        // search direction's sign, only its relative magnitude per block.
+        // For a SD direction at iteration 1 this gives
+        //   alpha * orb_step = alpha * joint_orb_scale^2 * grad_wfc
+        // so a value of joint_orb_scale < 1 reduces the physical step in
+        // the orbital block while leaving the occupation block unaffected.
+        const double orb_scale = config_.joint_orb_scale;
         std::vector<double> grad_orb_flat;
         psi_to_flat(grad_wfc, grad_orb_flat);
         for (int i = 0; i < n_occ_params; ++i)
             packed_grad[i] = grad_params[i];
         for (int i = 0; i < orb_flat_size; ++i)
-            packed_grad[n_occ_params + i] = grad_orb_flat[i];
+            packed_grad[n_occ_params + i] = orb_scale * grad_orb_flat[i];
 
         // Ask the single unified optimiser for a packed descent direction.
         joint_opt.compute_direction(packed_grad, packed_dir);
 
         // Split the packed direction into occupation and orbital blocks.
+        // Apply the orbital-block scale on the direction as well so that
+        // alpha * orb_dir (physical) = alpha * orb_scale * orb_dir_internal.
         std::vector<double> occ_dir(n_occ_params);
         for (int i = 0; i < n_occ_params; ++i) occ_dir[i] = packed_dir[i];
 
@@ -609,7 +624,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         {
             std::vector<double> orb_dir_flat(orb_flat_size);
             for (int i = 0; i < orb_flat_size; ++i)
-                orb_dir_flat[i] = packed_dir[n_occ_params + i];
+                orb_dir_flat[i] = orb_scale * packed_dir[n_occ_params + i];
             flat_to_psi(orb_dir_flat, orb_dir);
         }
 
@@ -659,11 +674,32 @@ double RDMFTSolver<TK, TR>::solve_joint(
             for (int i = 0; i < orb_total_size; ++i) q[i] = -p[i];
         }
 
-        // Snapshot the current orbitals for line-search rollback.
-        for (int ik = 0; ik < nk; ++ik)
-            for (int ib = 0; ib < nb_local; ++ib)
-                for (int mu = 0; mu < nbs_local; ++mu)
-                    wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
+        // Decide whether the orbital block actually needs to be stepped in
+        // this iteration. Mirroring the alternating strategy's
+        // optimize_orbitals (which early-exits on ||G_R|| < grad_tol and
+        // therefore never invokes retract_orbitals with a zero / tiny
+        // direction), we skip the orbital retraction when the Riemannian
+        // orbital gradient is below grad_tol. Without this guard the
+        // Cholesky-QR S-orthonormalisation inside retract_orbitals is
+        // executed every iteration, which is a numerically non-trivial
+        // O(nbasis^3) update whose round-off amplifies when the trial
+        // step is otherwise supposed to leave the orbitals unchanged; on
+        // H2 (where the KS seed is already a fixed point of the orbital
+        // sub-problem, so ||G_R|| == 0) this spurious re-orthonormalisation
+        // perturbs C by a few percent at the start and destabilises the
+        // occupation line search.
+        const double orb_gnorm = std::sqrt(std::max(0.0, orb_gnorm2));
+        const bool step_orbitals = (orb_gnorm >= config_.grad_tol);
+
+        // Snapshot the current orbitals for line-search rollback (needed
+        // only when we will actually retract).
+        if (step_orbitals)
+        {
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
+        }
 
         // Joint Armijo line search along the packed direction. Initial step
         // is 1.0 for L-BFGS / Adam (already well-scaled) and the configured
@@ -682,13 +718,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
         {
-            // Roll back orbitals and retract along +alpha * orb_dir.
-            for (int ik = 0; ik < nk; ++ik)
-                for (int ib = 0; ib < nb_local; ++ib)
-                    for (int mu = 0; mu < nbs_local; ++mu)
-                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
-            energy_grad_->retract_orbitals(wfc, neg_orb_dir, alpha);
-            energy_grad_->invalidate_hone_cache();
+            if (step_orbitals)
+            {
+                // Roll back orbitals and retract along +alpha * orb_dir.
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+                energy_grad_->retract_orbitals(wfc, neg_orb_dir, alpha);
+                energy_grad_->invalidate_hone_cache();
+            }
 
             for (int i = 0; i < n_occ_params; ++i)
                 params_new[i] = params[i] + alpha * occ_dir[i];
@@ -707,11 +746,14 @@ double RDMFTSolver<TK, TR>::solve_joint(
         {
             // Line search failed: roll back, restart the optimiser state and
             // continue with steepest descent at the next iteration.
-            for (int ik = 0; ik < nk; ++ik)
-                for (int ib = 0; ib < nb_local; ++ib)
-                    for (int mu = 0; mu < nbs_local; ++mu)
-                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
-            energy_grad_->invalidate_hone_cache();
+            if (step_orbitals)
+            {
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+                energy_grad_->invalidate_hone_cache();
+            }
 
             joint_opt.init(packed_size);
 
@@ -733,16 +775,21 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
         occ_param_->params_to_occ(params, occ_flat);
 
-        // Build the packed step for the orbital block: step = alpha * orb_dir
-        // in the same flat layout used by the optimiser.
+        // Build the packed step for the orbital block. Store the step in
+        // the *internal* (scaled) units that match packed_dir:
+        //   step_internal = alpha * dir_internal = alpha * orb_dir / orb_scale
+        // so that the optimiser's (s, y) history stays consistent with the
+        // rescaled gradient feed.
         {
             std::vector<double> orb_dir_flat;
             psi_to_flat(orb_dir, orb_dir_flat);
+            const double inv_scale = (orb_scale != 0.0) ? (1.0 / orb_scale) : 1.0;
             for (int i = 0; i < orb_flat_size; ++i)
-                packed_step[n_occ_params + i] = alpha * orb_dir_flat[i];
+                packed_step[n_occ_params + i] = alpha * orb_dir_flat[i] * inv_scale;
         }
 
         // Update the unified optimiser's history with the new packed gradient.
+        if (joint_is_lbfgs || joint_is_adam)
         {
             std::vector<double> new_grad_occ;
             psi::Psi<TK> new_grad_wfc;
@@ -765,7 +812,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             for (int i = 0; i < n_occ_params; ++i)
                 new_packed_grad[i] = new_grad_params[i];
             for (int i = 0; i < orb_flat_size; ++i)
-                new_packed_grad[n_occ_params + i] = new_grad_orb_flat[i];
+                new_packed_grad[n_occ_params + i] = orb_scale * new_grad_orb_flat[i];
 
             joint_opt.update(new_packed_grad, packed_step);
         }

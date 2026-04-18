@@ -1172,6 +1172,28 @@ void ReadInput::item_others()
         read_sync_bool(input.rdmft_grad_check);
         this->add_item(item);
     }
+    {
+        Input_Item item("rdmft_joint_orb_scale");
+        item.annotation = "Joint-strategy scaling factor between orbital and occupation blocks";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Diagonal pre-conditioner on the packed (occupation parameter, "
+                           "orbital coefficient) vector of the joint RDMFT optimiser. "
+                           "The orbital gradient is multiplied by this factor before the "
+                           "optimiser compute_direction, and the resulting orbital "
+                           "direction is multiplied by it again before applying the step, "
+                           "so the physical orbital step is attenuated/amplified by "
+                           "joint_orb_scale^2 relative to the occupation-parameter step. "
+                           "Default 1.0 (no rescaling); values less than one damp the "
+                           "orbital block if its gradient is much larger than the "
+                           "occupation gradient; values greater than one boost the orbital "
+                           "block otherwise.";
+        item.default_value = "1.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\" && rdmft_solver_strategy == \"joint\"";
+        read_sync_double(input.rdmft_joint_orb_scale);
+        this->add_item(item);
+    }
 #endif
 
     // EXX PW by rhx0820, 2025-03-10

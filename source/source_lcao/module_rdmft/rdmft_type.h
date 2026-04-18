@@ -113,6 +113,33 @@ struct RDMFTConfig
     double line_search_rho = 0.5;
     int line_search_max_iter = 30;
 
+    /// Relative scaling between the orbital and occupation parameter blocks
+    /// in the joint (product-manifold) strategy. The packed optimisation
+    /// variable is (p, C) where p are the unconstrained occupation
+    /// parameters (in radians for cosine^2, dimensionless for logistic)
+    /// and C are the orbital coefficients. The natural scale of dE/dp
+    /// depends on the Jacobian dn/dp (which can range from 0 to 1 across
+    /// the Brillouin zone and band index), while dE/dC scales with the
+    /// Hamiltonian matrix elements. In a single-alpha Armijo line search
+    /// this block-scale mismatch manifests as either (a) well-behaved
+    /// occupation steps together with far too aggressive orbital steps,
+    /// or (b) vice versa. Multiplying the orbital gradient (as fed to
+    /// the Euclidean optimiser) and the orbital direction (as applied by
+    /// retraction) by joint_orb_scale is equivalent to changing the
+    /// units of the orbital block inside the packed vector:
+    ///   C_internal = C / joint_orb_scale
+    ///   dE/dC_internal = joint_orb_scale * dE/dC
+    ///   alpha * dir_internal = alpha * joint_orb_scale * (-dE/dC)
+    /// so the *physical* orbital step, alpha * joint_orb_scale * dE/dC,
+    /// is attenuated or amplified by joint_orb_scale^2 (which makes this
+    /// knob behave like a per-block pre-conditioner).
+    ///
+    /// Default = 1.0 (no rescaling). For systems where the initial joint
+    /// step would move the orbitals too aggressively a value < 1 damps
+    /// the orbital block; for systems where the orbital sub-problem is
+    /// hard a value > 1 gives it more weight.
+    double joint_orb_scale = 1.0;
+
     double adam_lr = 0.001;
     double adam_beta1 = 0.9;
     double adam_beta2 = 0.999;
