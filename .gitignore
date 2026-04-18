@@ -27,6 +27,6 @@ toolchain/install/
 toolchain/abacus_env.sh
 .trae
 compile_commands.json
-source/source_lcao/module_rdmft/example/ZnO_RDMFT/log
-source/source_lcao/module_rdmft/example/H2/log
-source/source_lcao/module_rdmft/example/H2/dissoc_runs/
+source/source_lcao/module_rdmft/example/ZnO_*/log
+source/source_lcao/module_rdmft/example/H2*/log
+source/source_lcao/module_rdmft/example/H2*/dissoc_runs/
