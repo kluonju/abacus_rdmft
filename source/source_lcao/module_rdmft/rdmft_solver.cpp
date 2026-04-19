@@ -183,6 +183,20 @@ void print_nonconverged_report_running_joint(double E,
                              << std::endl;
     }
 }
+
+template <typename TK, typename TR>
+double compute_s_fidelity_trace(EnergyGradient<TK, TR>* energy_grad,
+                                const psi::Psi<TK>& wfc)
+{
+    const double s_trace = energy_grad->s_inner_product(wfc, wfc);
+    const double target = static_cast<double>(wfc.get_nk())
+                        * static_cast<double>(wfc.get_nbands());
+    if (target <= 0.0)
+    {
+        return 0.0;
+    }
+    return s_trace / target;
+}
 } // namespace
 
 // Helper to get |x|^2 for both real and complex types
@@ -395,6 +409,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     {
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
+        const double s_fidelity = compute_s_fidelity_trace(energy_grad_, wfc);
+        GlobalV::ofs_running << std::fixed << std::setprecision(10)
+            << "    orbital S-fidelity(trace) before inner loops = "
+            << s_fidelity
+            << "  |1-f| = " << std::abs(1.0 - s_fidelity) << std::endl;
+
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
         GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
@@ -422,6 +442,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  E = " << E
             << "  dE = " << std::scientific << dE
             << "  |c| = " << std::abs(constraint_viol)
+            << "  S-fid = " << std::fixed << std::setprecision(10) << s_fidelity
             << std::endl;
 
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
@@ -429,6 +450,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  E = " << E
             << "  dE = " << std::scientific << dE
             << "  |c| = " << std::abs(constraint_viol)
+            << "  S-fid = " << std::fixed << std::setprecision(10) << s_fidelity
             << "  occ_gnorm = " << occ_result.grad_norm
             << "  orb_gnorm = " << orb_result.grad_norm
             << std::endl;
