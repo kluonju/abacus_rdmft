@@ -532,6 +532,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 #endif
 
     //! 1.5) Run RDMFT optimization when the new engine is active
+#ifdef __RDMFT
     if (rdmft_eg_initialized && this->psi != nullptr)
     {
         ModuleBase::timer::start("ESolver_KS_LCAO", "rdmft_solve");
@@ -637,6 +638,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         ModuleBase::timer::end("ESolver_KS_LCAO", "rdmft_solve");
     }
+#endif
 
     //! 2) output of lcao every few ionic steps
 #ifdef __RDMFT

@@ -152,9 +152,46 @@ class EnergyGradient
 
     /// Compute the S-weighted inner product  <X, Y>_S = Re Tr(X^H S Y)
     /// summed over k-points. Performs an MPI Allreduce internally.
-    /// When no overlap is available (PW basis) falls back to the Euclidean
-    /// inner product <X, Y> = Re Tr(X^H Y).
+    /// When no overlap is available (PW basis) or when use_X_variable_ is
+    /// true (working in the S^{1/2}-transformed space), falls back to the
+    /// Euclidean inner product <X, Y> = Re Tr(X^H Y).
     double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
+
+    // ================================================================
+    // Cholesky-based S^{1/2} variable transformation
+    //
+    // For alternating optimization the Stiefel manifold variable can be
+    // changed from C_k (with C_k^H S_k C_k = I) to X_k = U_k C_k where
+    // S_k = U_k^H U_k (Cholesky decomposition).  In X-space the
+    // orthonormality constraint is simply X_k^H X_k = I, so all
+    // manifold operations (projection, retraction, inner product) reduce
+    // to the standard S=I Stiefel form.
+    // ================================================================
+
+    /// Precompute the Cholesky factorisation S_k = U_k^H U_k for each
+    /// k-point and store U_k, U_k^{-1}.  After this call, use_X_variable_
+    /// is set to true and all subsequent manifold operations assume the
+    /// wfc contains X_k rather than C_k.
+    void precompute_cholesky_S();
+
+    /// Transform wfc in-place: C_k -> X_k = U_k C_k.
+    /// Requires precompute_cholesky_S() to have been called.
+    void wfc_C_to_X(psi::Psi<TK>& wfc);
+
+    /// Transform wfc in-place: X_k -> C_k = U_k^{-1} X_k.
+    /// Requires precompute_cholesky_S() to have been called.
+    void wfc_X_to_C(psi::Psi<TK>& wfc);
+
+    /// Transform Euclidean gradient in-place:
+    ///   G_X = U_k^{-H} G_C   (chain rule from C = U^{-1} X)
+    /// Requires precompute_cholesky_S() to have been called.
+    void grad_C_to_X(psi::Psi<TK>& grad_wfc);
+
+    /// Whether manifold operations are currently in X-space
+    bool use_X_variable() const { return use_X_variable_; }
+
+    /// Disable X-variable mode (revert to C-space manifold operations)
+    void disable_X_variable() { use_X_variable_ = false; }
 
     // ABACUS infrastructure (non-owning)
     const Parallel_Orbitals* ParaV_ = nullptr;
@@ -218,6 +255,19 @@ class EnergyGradient
     // Cache for one-body diagonals (valid when orbitals don't change)
     bool hone_cache_valid_ = false;
     std::vector<std::vector<double>> cached_h_one_diag_; // [nk][nbands]
+
+    // Cholesky S^{1/2} variable transformation data.
+    // When use_X_variable_ is true, the solver works with X_k = U_k C_k
+    // instead of C_k.  All manifold operations then assume S = I.
+    bool use_X_variable_ = false;
+    bool cholesky_precomputed_ = false;
+    /// U_k (upper triangular Cholesky factor of S_k) for each k-point.
+    /// Stored in column-major format. Only the upper triangle is meaningful;
+    /// the lower triangle may contain arbitrary values after the factorisation.
+    /// Size is nbasis_local * nbasis_local (non-MPI) or ParaV_->nloc (MPI).
+    std::vector<std::vector<TK>> Uk_;
+    /// U_k^{-1} for each k-point, same upper-triangular column-major layout.
+    std::vector<std::vector<TK>> Uk_inv_;
 };
 
 } // namespace rdmft

@@ -188,12 +188,13 @@ template <typename TK, typename TR>
 double compute_s_fidelity_trace(EnergyGradient<TK, TR>* energy_grad,
                                 const psi::Psi<TK>& wfc)
 {
-    // Measure the deviation of C from the generalised Stiefel manifold:
-    //   S-fid = Tr(C^H S C) / (nk * nbands) - 1
-    //         = Tr(X^H X - I) / (nk * nbands)  where X = S^{1/2} C
-    // When C^H S C = I (i.e. C is on St(p,n;S)), S-fid == 0.
-    // Positive (negative) values indicate that the columns are
-    // over-normalised (under-normalised) on average.
+    // Measure the deviation from the Stiefel manifold:
+    //   In C-space (generalised Stiefel):
+    //     S-fid = Tr(C^H S C) / (nk * nbands) - 1
+    //   In X-space (standard Stiefel, use_X_variable_ = true):
+    //     fid   = Tr(X^H X) / (nk * nbands) - 1
+    // Both should be close to 0 when the variable is on the manifold.
+    // The s_inner_product() method handles the S/I distinction internally.
     const double s_trace = energy_grad->s_inner_product(wfc, wfc);
     const double target = static_cast<double>(wfc.get_nk())
                         * static_cast<double>(wfc.get_nbands());
@@ -387,6 +388,16 @@ double RDMFTSolver<TK, TR>::solve(
     // argument is irrelevant when alpha = 0, so we reuse wfc itself).
     energy_grad_->retract_orbitals(wfc, wfc, 0.0);
 
+    // Precompute the Cholesky factorisation S_k = U_k^H U_k and switch to
+    // the X_k = U_k C_k variable for all subsequent manifold operations.
+    // In X-space X^H X = I, so projection, retraction, and inner product
+    // are the standard (S = I) Stiefel forms.
+    energy_grad_->precompute_cholesky_S();
+    if (energy_grad_->use_X_variable())
+    {
+        energy_grad_->wfc_C_to_X(wfc);
+    }
+
     double E = 0.0;
     switch (config_.strategy)
     {
@@ -396,6 +407,13 @@ double RDMFTSolver<TK, TR>::solve(
         case SolverStrategy::Joint:
             E = solve_joint(occ_flat, wfc);
             break;
+    }
+
+    // Transform back X -> C before returning to the caller.
+    if (energy_grad_->use_X_variable())
+    {
+        energy_grad_->wfc_X_to_C(wfc);
+        energy_grad_->disable_X_variable();
     }
 
     ModuleBase::timer::end("RDMFT", "solve");
@@ -425,8 +443,11 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 
         const double s_fidelity = compute_s_fidelity_trace(energy_grad_, wfc);
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
-            << "    orbital S-fidelity deviation (Tr(C^H S C)/(nk*nb) - 1) = "
-            << s_fidelity << std::endl;
+            << "    orbital fidelity deviation ("
+            << (energy_grad_->use_X_variable()
+                ? "Tr(X^H X)/(nk*nb) - 1"
+                : "Tr(C^H S C)/(nk*nb) - 1")
+            << ") = " << s_fidelity << std::endl;
 
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
@@ -1262,13 +1283,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
                                           wfc, grad_occ, grad_wfc);
 
-        // Project onto the tangent space of the generalised Stiefel manifold
-        // with overlap S:  G_R = G - S C sym(C^H G).
-        // At any S-orthonormal critical point, G_R == 0.
+        // Project onto the tangent space of the Stiefel manifold.
+        // In C-space (generalised Stiefel with overlap S):
+        //     G_R = G - C sym(C^H S G)
+        // In X-space (standard Stiefel, use_X_variable_ = true):
+        //     G_R = G - X sym(X^H G)
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        // Compute ||G_R||^2 in the S-weighted metric so the descent / CG
-        // quantities are consistent with the Stiefel geometry.
+        // Compute ||G_R||^2 in the appropriate metric (S-weighted or
+        // Euclidean when in X-space) for descent / CG consistency.
         double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 

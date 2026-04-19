@@ -26,6 +26,21 @@
 // ScaLAPACK Cholesky / triangular-solve prototypes not exposed by
 // ScalapackConnector. We only need them inside this TU.
 extern "C" {
+    // Serial LAPACK/BLAS routines for non-MPI path
+    void dtrtri_(const char* uplo, const char* diag, const int* n,
+                 double* A, const int* lda, int* info);
+    void ztrtri_(const char* uplo, const char* diag, const int* n,
+                 std::complex<double>* A, const int* lda, int* info);
+    void dtrmm_(const char* side, const char* uplo, const char* trans,
+                const char* diag, const int* m, const int* n,
+                const double* alpha, const double* A, const int* lda,
+                double* B, const int* ldb);
+    void ztrmm_(const char* side, const char* uplo, const char* trans,
+                const char* diag, const int* m, const int* n,
+                const std::complex<double>* alpha, const std::complex<double>* A, const int* lda,
+                std::complex<double>* B, const int* ldb);
+
+    // ScaLAPACK (MPI) routines not in scalapack_connector.h
     void pdtrsm_(const char* side, const char* uplo, const char* trans,
                  const char* diag, const int* m, const int* n,
                  const double* alpha,
@@ -36,6 +51,13 @@ extern "C" {
                  const std::complex<double>* alpha,
                  const std::complex<double>* A, const int* ia, const int* ja, const int* descA,
                  std::complex<double>* B, const int* ib, const int* jb, const int* descB);
+    // pdtrmm_ and pztrmm_ are already declared (without const) in scalapack_connector.h
+    void pdtrtri_(const char* uplo, const char* diag, const int* n,
+                  double* A, const int* ia, const int* ja, const int* descA,
+                  int* info);
+    void pztrtri_(const char* uplo, const char* diag, const int* n,
+                  std::complex<double>* A, const int* ia, const int* ja, const int* descA,
+                  int* info);
 }
 
 #include <cmath>
@@ -121,6 +143,87 @@ inline void trsm_right_lower_conjt(int m, int n, std::complex<double>* B, int ld
     char side = 'R', uplo = 'L', trans = 'C', diag = 'N';
     std::complex<double> alpha = {1.0, 0.0};
     ztrsm_(&side, &uplo, &trans, &diag, &m, &n, &alpha, L, &ldl, B, &ldb);
+}
+
+// Upper-triangular Cholesky: A = U^H U (upper triangular, in-place)
+inline int potrf_upper(double* A, int n)
+{
+    char uplo = 'U';
+    int info = 0;
+    dpotrf_(&uplo, &n, A, &n, &info);
+    return info;
+}
+inline int potrf_upper(std::complex<double>* A, int n)
+{
+    char uplo = 'U';
+    int info = 0;
+    zpotrf_(&uplo, &n, A, &n, &info);
+    return info;
+}
+
+// Triangular inverse: compute U^{-1} in-place for upper triangular U.
+inline int trtri_upper(double* U, int n)
+{
+    char uplo = 'U', diag = 'N';
+    int info = 0;
+    dtrtri_(&uplo, &diag, &n, U, &n, &info);
+    return info;
+}
+inline int trtri_upper(std::complex<double>* U, int n)
+{
+    char uplo = 'U', diag = 'N';
+    int info = 0;
+    ztrtri_(&uplo, &diag, &n, U, &n, &info);
+    return info;
+}
+
+// Triangular matrix multiply: B <- U * B  (side='L', uplo='U', trans='N', diag='N')
+// U is upper triangular n x n, B is n x nrhs, column-major.
+inline void trmm_left_upper_notr(int n, int nrhs, const double* U, int ldu,
+                                  double* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+    double alpha = 1.0;
+    dtrmm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
+}
+inline void trmm_left_upper_notr(int n, int nrhs, const std::complex<double>* U, int ldu,
+                                  std::complex<double>* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+    std::complex<double> alpha = {1.0, 0.0};
+    ztrmm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
+}
+
+// Triangular solve: B <- U^{-1} * B  (side='L', uplo='U', trans='N')
+inline void trsm_left_upper_notr(int n, int nrhs, const double* U, int ldu,
+                                  double* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+    double alpha = 1.0;
+    dtrsm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
+}
+inline void trsm_left_upper_notr(int n, int nrhs, const std::complex<double>* U, int ldu,
+                                  std::complex<double>* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+    std::complex<double> alpha = {1.0, 0.0};
+    ztrsm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
+}
+
+// Triangular solve: B <- U^{-H} * B  (side='L', uplo='U', trans='C'/'T')
+inline void trsm_left_upper_conjt(int n, int nrhs, const double* U, int ldu,
+                                   double* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'T', diag = 'N';
+    double alpha = 1.0;
+    dtrsm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
+}
+inline void trsm_left_upper_conjt(int n, int nrhs, const std::complex<double>* U, int ldu,
+                                   std::complex<double>* B, int ldb)
+{
+    char side = 'L', uplo = 'U', trans = 'C', diag = 'N';
+    std::complex<double> alpha = {1.0, 0.0};
+    ztrsm_(&side, &uplo, &trans, &diag, &n, &nrhs, &alpha, U, &ldu, B, &ldb);
 }
 
 } // namespace detail
@@ -673,6 +776,11 @@ double EnergyGradient<TK, TR>::s_inner_product(
     double result = 0.0;
     const int nb_local = Y.get_nbands();
     const int nbs_local = Y.get_nbasis();
+
+    // In X-variable mode, X lives in the S^{1/2}-transformed space where the
+    // metric is Euclidean (S = I), so we skip the S multiplication entirely.
+    const bool skip_S = use_X_variable_;
+
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
@@ -685,7 +793,7 @@ double EnergyGradient<TK, TR>::s_inner_product(
     {
         const TK* Xk = &X(ik, 0, 0);
         const TK* Yk = &Y(ik, 0, 0);
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
 
         if (SK != nullptr)
         {
@@ -715,7 +823,7 @@ double EnergyGradient<TK, TR>::s_inner_product(
     {
         const TK* Xk = &X(ik, 0, 0);
         const TK* Yk = &Y(ik, 0, 0);
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
 
         if (SK != nullptr)
         {
@@ -751,10 +859,12 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     // Skew-Hermitian requirement: K + K^H = C^H S G + G^H S C
     //   => K = sym(C^H S G)
     // So: G_R = G - C * sym(C^H S G).
-    // Note: when S = I the formula reduces to  G_R = G - C * sym(C^H G),
+    // Note: when S = I (or when using X-variable mode where X = U C and
+    // X^H X = I) the formula reduces to  G_R = G - X * sym(X^H G),
     // which is the standard Stiefel projection for the canonical metric.
     // The resulting G_R vanishes at any S-orthonormal critical point of E,
     // so the orbital inner loop converges immediately there.
+    const bool skip_S = use_X_variable_;
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     const TK neg_one = TK(-1.0);
@@ -770,9 +880,9 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * C  (if S available), otherwise SC == C
+        // SC = S * C  (if S available and not in X-mode), otherwise SC == C
         std::vector<TK> SC(ParaV_->nloc, TK(0));
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
             detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
@@ -818,9 +928,9 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * C  (if S available), otherwise SC == C
+        // SC = S * C  (if S available and not in X-mode), otherwise SC == C
         std::vector<TK> SC(nbasis * nbands, TK(0));
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
             detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
@@ -864,6 +974,10 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     // Hermitian eigendecomposition and perfectly adequate as long as alpha
     // is chosen small enough that M stays well-conditioned (which the outer
     // line search guarantees).
+    //
+    // In X-variable mode, S = I in the transformed space, so M = Y^H Y
+    // and the S multiplication is skipped.
+    const bool skip_S = use_X_variable_;
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     char tc = detail::trans_char(TK());
@@ -883,9 +997,9 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         for (int i = 0; i < nb_local * nbs_local; ++i)
             C[i] -= TK(alpha) * G[i];
 
-        // SY = S * Y
+        // SY = S * Y (or SY = Y when skip_S or no overlap)
         std::vector<TK> SY(ParaV_->nloc, TK(0));
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
             detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
@@ -971,9 +1085,9 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         for (int i = 0; i < nbasis * nbands; ++i)
             C[i] -= TK(alpha) * G[i];
 
-        // SY = S * Y
+        // SY = S * Y (or SY = Y when skip_S or no overlap)
         std::vector<TK> SY(nbasis * nbands, TK(0));
-        const TK* SK = get_SK(ik);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
             detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
@@ -1017,7 +1131,21 @@ double EnergyGradient<TK, TR>::compute(
     ModuleBase::timer::start("RDMFT_EG", "compute");
 
     assert(ion_initialized_);
-    build_charge(occ_flat, wfc);
+
+    // When in X-variable mode, wfc contains X_k. Convert to C_k for
+    // energy evaluation.  We use a non-const copy so that wfc_X_to_C
+    // can operate in-place on the temporary.
+    psi::Psi<TK> wfc_C;
+    const psi::Psi<TK>* wfc_ptr = &wfc;
+    if (use_X_variable_ && cholesky_precomputed_)
+    {
+        wfc_C = wfc;  // deep copy
+        wfc_X_to_C(wfc_C);
+        wfc_ptr = &wfc_C;
+    }
+    const psi::Psi<TK>& wfc_eval = *wfc_ptr;
+
+    build_charge(occ_flat, wfc_eval);
 
     // 2. Build Hartree potential
     HR_hartree_->set_zero();
@@ -1033,7 +1161,7 @@ double EnergyGradient<TK, TR>::compute(
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
-        build_DM_xc(occ_flat, wfc, DM_XC);
+        build_DM_xc(occ_flat, wfc_eval, DM_XC);
 
         if (exx_spacegroup_symmetry_)
             DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
@@ -1079,8 +1207,8 @@ double EnergyGradient<TK, TR>::compute(
 #endif
 
     // 4. For each k-point: compute H*psi, diagonal elements, and assemble gradients
-    const int nb_local = wfc.get_nbands();
-    const int nbs_local = wfc.get_nbasis();
+    const int nb_local = wfc_eval.get_nbands();
+    const int nbs_local = wfc_eval.get_nbasis();
 
     grad_occ.assign(nk_ * nbands_, 0.0);
     grad_wfc.resize(nk_, nb_local, nbs_local);
@@ -1101,7 +1229,7 @@ double EnergyGradient<TK, TR>::compute(
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc(ik, 0, 0);
+        const TK* psi_k = &wfc_eval(ik, 0, 0);
 
         // One-body: H_one * psi
         hsk_one_->set_zero_hk();
@@ -1220,6 +1348,13 @@ double EnergyGradient<TK, TR>::compute(
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
 
+    // When in X-variable mode, transform the orbital gradient from C-space
+    // to X-space: G_X = U^{-H} G_C.
+    if (use_X_variable_ && cholesky_precomputed_)
+    {
+        grad_C_to_X(grad_wfc);
+    }
+
     ModuleBase::timer::end("RDMFT_EG", "compute");
     return E_total_;
 }
@@ -1233,8 +1368,19 @@ double EnergyGradient<TK, TR>::compute_energy(
 
     assert(ion_initialized_);
 
+    // When in X-variable mode, convert X -> C for energy evaluation.
+    psi::Psi<TK> wfc_C;
+    const psi::Psi<TK>* wfc_ptr = &wfc;
+    if (use_X_variable_ && cholesky_precomputed_)
+    {
+        wfc_C = wfc;
+        wfc_X_to_C(wfc_C);
+        wfc_ptr = &wfc_C;
+    }
+    const psi::Psi<TK>& wfc_eval = *wfc_ptr;
+
     // Rebuild charge and Hartree (these always depend on occupations)
-    build_charge(occ_flat, wfc);
+    build_charge(occ_flat, wfc_eval);
 
     HR_hartree_->set_zero();
     delete op_hartree_;
@@ -1252,7 +1398,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
-        build_DM_xc(occ_flat, wfc, DM_XC);
+        build_DM_xc(occ_flat, wfc_eval, DM_XC);
 
         if (exx_spacegroup_symmetry_)
             DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
@@ -1300,14 +1446,14 @@ double EnergyGradient<TK, TR>::compute_energy(
     if (!hone_cache_valid_)
     {
         cached_h_one_diag_.resize(nk_);
-        const int nb_local = wfc.get_nbands();
-        const int nbs_local = wfc.get_nbasis();
+        const int nb_local = wfc_eval.get_nbands();
+        const int nbs_local = wfc_eval.get_nbasis();
         std::vector<TK> Hpsi_buf(nb_local * nbs_local);
 
         for (int ik = 0; ik < nk_; ++ik)
         {
             cached_h_one_diag_[ik].assign(nbands_, 0.0);
-            const TK* psi_k = &wfc(ik, 0, 0);
+            const TK* psi_k = &wfc_eval(ik, 0, 0);
 
             hsk_one_->set_zero_hk();
             op_local_->contributeHk(ik);
@@ -1319,8 +1465,8 @@ double EnergyGradient<TK, TR>::compute_energy(
     }
 
     // For each k-point, compute Hartree diag and accumulate energies
-    const int nb_local = wfc.get_nbands();
-    const int nbs_local = wfc.get_nbasis();
+    const int nb_local = wfc_eval.get_nbands();
+    const int nbs_local = wfc_eval.get_nbasis();
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
     std::vector<TK> Hpsi_buf(nb_local * nbs_local);
@@ -1331,7 +1477,7 @@ double EnergyGradient<TK, TR>::compute_energy(
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc(ik, 0, 0);
+        const TK* psi_k = &wfc_eval(ik, 0, 0);
 
         // Hartree diag
         hsk_hartree_->set_zero_hk();
@@ -1388,6 +1534,345 @@ double EnergyGradient<TK, TR>::compute_energy(
 
     ModuleBase::timer::end("RDMFT_EG", "compute_energy");
     return E_total_;
+}
+
+// ============================================================================
+// Cholesky-based S^{1/2} variable transformation
+// ============================================================================
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::precompute_cholesky_S()
+{
+    ModuleBase::timer::start("RDMFT_EG", "precompute_cholesky_S");
+
+    // Check whether we have an overlap operator at all
+    if (op_overlap_ == nullptr || hsk_overlap_ == nullptr)
+    {
+        // PW basis or no overlap: X = C, nothing to do
+        use_X_variable_ = false;
+        cholesky_precomputed_ = false;
+        ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+        return;
+    }
+
+    Uk_.resize(nk_);
+    Uk_inv_.resize(nk_);
+
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        // Get S_k (distributed, column-major)
+        const TK* SK = get_SK(ik);
+        if (SK == nullptr)
+        {
+            // No overlap for this k-point => identity
+            Uk_[ik].clear();
+            Uk_inv_[ik].clear();
+            continue;
+        }
+
+        // Copy S_k into Uk_[ik] for in-place Cholesky
+        Uk_[ik].assign(SK, SK + ParaV_->nloc);
+
+        // Upper Cholesky: S = U^H U (uplo='U')
+        {
+            int info = 0;
+            int one_int = 1;
+            char uplo = 'U';
+            if (std::is_same<TK, double>::value)
+            {
+                pdpotrf_(&uplo, const_cast<int*>(&nbasis),
+                    reinterpret_cast<double*>(Uk_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            else
+            {
+                pzpotrf_(&uplo, const_cast<int*>(&nbasis),
+                    reinterpret_cast<std::complex<double>*>(Uk_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            if (info != 0)
+            {
+                GlobalV::ofs_running << "WARNING: Cholesky factorisation of S_k failed"
+                    << " at ik=" << ik << " (info=" << info
+                    << "); disabling X-variable mode." << std::endl;
+                use_X_variable_ = false;
+                cholesky_precomputed_ = false;
+                ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+                return;
+            }
+        }
+
+        // Compute U^{-1} by inverting the upper triangular factor
+        Uk_inv_[ik] = Uk_[ik];
+        {
+            int info = 0;
+            int one_int = 1;
+            char uplo = 'U';
+            char diag = 'N';
+            if (std::is_same<TK, double>::value)
+            {
+                pdtrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
+                    reinterpret_cast<double*>(Uk_inv_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            else
+            {
+                pztrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
+                    reinterpret_cast<std::complex<double>*>(Uk_inv_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            if (info != 0)
+            {
+                GlobalV::ofs_running << "WARNING: Triangular inverse of U_k failed"
+                    << " at ik=" << ik << " (info=" << info
+                    << "); disabling X-variable mode." << std::endl;
+                use_X_variable_ = false;
+                cholesky_precomputed_ = false;
+                ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+                return;
+            }
+        }
+    }
+#else
+    // Non-MPI: nbs_local == nbasis
+    const int nbasis = nbasis_local_;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* SK = get_SK(ik);
+        if (SK == nullptr)
+        {
+            Uk_[ik].clear();
+            Uk_inv_[ik].clear();
+            continue;
+        }
+
+        // Copy S_k into Uk_ for in-place Cholesky
+        Uk_[ik].assign(SK, SK + nbasis * nbasis);
+
+        // Upper Cholesky: S = U^H U
+        int info = detail::potrf_upper(Uk_[ik].data(), nbasis);
+        if (info != 0)
+        {
+            GlobalV::ofs_running << "WARNING: Cholesky factorisation of S_k failed"
+                << " at ik=" << ik << " (info=" << info
+                << "); disabling X-variable mode." << std::endl;
+            use_X_variable_ = false;
+            cholesky_precomputed_ = false;
+            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+            return;
+        }
+
+        // Compute U^{-1}
+        Uk_inv_[ik] = Uk_[ik];
+        info = detail::trtri_upper(Uk_inv_[ik].data(), nbasis);
+        if (info != 0)
+        {
+            GlobalV::ofs_running << "WARNING: Triangular inverse of U_k failed"
+                << " at ik=" << ik << " (info=" << info
+                << "); disabling X-variable mode." << std::endl;
+            use_X_variable_ = false;
+            cholesky_precomputed_ = false;
+            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+            return;
+        }
+    }
+#endif
+
+    cholesky_precomputed_ = true;
+    use_X_variable_ = true;
+    GlobalV::ofs_running << "  Cholesky S = U^H U precomputed for all k-points; "
+        << "using X_k = U_k C_k as Stiefel variable." << std::endl;
+
+    ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::wfc_C_to_X(psi::Psi<TK>& wfc)
+{
+    // X_k = U_k * C_k  for each k-point
+    if (!cholesky_precomputed_) return;
+
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
+
+#ifdef __MPI
+    const int nbasis_const = ParaV_->desc[2];
+    const int nbands_const = ParaV_->desc_wfc[3];
+    int nbasis = nbasis_const;
+    int nbands = nbands_const;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue; // S = I for this k
+
+        TK* C = &wfc(ik, 0, 0);
+
+        // X = U * C via pdtrmm_: B <- alpha * A * B (side='L', uplo='U', trans='N')
+        // pdtrmm_ is an in-place operation that overwrites B with A*B,
+        // so we operate directly on C (which becomes X after the call).
+        int one_int = 1;
+        char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+        if (std::is_same<TK, double>::value)
+        {
+            double alpha_r = 1.0;
+            pdtrmm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_r,
+                reinterpret_cast<double*>(const_cast<TK*>(Uk_[ik].data())),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<double*>(C),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+        else
+        {
+            std::complex<double> alpha_c = {1.0, 0.0};
+            pztrmm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_c,
+                reinterpret_cast<std::complex<double>*>(const_cast<TK*>(Uk_[ik].data())),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<std::complex<double>*>(C),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+    }
+#else
+    const int nbasis = nbs_local;
+    const int nbands = nb_local;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue;
+
+        TK* C = &wfc(ik, 0, 0);
+
+        // X = U * C (in-place via trmm)
+        detail::trmm_left_upper_notr(nbasis, nbands, Uk_[ik].data(), nbasis, C, nbasis);
+    }
+#endif
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::wfc_X_to_C(psi::Psi<TK>& wfc)
+{
+    // C_k = U_k^{-1} * X_k  for each k-point
+    if (!cholesky_precomputed_) return;
+
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
+
+#ifdef __MPI
+    int nbasis = ParaV_->desc[2];
+    int nbands = ParaV_->desc_wfc[3];
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue;
+
+        TK* X = &wfc(ik, 0, 0);
+
+        // C = U^{-1} X: solve U * C = X for C, i.e. trsm side='L', uplo='U', trans='N'
+        int one_int = 1;
+        char side = 'L', uplo = 'U', trans = 'N', diag = 'N';
+        if (std::is_same<TK, double>::value)
+        {
+            double alpha_r = 1.0;
+            pdtrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_r,
+                reinterpret_cast<const double*>(Uk_[ik].data()),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<double*>(X),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+        else
+        {
+            std::complex<double> alpha_c = {1.0, 0.0};
+            pztrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_c,
+                reinterpret_cast<const std::complex<double>*>(Uk_[ik].data()),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<std::complex<double>*>(X),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+    }
+#else
+    const int nbasis = nbs_local;
+    const int nbands = nb_local;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue;
+
+        TK* X = &wfc(ik, 0, 0);
+
+        // C = U^{-1} X via trsm
+        detail::trsm_left_upper_notr(nbasis, nbands, Uk_[ik].data(), nbasis, X, nbasis);
+    }
+#endif
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::grad_C_to_X(psi::Psi<TK>& grad_wfc)
+{
+    // G_X = U_k^{-H} * G_C  for each k-point
+    // (chain rule: C = U^{-1} X => dE/dX* = U^{-H} dE/dC*)
+    if (!cholesky_precomputed_) return;
+
+    const int nb_local = grad_wfc.get_nbands();
+    const int nbs_local = grad_wfc.get_nbasis();
+
+#ifdef __MPI
+    int nbasis = ParaV_->desc[2];
+    int nbands = ParaV_->desc_wfc[3];
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue;
+
+        TK* G = &grad_wfc(ik, 0, 0);
+
+        // G_X = U^{-H} G_C: solve U^H * G_X = G_C, i.e.
+        // trsm side='L', uplo='U', trans='C'/'T'
+        int one_int = 1;
+        char side = 'L', uplo = 'U';
+        char trans = detail::trans_char(TK());
+        char diag = 'N';
+        if (std::is_same<TK, double>::value)
+        {
+            double alpha_r = 1.0;
+            pdtrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_r,
+                reinterpret_cast<const double*>(Uk_[ik].data()),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<double*>(G),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+        else
+        {
+            std::complex<double> alpha_c = {1.0, 0.0};
+            pztrsm_(&side, &uplo, &trans, &diag, &nbasis, &nbands,
+                &alpha_c,
+                reinterpret_cast<const std::complex<double>*>(Uk_[ik].data()),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc),
+                reinterpret_cast<std::complex<double>*>(G),
+                &one_int, &one_int, const_cast<int*>(ParaV_->desc_wfc));
+        }
+    }
+#else
+    const int nbasis = nbs_local;
+    const int nbands = nb_local;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        if (Uk_[ik].empty()) continue;
+
+        TK* G = &grad_wfc(ik, 0, 0);
+
+        // G_X = U^{-H} G_C via trsm
+        detail::trsm_left_upper_conjt(nbasis, nbands, Uk_[ik].data(), nbasis, G, nbasis);
+    }
+#endif
 }
 
 // Explicit template instantiations
