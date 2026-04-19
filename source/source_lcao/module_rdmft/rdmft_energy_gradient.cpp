@@ -673,11 +673,18 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     psi::Psi<TK>& grad_wfc)
 {
     // Compute the Riemannian (tangent-space) gradient on the generalised
-    // Stiefel manifold  { C : C^H S C = I } with the Euclidean ambient metric:
-    //     proj_C(G) = G - S * C * sym(C^H G)
-    // The resulting tangent vector satisfies  C^H S proj + proj^H S C = 0,
-    // and equals zero exactly at any S-orthonormal critical point (e.g. KS
-    // eigenstates), so the orbital inner loop converges immediately there.
+    // Stiefel manifold  { C : C^H S C = I } with the canonical (trace) metric:
+    //     proj_C(G) = G - C * sym(C^H S G)
+    // where sym(M) = 0.5*(M + M^H).
+    // Derivation: we seek G_R = G - C*K such that C^H S G_R is skew-Hermitian.
+    //   C^H S G_R = C^H S G - C^H S C * K = C^H S G - K  (since C^H S C = I)
+    // Skew-Hermitian requirement: K + K^H = C^H S G + G^H S C
+    //   => K = sym(C^H S G)
+    // So: G_R = G - C * sym(C^H S G).
+    // Note: when S = I the formula reduces to  G_R = G - C * sym(C^H G),
+    // which is the standard Stiefel projection for the canonical metric.
+    // The resulting G_R vanishes at any S-orthonormal critical point of E,
+    // so the orbital inner loop converges immediately there.
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
@@ -693,7 +700,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * Phi  (if S available), otherwise SC == Phi
+        // SC = S * C  (if S available), otherwise SC == C
         std::vector<TK> SC(ParaV_->nloc, TK(0));
         const TK* SK = get_SK(ik);
         if (SK != nullptr)
@@ -709,25 +716,25 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
             for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
         }
 
-        // A = C^H G  (nbands x nbands)
+        // A = (SC)^H G = C^H S G  (nbands x nbands)
         std::vector<TK> A(eij_nloc, TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, psi_k, 1, 1, ParaV_->desc_wfc,
+            one, SC.data(), 1, 1, ParaV_->desc_wfc,
             g_k, 1, 1, ParaV_->desc_wfc,
             zero, A.data(), 1, 1, para_Eij_.desc);
 
-        // B = G^H C, then symmetric part  A <- 0.5 (A + B) = 0.5(C^H G + G^H C)
+        // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
         // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
         std::vector<TK> B(eij_nloc, TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, g_k, 1, 1, ParaV_->desc_wfc,
-            psi_k, 1, 1, ParaV_->desc_wfc,
+            SC.data(), 1, 1, ParaV_->desc_wfc,
             zero, B.data(), 1, 1, para_Eij_.desc);
         for (int i = 0; i < eij_nloc; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
 
-        // G <- G - SC * A_sym
+        // G <- G - C * sym(C^H S G)  (use psi_k = C, not SC)
         detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
-            neg_one, SC.data(), 1, 1, ParaV_->desc_wfc,
+            neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
             A.data(), 1, 1, para_Eij_.desc,
             one, g_k, 1, 1, ParaV_->desc_wfc);
     }
