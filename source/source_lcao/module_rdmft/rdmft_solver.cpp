@@ -373,6 +373,14 @@ double RDMFTSolver<TK, TR>::solve(
         }
     }
 
+    // S-orthonormalize the initial orbitals so that all subsequent gradient
+    // projections and Cholesky retractions start from a valid point on the
+    // generalised Stiefel manifold { C : C^H S C = I }.  Calling
+    // retract_orbitals with alpha = 0 applies only the Cholesky-QR
+    // re-orthonormalisation without any directional step (the gradient
+    // argument is irrelevant when alpha = 0, so we reuse wfc itself).
+    energy_grad_->retract_orbitals(wfc, wfc, 0.0);
+
     double E = 0.0;
     switch (config_.strategy)
     {

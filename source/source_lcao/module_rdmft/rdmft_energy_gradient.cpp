@@ -593,7 +593,13 @@ template <typename TK, typename TR>
 const TK* EnergyGradient<TK, TR>::get_SK(int ik)
 {
     if (op_overlap_ == nullptr || hsk_overlap_ == nullptr) return nullptr;
-    hsk_overlap_->set_zero_sk();
+    // NOTE: do NOT call hsk_overlap_->set_zero_sk() here.
+    // contributeHk() internally calls set_zero_sk() before recomputing, so the
+    // external zero is redundant. More importantly, for the gamma-only real case
+    // (TK=double), contributeHk() caches the result and returns early when the
+    // k-vector hasn't changed. Calling set_zero_sk() before this early return
+    // would leave the sk buffer zeroed, causing all subsequent get_SK() calls
+    // to return a zero S-matrix and silently breaking orbital orthonormalization.
     op_overlap_->contributeHk(ik);
     return hsk_overlap_->get_sk();
 }
