@@ -188,6 +188,12 @@ template <typename TK, typename TR>
 double compute_s_fidelity_trace(EnergyGradient<TK, TR>* energy_grad,
                                 const psi::Psi<TK>& wfc)
 {
+    // Measure the deviation of C from the generalised Stiefel manifold:
+    //   S-fid = Tr(C^H S C) / (nk * nbands) - 1
+    //         = Tr(X^H X - I) / (nk * nbands)  where X = S^{1/2} C
+    // When C^H S C = I (i.e. C is on St(p,n;S)), S-fid == 0.
+    // Positive (negative) values indicate that the columns are
+    // over-normalised (under-normalised) on average.
     const double s_trace = energy_grad->s_inner_product(wfc, wfc);
     const double target = static_cast<double>(wfc.get_nk())
                         * static_cast<double>(wfc.get_nbands());
@@ -195,7 +201,7 @@ double compute_s_fidelity_trace(EnergyGradient<TK, TR>* energy_grad,
     {
         return 0.0;
     }
-    return s_trace / target;
+    return s_trace / target - 1.0;
 }
 } // namespace
 
@@ -419,9 +425,8 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 
         const double s_fidelity = compute_s_fidelity_trace(energy_grad_, wfc);
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
-            << "    orbital S-fidelity(trace) before inner loops = "
-            << s_fidelity
-            << "  |1-f| = " << std::abs(1.0 - s_fidelity) << std::endl;
+            << "    orbital S-fidelity deviation (Tr(C^H S C)/(nk*nb) - 1) = "
+            << s_fidelity << std::endl;
 
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);

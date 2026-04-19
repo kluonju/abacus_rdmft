@@ -125,7 +125,12 @@ class EnergyGradient
   public:
     /// Project orbital gradient onto the tangent space of the Stiefel manifold
     /// with overlap matrix S (generalised Stiefel: C^H S C = I).
-    ///   G_R = G - S * C * sym(C^H * G)
+    ///   G_R = G - C * sym(C^H S G)
+    /// Derivation (canonical/trace metric): seek G_R = G - C*K such that
+    /// C^H S G_R is skew-Hermitian.  Since C^H S C = I,
+    ///   C^H S G_R = C^H S G - K,
+    /// and the skew-Hermitian condition gives K = sym(C^H S G).
+    /// When S = I this reduces to G_R = G - C * sym(C^H G) (standard Stiefel).
     /// At any S-orthonormal critical point (e.g. KS eigenstates), G_R == 0,
     /// allowing the orbital inner loop to detect convergence immediately.
     void project_orbital_gradient(const psi::Psi<TK>& wfc,

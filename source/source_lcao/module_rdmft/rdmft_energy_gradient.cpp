@@ -2,6 +2,7 @@
 #include "source_base/timer.h"
 #include "source_base/parallel_reduce.h"
 #include "source_base/module_external/blas_connector.h"
+#include "source_base/module_external/lapack_connector.h"
 #include "source_base/module_external/scalapack_connector.h"
 #include "source_cell/module_symmetry/symmetry.h"
 #include "source_estate/module_dm/cal_dm_psi.h"
@@ -72,6 +73,56 @@ inline double real_of(std::complex<double> v) { return v.real(); }
 // Transpose character for real/complex
 inline char trans_char(double) { return 'T'; }
 inline char trans_char(std::complex<double>) { return 'C'; }
+
+// Non-MPI BLAS helpers: plain column-major dense matrix operations.
+// C = alpha * op(A) * op(B) + beta * C  (col-major, lda = leading dimension)
+inline void gemm_wrapper(char ta, char tb, int m, int n, int k,
+    double alpha, const double* A, int lda,
+    const double* B, int ldb,
+    double beta, double* C, int ldc)
+{
+    dgemm_(&ta, &tb, &m, &n, &k, &alpha, A, &lda, B, &ldb, &beta, C, &ldc);
+}
+inline void gemm_wrapper(char ta, char tb, int m, int n, int k,
+    std::complex<double> alpha, const std::complex<double>* A, int lda,
+    const std::complex<double>* B, int ldb,
+    std::complex<double> beta, std::complex<double>* C, int ldc)
+{
+    zgemm_(&ta, &tb, &m, &n, &k, &alpha, A, &lda, B, &ldb, &beta, C, &ldc);
+}
+
+// Cholesky factorisation: A = L L^H (lower triangular, in-place)
+inline int potrf_lower(double* A, int n)
+{
+    char uplo = 'L';
+    int info = 0;
+    dpotrf_(&uplo, &n, A, &n, &info);
+    return info;
+}
+inline int potrf_lower(std::complex<double>* A, int n)
+{
+    char uplo = 'L';
+    int info = 0;
+    zpotrf_(&uplo, &n, A, &n, &info);
+    return info;
+}
+
+// Triangular solve: B <- B * (L^H)^{-1}  (side='R', uplo='L', trans='T' for real/'C' for complex, diag='N')
+// i.e. solve B * L^H = B_in for B (in-place). Dimensions: B is m x n.
+inline void trsm_right_lower_conjt(int m, int n, double* B, int ldb, const double* L, int ldl)
+{
+    char side = 'R', uplo = 'L', trans = 'T', diag = 'N';
+    double alpha = 1.0;
+    dtrsm_(&side, &uplo, &trans, &diag, &m, &n, &alpha, L, &ldl, B, &ldb);
+}
+inline void trsm_right_lower_conjt(int m, int n, std::complex<double>* B, int ldb,
+                                    const std::complex<double>* L, int ldl)
+{
+    char side = 'R', uplo = 'L', trans = 'C', diag = 'N';
+    std::complex<double> alpha = {1.0, 0.0};
+    ztrsm_(&side, &uplo, &trans, &diag, &m, &n, &alpha, L, &ldl, B, &ldb);
+}
+
 } // namespace detail
 
 namespace {
@@ -620,6 +671,8 @@ double EnergyGradient<TK, TR>::s_inner_product(
     const psi::Psi<TK>& Y)
 {
     double result = 0.0;
+    const int nb_local = Y.get_nbands();
+    const int nbs_local = Y.get_nbasis();
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
@@ -627,8 +680,6 @@ double EnergyGradient<TK, TR>::s_inner_product(
     const TK zero = TK(0.0);
 
     std::vector<TK> SY(ParaV_->nloc, TK(0));
-    const int nb_local = Y.get_nbands();
-    const int nbs_local = Y.get_nbasis();
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -654,14 +705,33 @@ double EnergyGradient<TK, TR>::s_inner_product(
     }
     Parallel_Reduce::reduce_all(result);
 #else
-    const int nb_local = Y.get_nbands();
-    const int nbs_local = Y.get_nbasis();
+    // Non-MPI: nbs_local == nbasis (full matrix local). Use plain BLAS when
+    // S is available; fall back to Euclidean inner product when S == I.
+    const int nbasis = nbs_local;
+    const int nbands = nb_local;
+    std::vector<TK> SY(nbasis * nbands, TK(0));
+
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* Xk = &X(ik, 0, 0);
         const TK* Yk = &Y(ik, 0, 0);
-        for (int i = 0; i < nb_local * nbs_local; ++i)
-            result += real_of_conj_prod(Xk[i], Yk[i]);
+        const TK* SK = get_SK(ik);
+
+        if (SK != nullptr)
+        {
+            // SY = S * Y
+            const TK one = TK(1.0);
+            const TK zero = TK(0.0);
+            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, nbasis, Yk, nbasis, zero, SY.data(), nbasis);
+            for (int i = 0; i < nbasis * nbands; ++i)
+                result += real_of_conj_prod(Xk[i], SY[i]);
+        }
+        else
+        {
+            for (int i = 0; i < nbasis * nbands; ++i)
+                result += real_of_conj_prod(Xk[i], Yk[i]);
+        }
     }
 #endif
     return result;
@@ -673,18 +743,25 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     psi::Psi<TK>& grad_wfc)
 {
     // Compute the Riemannian (tangent-space) gradient on the generalised
-    // Stiefel manifold  { C : C^H S C = I } with the Euclidean ambient metric:
-    //     proj_C(G) = G - S * C * sym(C^H G)
-    // The resulting tangent vector satisfies  C^H S proj + proj^H S C = 0,
-    // and equals zero exactly at any S-orthonormal critical point (e.g. KS
-    // eigenstates), so the orbital inner loop converges immediately there.
-#ifdef __MPI
-    const int nbasis = ParaV_->desc[2];
-    const int nbands = ParaV_->desc_wfc[3];
+    // Stiefel manifold  { C : C^H S C = I } with the canonical (trace) metric:
+    //     proj_C(G) = G - C * sym(C^H S G)
+    // where sym(M) = 0.5*(M + M^H).
+    // Derivation: we seek G_R = G - C*K such that C^H S G_R is skew-Hermitian.
+    //   C^H S G_R = C^H S G - C^H S C * K = C^H S G - K  (since C^H S C = I)
+    // Skew-Hermitian requirement: K + K^H = C^H S G + G^H S C
+    //   => K = sym(C^H S G)
+    // So: G_R = G - C * sym(C^H S G).
+    // Note: when S = I the formula reduces to  G_R = G - C * sym(C^H G),
+    // which is the standard Stiefel projection for the canonical metric.
+    // The resulting G_R vanishes at any S-orthonormal critical point of E,
+    // so the orbital inner loop converges immediately there.
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     const TK neg_one = TK(-1.0);
     char tc = detail::trans_char(TK());
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
 
     const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
 
@@ -693,7 +770,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * Phi  (if S available), otherwise SC == Phi
+        // SC = S * C  (if S available), otherwise SC == C
         std::vector<TK> SC(ParaV_->nloc, TK(0));
         const TK* SK = get_SK(ik);
         if (SK != nullptr)
@@ -709,27 +786,65 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
             for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
         }
 
-        // A = C^H G  (nbands x nbands)
+        // A = (SC)^H G = C^H S G  (nbands x nbands)
         std::vector<TK> A(eij_nloc, TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, psi_k, 1, 1, ParaV_->desc_wfc,
+            one, SC.data(), 1, 1, ParaV_->desc_wfc,
             g_k, 1, 1, ParaV_->desc_wfc,
             zero, A.data(), 1, 1, para_Eij_.desc);
 
-        // B = G^H C, then symmetric part  A <- 0.5 (A + B) = 0.5(C^H G + G^H C)
+        // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
         // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
         std::vector<TK> B(eij_nloc, TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, g_k, 1, 1, ParaV_->desc_wfc,
-            psi_k, 1, 1, ParaV_->desc_wfc,
+            SC.data(), 1, 1, ParaV_->desc_wfc,
             zero, B.data(), 1, 1, para_Eij_.desc);
         for (int i = 0; i < eij_nloc; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
 
-        // G <- G - SC * A_sym
+        // G <- G - C * sym(C^H S G)  (use psi_k = C, not SC)
         detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
-            neg_one, SC.data(), 1, 1, ParaV_->desc_wfc,
+            neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
             A.data(), 1, 1, para_Eij_.desc,
             one, g_k, 1, 1, ParaV_->desc_wfc);
+    }
+#else
+    // Non-MPI: nbs_local == nbasis. Use plain BLAS.
+    const int nbasis = wfc.get_nbasis();
+    const int nbands = wfc.get_nbands();
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* psi_k = &wfc(ik, 0, 0);
+        TK* g_k = &grad_wfc(ik, 0, 0);
+
+        // SC = S * C  (if S available), otherwise SC == C
+        std::vector<TK> SC(nbasis * nbands, TK(0));
+        const TK* SK = get_SK(ik);
+        if (SK != nullptr)
+        {
+            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, nbasis, psi_k, nbasis, zero, SC.data(), nbasis);
+        }
+        else
+        {
+            for (int i = 0; i < nbasis * nbands; ++i) SC[i] = psi_k[i];
+        }
+
+        // A = (SC)^H G = C^H S G  (nbands x nbands)
+        std::vector<TK> A(nbands * nbands, TK(0));
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, SC.data(), nbasis, g_k, nbasis, zero, A.data(), nbands);
+
+        // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
+        std::vector<TK> B(nbands * nbands, TK(0));
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, g_k, nbasis, SC.data(), nbasis, zero, B.data(), nbands);
+        for (int i = 0; i < nbands * nbands; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
+
+        // G <- G - C * sym(C^H S G)
+        detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
+            neg_one, psi_k, nbasis, A.data(), nbands, one, g_k, nbasis);
     }
 #endif
 }
@@ -749,15 +864,15 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     // Hermitian eigendecomposition and perfectly adequate as long as alpha
     // is chosen small enough that M stays well-conditioned (which the outer
     // line search guarantees).
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    char tc = detail::trans_char(TK());
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
-    const TK one = TK(1.0);
-    const TK zero = TK(0.0);
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
     const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
-    char tc = detail::trans_char(TK());
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -841,6 +956,53 @@ void EnergyGradient<TK, TR>::retract_orbitals(
                     const_cast<int*>(ParaV_->desc_wfc));
             }
         }
+    }
+#else
+    // Non-MPI: nbs_local == nbasis. Use plain BLAS/LAPACK.
+    const int nbasis = wfc.get_nbasis();
+    const int nbands = wfc.get_nbands();
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        TK* C = &wfc(ik, 0, 0);
+        const TK* G = &grad_wfc(ik, 0, 0);
+
+        // Y = C - alpha * G (in-place on C)
+        for (int i = 0; i < nbasis * nbands; ++i)
+            C[i] -= TK(alpha) * G[i];
+
+        // SY = S * Y
+        std::vector<TK> SY(nbasis * nbands, TK(0));
+        const TK* SK = get_SK(ik);
+        if (SK != nullptr)
+        {
+            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, nbasis, C, nbasis, zero, SY.data(), nbasis);
+        }
+        else
+        {
+            for (int i = 0; i < nbasis * nbands; ++i) SY[i] = C[i];
+        }
+
+        // M = Y^H S Y  (nbands x nbands)
+        std::vector<TK> M(nbands * nbands, TK(0));
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, C, nbasis, SY.data(), nbasis, zero, M.data(), nbands);
+
+        // Cholesky: M = L L^H
+        const int info = detail::potrf_lower(M.data(), nbands);
+        if (info != 0)
+        {
+            // Cholesky failed; skip re-orthonormalisation for this step.
+            // The outer line search should reject this trial point.
+            GlobalV::ofs_running << "WARNING: Cholesky factorisation of Y^H S Y failed"
+                << " at ik=" << ik << " (info=" << info
+                << "); skipping re-orthonormalisation." << std::endl;
+            continue;
+        }
+
+        // C <- C * (L^H)^{-1}
+        detail::trsm_right_lower_conjt(nbasis, nbands, C, nbasis, M.data(), nbands);
     }
 #endif
 }
