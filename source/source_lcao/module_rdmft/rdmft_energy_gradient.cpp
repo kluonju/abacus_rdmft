@@ -107,7 +107,7 @@ inline int potrf_lower(std::complex<double>* A, int n)
     return info;
 }
 
-// Triangular solve: B <- B * (L^H)^{-1}  (side='R', uplo='L', trans=trans_char(TK), diag='N')
+// Triangular solve: B <- B * (L^H)^{-1}  (side='R', uplo='L', trans='T' for real/'C' for complex, diag='N')
 // i.e. solve B * L^H = B_in for B (in-place). Dimensions: B is m x n.
 inline void trsm_right_lower_conjt(int m, int n, double* B, int ldb, const double* L, int ldl)
 {
@@ -994,6 +994,10 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         if (info != 0)
         {
             // Cholesky failed; skip re-orthonormalisation for this step.
+            // The outer line search should reject this trial point.
+            GlobalV::ofs_running << "WARNING: Cholesky factorisation of Y^H S Y failed"
+                << " at ik=" << ik << " (info=" << info
+                << "); skipping re-orthonormalisation." << std::endl;
             continue;
         }
 
