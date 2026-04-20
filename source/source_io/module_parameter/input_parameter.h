@@ -678,6 +678,7 @@ struct Input_para
     int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
     int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
+    double rdmft_occ_init_perturb = 1e-3;          // KS-based initial occupation perturbation magnitude (deterministic +/-delta)
     int rdmft_occ_init_nbands_top = 5;             // initial [m,1-m] clamp: 0 = all bands, K>0 = top K bands only (default 5)
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
     double rdmft_grad_tol = 1e-6;                  // orbital inner: ||G_R||; occupation inner grad: same default

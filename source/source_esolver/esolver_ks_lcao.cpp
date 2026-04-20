@@ -566,6 +566,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
         rdmft_config.occ_maxiter = inp.rdmft_occ_maxiter;
+        rdmft_config.occ_init_perturb = inp.rdmft_occ_init_perturb;
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.grad_tol = inp.rdmft_grad_tol;

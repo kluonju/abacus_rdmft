@@ -145,38 +145,31 @@ class EnergyGradient
                           const psi::Psi<TK>& grad_wfc,
                           double alpha);
 
-    /// Return pointer to overlap matrix at k-point ik (column-major). May be
-    /// nullptr if no overlap operator is active. Rebuilt lazily the first time
-    /// it is requested per ion step.
+    /// Return pointer to overlap matrix at k-point ik (column-major).
+    /// Rebuilt lazily the first time it is requested per ion step.
     const TK* get_SK(int ik);
 
-    /// Compute the S-weighted inner product  <X, Y>_S = Re Tr(X^H S Y)
-    /// summed over k-points. Performs an MPI Allreduce internally.
-    /// When no overlap is available (PW basis) or when use_X_variable_ is
-    /// true (working in the S^{1/2}-transformed space), falls back to the
-    /// Euclidean inner product <X, Y> = Re Tr(X^H Y).
+    /// Compute the Euclidean inner product Re Tr(X^H Y) summed over k-points.
+    /// In the X-variable formulation this is the canonical metric used by the
+    /// solver. Performs an MPI Allreduce internally.
     double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
 
-    /// Per k-point Stiefel Gram residual ||G_k - I||_F with G_k = X_k^H X_k in
-    /// X-variable mode, else G_k = C_k^H S_k C_k.  frob_per_ik is resized to nk_.
+    /// Per k-point Stiefel Gram residual ||X_k^H X_k - I||_F.
+    /// frob_per_ik is resized to nk_.
     void stiefel_gram_residual_frobenius_per_k(const psi::Psi<TK>& wfc,
                                                 std::vector<double>& frob_per_ik);
 
     // ================================================================
     // Cholesky-based S^{1/2} variable transformation
     //
-    // For alternating optimization the Stiefel manifold variable can be
-    // changed from C_k (with C_k^H S_k C_k = I) to X_k = U_k C_k where
-    // S_k = U_k^H U_k (Cholesky decomposition).  In X-space the
-    // orthonormality constraint is simply X_k^H X_k = I, so all
-    // manifold operations (projection, retraction, inner product) reduce
-    // to the standard S=I Stiefel form.
+    // RDMFT operates only in X-space, with X_k = U_k C_k and S_k = U_k^H U_k.
+    // After precompute_cholesky_S(), all manifold operations assume the
+    // orbital variable is X_k and use the standard Stiefel metric X_k^H X_k = I.
     // ================================================================
 
     /// Precompute the Cholesky factorisation S_k = U_k^H U_k for each
-    /// k-point and store U_k, U_k^{-1}.  After this call, use_X_variable_
-    /// is set to true and all subsequent manifold operations assume the
-    /// wfc contains X_k rather than C_k.
+    /// k-point and store U_k, U_k^{-1}. All subsequent manifold operations
+    /// assume wfc contains X_k rather than C_k.
     void precompute_cholesky_S();
 
     /// Transform wfc in-place: C_k -> X_k = U_k C_k.
@@ -191,12 +184,6 @@ class EnergyGradient
     ///   G_X = U_k^{-H} G_C   (chain rule from C = U^{-1} X)
     /// Requires precompute_cholesky_S() to have been called.
     void grad_C_to_X(psi::Psi<TK>& grad_wfc);
-
-    /// Whether manifold operations are currently in X-space
-    bool use_X_variable() const { return use_X_variable_; }
-
-    /// Disable X-variable mode (revert to C-space manifold operations)
-    void disable_X_variable() { use_X_variable_ = false; }
 
     // ABACUS infrastructure (non-owning)
     const Parallel_Orbitals* ParaV_ = nullptr;
@@ -261,10 +248,8 @@ class EnergyGradient
     bool hone_cache_valid_ = false;
     std::vector<std::vector<double>> cached_h_one_diag_; // [nk][nbands]
 
-    // Cholesky S^{1/2} variable transformation data.
-    // When use_X_variable_ is true, the solver works with X_k = U_k C_k
-    // instead of C_k.  All manifold operations then assume S = I.
-    bool use_X_variable_ = false;
+    // Cholesky S^{1/2} variable transformation data used by the mandatory
+    // X-space formulation.
     bool cholesky_precomputed_ = false;
     /// U_k (upper triangular Cholesky factor of S_k) for each k-point.
     /// Stored in column-major format. Only the upper triangle is meaningful;

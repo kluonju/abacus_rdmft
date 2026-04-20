@@ -490,8 +490,7 @@ void make_init(int n, int nb, double Ne,
 // SD / CG / Adam use a small entropic regulariser (beta > 0) so the exact
 // optimum is strictly interior in [0, 1]. Otherwise the cosine^2
 // parameterisation's Jacobian dn/dp = -sin(2p) vanishes at n in {0, 1}, which
-// stalls any first-order method (this is exactly the issue that motivated
-// `occ_init_margin` in the production code). L-BFGS bootstraps a Hessian
+// stalls any first-order method in the integer-filling limit. L-BFGS bootstraps a Hessian
 // approximation that escapes the stall, so its test uses the integer-filling
 // limit (beta = 0) and verifies fast convergence.
 // -----------------------------------------------------------------------------

@@ -1020,6 +1020,30 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_init_perturb");
+        item.annotation = "Initial KS-occupation perturbation magnitude for RDMFT";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Before RDMFT starts, use KS occupations as the base and add a deterministic "
+                           "alternating perturbation +/-delta to the selected bands (controlled by "
+                           "rdmft_occ_init_nbands_top). 0 disables perturbation.";
+        item.default_value = "1e-3";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_init_perturb);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_occ_init_perturb < 0.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_occ_init_perturb must be >= 0.0");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_init_nbands_top");
         item.annotation = "Initial occupation clamp: number of highest bands only";
         item.category = "Reduced Density Matrix Functional Theory";

@@ -782,71 +782,22 @@ double EnergyGradient<TK, TR>::s_inner_product(
     const int nb_local = Y.get_nbands();
     const int nbs_local = Y.get_nbasis();
 
-    // In X-variable mode, X lives in the S^{1/2}-transformed space where the
-    // metric is Euclidean (S = I), so we skip the S multiplication entirely.
-    const bool skip_S = use_X_variable_;
-
 #ifdef __MPI
-    const int nbasis = ParaV_->desc[2];
-    const int nbands = ParaV_->desc_wfc[3];
-    const TK one = TK(1.0);
-    const TK zero = TK(0.0);
-
-    const std::int64_t sy_alloc_ip
-        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
-    std::vector<TK> SY(static_cast<size_t>(sy_alloc_ip), TK(0));
-
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* Xk = &X(ik, 0, 0);
         const TK* Yk = &Y(ik, 0, 0);
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-
-        if (SK != nullptr)
-        {
-            std::fill(SY.begin(), SY.end(), TK(0));
-            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, 1, 1, ParaV_->desc,
-                Yk, 1, 1, ParaV_->desc_wfc,
-                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
-            for (int i = 0; i < nb_local * nbs_local; ++i)
-                result += real_of_conj_prod(Xk[i], SY[i]);
-        }
-        else
-        {
-            for (int i = 0; i < nb_local * nbs_local; ++i)
-                result += real_of_conj_prod(Xk[i], Yk[i]);
-        }
+        for (int i = 0; i < nb_local * nbs_local; ++i)
+            result += real_of_conj_prod(Xk[i], Yk[i]);
     }
     Parallel_Reduce::reduce_all(result);
 #else
-    // Non-MPI: nbs_local == nbasis (full matrix local). Use plain BLAS when
-    // S is available; fall back to Euclidean inner product when S == I.
-    const int nbasis = nbs_local;
-    const int nbands = nb_local;
-    std::vector<TK> SY(nbasis * nbands, TK(0));
-
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* Xk = &X(ik, 0, 0);
         const TK* Yk = &Y(ik, 0, 0);
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-
-        if (SK != nullptr)
-        {
-            // SY = S * Y
-            const TK one = TK(1.0);
-            const TK zero = TK(0.0);
-            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, nbasis, Yk, nbasis, zero, SY.data(), nbasis);
-            for (int i = 0; i < nbasis * nbands; ++i)
-                result += real_of_conj_prod(Xk[i], SY[i]);
-        }
-        else
-        {
-            for (int i = 0; i < nbasis * nbands; ++i)
-                result += real_of_conj_prod(Xk[i], Yk[i]);
-        }
+        for (int i = 0; i < nbs_local * nb_local; ++i)
+            result += real_of_conj_prod(Xk[i], Yk[i]);
     }
 #endif
     return result;
@@ -858,7 +809,6 @@ void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     std::vector<double>& frob_per_ik)
 {
     frob_per_ik.assign(nk_, 0.0);
-    const bool skip_S = use_X_variable_;
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     const char tc = detail::trans_char(TK());
@@ -883,22 +833,9 @@ void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* C = &wfc(ik, 0, 0);
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-
-        std::fill(SY.begin(), SY.end(), TK(0));
-        if (SK != nullptr)
+        for (int i = 0; i < nb_local * nbs_local; ++i)
         {
-            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, 1, 1, ParaV_->desc,
-                C, 1, 1, ParaV_->desc_wfc,
-                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
-        }
-        else
-        {
-            for (int i = 0; i < nb_local * nbs_local; ++i)
-            {
-                SY[i] = C[i];
-            }
+            SY[i] = C[i];
         }
 
         std::fill(M.begin(), M.end(), TK(0));
@@ -938,19 +875,9 @@ void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* C = &wfc(ik, 0, 0);
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-
-        if (SK != nullptr)
+        for (int i = 0; i < nbasis * nbands; ++i)
         {
-            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, nbasis, C, nbasis, zero, SY.data(), nbasis);
-        }
-        else
-        {
-            for (int i = 0; i < nbasis * nbands; ++i)
-            {
-                SY[i] = C[i];
-            }
+            SY[i] = C[i];
         }
 
         detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
@@ -981,21 +908,17 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     const psi::Psi<TK>& wfc,
     psi::Psi<TK>& grad_wfc)
 {
-    // Compute the Riemannian (tangent-space) gradient on the generalised
-    // Stiefel manifold  { C : C^H S C = I } with the canonical (trace) metric:
-    //     proj_C(G) = G - C * sym(C^H S G)
+    // Compute the Riemannian (tangent-space) gradient in X-space on the
+    // standard Stiefel manifold { X : X^H X = I }:
+    //     proj_X(G) = G - X * sym(X^H G)
     // where sym(M) = 0.5*(M + M^H).
-    // Derivation: we seek G_R = G - C*K such that C^H S G_R is skew-Hermitian.
-    //   C^H S G_R = C^H S G - C^H S C * K = C^H S G - K  (since C^H S C = I)
+    // Derivation: we seek G_R = G - X*K such that X^H G_R is skew-Hermitian.
+    //   X^H G_R = X^H G - X^H X * K = X^H G - K  (since X^H X = I)
     // Skew-Hermitian requirement: K + K^H = C^H S G + G^H S C
-    //   => K = sym(C^H S G)
-    // So: G_R = G - C * sym(C^H S G).
-    // Note: when S = I (or when using X-variable mode where X = U C and
-    // X^H X = I) the formula reduces to  G_R = G - X * sym(X^H G),
-    // which is the standard Stiefel projection for the canonical metric.
-    // The resulting G_R vanishes at any S-orthonormal critical point of E,
+    //   => K = sym(X^H G)
+    // So: G_R = G - X * sym(X^H G).
+    // The resulting G_R vanishes at any orthonormal critical point of E,
     // so the orbital inner loop converges immediately there.
-    const bool skip_S = use_X_variable_;
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     const TK neg_one = TK(-1.0);
@@ -1016,30 +939,19 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * C  (if S available and not in X-mode), otherwise SC == C
+        // In X-space, SC is just X.
         std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-        if (SK != nullptr)
-        {
-            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, 1, 1, ParaV_->desc,
-                psi_k, 1, 1, ParaV_->desc_wfc,
-                zero, SC.data(), 1, 1, ParaV_->desc_wfc);
-        }
-        else
-        {
-            const int npsi = nbasis * wfc.get_nbands();
-            for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
-        }
+        const int npsi = nbasis * wfc.get_nbands();
+        for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
 
-        // A = (SC)^H G = C^H S G  (nbands x nbands)
+        // A = X^H G  (nbands x nbands)
         std::vector<TK> A(static_cast<size_t>(eij_alloc), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, SC.data(), 1, 1, ParaV_->desc_wfc,
             g_k, 1, 1, ParaV_->desc_wfc,
             zero, A.data(), 1, 1, para_Eij_.desc);
 
-        // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
+        // B = G^H X, then symmetric part A <- 0.5 (A + B) = sym(X^H G)
         // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
         std::vector<TK> B(static_cast<size_t>(eij_alloc), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
@@ -1048,7 +960,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
             zero, B.data(), 1, 1, para_Eij_.desc);
         for (int i = 0; i < eij_nloc; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
 
-        // G <- G - C * sym(C^H S G)  (use psi_k = C, not SC)
+        // G <- G - X * sym(X^H G)
         detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
             neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
             A.data(), 1, 1, para_Eij_.desc,
@@ -1064,31 +976,22 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         const TK* psi_k = &wfc(ik, 0, 0);
         TK* g_k = &grad_wfc(ik, 0, 0);
 
-        // SC = S * C  (if S available and not in X-mode), otherwise SC == C
+        // In X-space, SC is just X.
         std::vector<TK> SC(nbasis * nbands, TK(0));
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-        if (SK != nullptr)
-        {
-            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, nbasis, psi_k, nbasis, zero, SC.data(), nbasis);
-        }
-        else
-        {
-            for (int i = 0; i < nbasis * nbands; ++i) SC[i] = psi_k[i];
-        }
+        for (int i = 0; i < nbasis * nbands; ++i) SC[i] = psi_k[i];
 
-        // A = (SC)^H G = C^H S G  (nbands x nbands)
+        // A = X^H G  (nbands x nbands)
         std::vector<TK> A(nbands * nbands, TK(0));
         detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, SC.data(), nbasis, g_k, nbasis, zero, A.data(), nbands);
 
-        // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
+        // B = G^H X, then symmetric part A <- 0.5 (A + B) = sym(X^H G)
         std::vector<TK> B(nbands * nbands, TK(0));
         detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, g_k, nbasis, SC.data(), nbasis, zero, B.data(), nbands);
         for (int i = 0; i < nbands * nbands; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
 
-        // G <- G - C * sym(C^H S G)
+        // G <- G - X * sym(X^H G)
         detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
             neg_one, psi_k, nbasis, A.data(), nbands, one, g_k, nbasis);
     }
@@ -1101,19 +1004,16 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     const psi::Psi<TK>& grad_wfc,
     double alpha)
 {
-    // One retraction step on the generalised Stiefel manifold:
-    //   Y = C - alpha * G
-    //   C_new = Y * (Y^H S Y)^{-1/2}
-    // We approximate the inverse-square-root via Cholesky of M = Y^H S Y:
+    // One retraction step on the standard Stiefel manifold in X-space:
+    //   Y = X - alpha * G
+    //   X_new = Y * (Y^H Y)^{-1/2}
+    // We approximate the inverse-square-root via Cholesky of M = Y^H Y:
     //     M = L L^H   =>   Y_ortho = Y * L^{-H}
     // This is the "Cholesky QR" S-orthonormalisation, much cheaper than a
     // Hermitian eigendecomposition and perfectly adequate as long as alpha
     // is chosen small enough that M stays well-conditioned (which the outer
     // line search guarantees).
     //
-    // In X-variable mode, S = I in the transformed space, so M = Y^H Y
-    // and the S multiplication is skipped.
-    const bool skip_S = use_X_variable_;
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
     char tc = detail::trans_char(TK());
@@ -1137,22 +1037,11 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         for (int i = 0; i < nb_local * nbs_local; ++i)
             C[i] -= TK(alpha) * G[i];
 
-        // SY = S * Y (or SY = Y when skip_S or no overlap)
+        // In X-space, SY is just Y.
         std::vector<TK> SY(static_cast<size_t>(sy_alloc_retract), TK(0));
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-        if (SK != nullptr)
-        {
-            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, 1, 1, ParaV_->desc,
-                C, 1, 1, ParaV_->desc_wfc,
-                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
-        }
-        else
-        {
-            for (int i = 0; i < nb_local * nbs_local; ++i) SY[i] = C[i];
-        }
+        for (int i = 0; i < nb_local * nbs_local; ++i) SY[i] = C[i];
 
-        // M = Y^H S Y
+        // M = Y^H Y
         std::vector<TK> M(static_cast<size_t>(m_alloc_retract), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, C, 1, 1, ParaV_->desc_wfc,
@@ -1225,20 +1114,11 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         for (int i = 0; i < nbasis * nbands; ++i)
             C[i] -= TK(alpha) * G[i];
 
-        // SY = S * Y (or SY = Y when skip_S or no overlap)
+        // In X-space, SY is just Y.
         std::vector<TK> SY(nbasis * nbands, TK(0));
-        const TK* SK = skip_S ? nullptr : get_SK(ik);
-        if (SK != nullptr)
-        {
-            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
-                one, SK, nbasis, C, nbasis, zero, SY.data(), nbasis);
-        }
-        else
-        {
-            for (int i = 0; i < nbasis * nbands; ++i) SY[i] = C[i];
-        }
+        for (int i = 0; i < nbasis * nbands; ++i) SY[i] = C[i];
 
-        // M = Y^H S Y  (nbands x nbands)
+        // M = Y^H Y  (nbands x nbands)
         std::vector<TK> M(nbands * nbands, TK(0));
         detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, C, nbasis, SY.data(), nbasis, zero, M.data(), nbands);
@@ -1249,7 +1129,7 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         {
             // Cholesky failed; skip re-orthonormalisation for this step.
             // The outer line search should reject this trial point.
-            GlobalV::ofs_running << "WARNING: Cholesky factorisation of Y^H S Y failed"
+            GlobalV::ofs_running << "WARNING: Cholesky factorisation of Y^H Y failed"
                 << " at ik=" << ik << " (info=" << info
                 << "); skipping re-orthonormalisation." << std::endl;
             continue;
@@ -1272,18 +1152,10 @@ double EnergyGradient<TK, TR>::compute(
 
     assert(ion_initialized_);
 
-    // When in X-variable mode, wfc contains X_k. Convert to C_k for
-    // energy evaluation.  We use a non-const copy so that wfc_X_to_C
-    // can operate in-place on the temporary.
-    psi::Psi<TK> wfc_C;
-    const psi::Psi<TK>* wfc_ptr = &wfc;
-    if (use_X_variable_ && cholesky_precomputed_)
-    {
-        wfc_C = wfc;  // deep copy
-        wfc_X_to_C(wfc_C);
-        wfc_ptr = &wfc_C;
-    }
-    const psi::Psi<TK>& wfc_eval = *wfc_ptr;
+    // RDMFT operates in X-space. Convert X_k -> C_k for energy evaluation.
+    psi::Psi<TK> wfc_C(wfc);
+    wfc_X_to_C(wfc_C);
+    const psi::Psi<TK>& wfc_eval = wfc_C;
 
     build_charge(occ_flat, wfc_eval);
 
@@ -1488,12 +1360,8 @@ double EnergyGradient<TK, TR>::compute(
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
 
-    // When in X-variable mode, transform the orbital gradient from C-space
-    // to X-space: G_X = U^{-H} G_C.
-    if (use_X_variable_ && cholesky_precomputed_)
-    {
-        grad_C_to_X(grad_wfc);
-    }
+    // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
+    grad_C_to_X(grad_wfc);
 
     ModuleBase::timer::end("RDMFT_EG", "compute");
     return E_total_;
@@ -1508,16 +1376,10 @@ double EnergyGradient<TK, TR>::compute_energy(
 
     assert(ion_initialized_);
 
-    // When in X-variable mode, convert X -> C for energy evaluation.
-    psi::Psi<TK> wfc_C;
-    const psi::Psi<TK>* wfc_ptr = &wfc;
-    if (use_X_variable_ && cholesky_precomputed_)
-    {
-        wfc_C = wfc;
-        wfc_X_to_C(wfc_C);
-        wfc_ptr = &wfc_C;
-    }
-    const psi::Psi<TK>& wfc_eval = *wfc_ptr;
+    // RDMFT operates in X-space. Convert X_k -> C_k for energy evaluation.
+    psi::Psi<TK> wfc_C(wfc);
+    wfc_X_to_C(wfc_C);
+    const psi::Psi<TK>& wfc_eval = wfc_C;
 
     // Rebuild charge and Hartree (these always depend on occupations)
     build_charge(occ_flat, wfc_eval);
@@ -1685,14 +1547,10 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
 {
     ModuleBase::timer::start("RDMFT_EG", "precompute_cholesky_S");
 
-    // Check whether we have an overlap operator at all
     if (op_overlap_ == nullptr || hsk_overlap_ == nullptr)
     {
-        // PW basis or no overlap: X = C, nothing to do
-        use_X_variable_ = false;
-        cholesky_precomputed_ = false;
         ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-        return;
+        throw std::runtime_error("RDMFT requires overlap matrix S_k to build X-space variables.");
     }
 
     Uk_.resize(nk_);
@@ -1709,12 +1567,9 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         const TK* SK = get_SK(ik);
         if (SK == nullptr)
         {
-            GlobalV::ofs_running << "WARNING: overlap matrix S_k is unavailable at ik=" << ik
-                << "; disabling X-variable mode." << std::endl;
-            use_X_variable_ = false;
-            cholesky_precomputed_ = false;
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-            return;
+            throw std::runtime_error("RDMFT X-space setup failed: overlap matrix S_k unavailable at ik="
+                                     + std::to_string(ik));
         }
 
         // Copy S_k into Uk_[ik] for in-place Cholesky
@@ -1743,13 +1598,9 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
             }
             if (info != 0)
             {
-                GlobalV::ofs_running << "WARNING: Cholesky factorisation of S_k failed"
-                    << " at ik=" << ik << " (info=" << info
-                    << "); disabling X-variable mode." << std::endl;
-                use_X_variable_ = false;
-                cholesky_precomputed_ = false;
                 ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-                return;
+                throw std::runtime_error("RDMFT X-space setup failed: Cholesky factorisation of S_k failed at ik="
+                                         + std::to_string(ik) + " info=" + std::to_string(info));
             }
         }
 
@@ -1774,13 +1625,9 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
             }
             if (info != 0)
             {
-                GlobalV::ofs_running << "WARNING: Triangular inverse of U_k failed"
-                    << " at ik=" << ik << " (info=" << info
-                    << "); disabling X-variable mode." << std::endl;
-                use_X_variable_ = false;
-                cholesky_precomputed_ = false;
                 ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-                return;
+                throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
+                                         + std::to_string(ik) + " info=" + std::to_string(info));
             }
         }
     }
@@ -1793,9 +1640,9 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         const TK* SK = get_SK(ik);
         if (SK == nullptr)
         {
-            Uk_[ik].clear();
-            Uk_inv_[ik].clear();
-            continue;
+            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+            throw std::runtime_error("RDMFT X-space setup failed: overlap matrix S_k unavailable at ik="
+                                     + std::to_string(ik));
         }
 
         // Copy S_k into Uk_ for in-place Cholesky
@@ -1805,13 +1652,9 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         int info = detail::potrf_upper(Uk_[ik].data(), nbasis);
         if (info != 0)
         {
-            GlobalV::ofs_running << "WARNING: Cholesky factorisation of S_k failed"
-                << " at ik=" << ik << " (info=" << info
-                << "); disabling X-variable mode." << std::endl;
-            use_X_variable_ = false;
-            cholesky_precomputed_ = false;
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-            return;
+            throw std::runtime_error("RDMFT X-space setup failed: Cholesky factorisation of S_k failed at ik="
+                                     + std::to_string(ik) + " info=" + std::to_string(info));
         }
 
         // Compute U^{-1}
@@ -1819,19 +1662,14 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         info = detail::trtri_upper(Uk_inv_[ik].data(), nbasis);
         if (info != 0)
         {
-            GlobalV::ofs_running << "WARNING: Triangular inverse of U_k failed"
-                << " at ik=" << ik << " (info=" << info
-                << "); disabling X-variable mode." << std::endl;
-            use_X_variable_ = false;
-            cholesky_precomputed_ = false;
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-            return;
+            throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
+                                     + std::to_string(ik) + " info=" + std::to_string(info));
         }
     }
 #endif
 
     cholesky_precomputed_ = true;
-    use_X_variable_ = true;
     GlobalV::ofs_running << "  Cholesky S = U^H U precomputed for all k-points; "
         << "using X_k = U_k C_k as Stiefel variable." << std::endl;
 
@@ -1842,7 +1680,10 @@ template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::wfc_C_to_X(psi::Psi<TK>& wfc)
 {
     // X_k = U_k * C_k  for each k-point
-    if (!cholesky_precomputed_) return;
+    if (!cholesky_precomputed_)
+    {
+        throw std::runtime_error("wfc_C_to_X called before precompute_cholesky_S().");
+    }
 
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
@@ -1905,7 +1746,10 @@ template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::wfc_X_to_C(psi::Psi<TK>& wfc)
 {
     // C_k = U_k^{-1} * X_k  for each k-point
-    if (!cholesky_precomputed_) return;
+    if (!cholesky_precomputed_)
+    {
+        throw std::runtime_error("wfc_X_to_C called before precompute_cholesky_S().");
+    }
 
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
@@ -1965,7 +1809,10 @@ void EnergyGradient<TK, TR>::grad_C_to_X(psi::Psi<TK>& grad_wfc)
 {
     // G_X = U_k^{-H} * G_C  for each k-point
     // (chain rule: C = U^{-1} X => dE/dX* = U^{-H} dE/dC*)
-    if (!cholesky_precomputed_) return;
+    if (!cholesky_precomputed_)
+    {
+        throw std::runtime_error("grad_C_to_X called before precompute_cholesky_S().");
+    }
 
     const int nb_local = grad_wfc.get_nbands();
     const int nbs_local = grad_wfc.get_nbasis();

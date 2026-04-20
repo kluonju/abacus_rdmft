@@ -10,6 +10,7 @@
 #include <cassert>
 #include <memory>
 #include <type_traits>
+#include <complex>
 
 namespace rdmft
 {
@@ -84,7 +85,7 @@ void print_rdmft_outer_energy_stdout(bool converged, double E)
 
 void print_occ_table_stdout(const std::vector<double>& occ_flat, int nk, int nbands)
 {
-    std::cout << "  WARNING: RDMFT outer loop did not converge. Occupations n(ik, ib):" << std::endl;
+    std::cout << "  Occupations n(ik, ib):" << std::endl;
     std::cout << std::left << std::setw(6) << "ik" << std::setw(8) << "ib" << std::setw(18) << "n"
               << std::endl;
     for (int ik = 0; ik < nk; ++ik)
@@ -298,98 +299,50 @@ double RDMFTSolver<TK, TR>::solve(
     ModuleBase::timer::start("RDMFT", "solve");
     last_result_ = {};
 
-    // Clamp the initial occupations away from the [0, 1] boundary. With the
-    // cosine^2 / logistic parameterisations dn/dp vanishes at n = 0 and n = 1,
-    // so a KS seed (which typically has integer occupations) stalls the
-    // parameter-space optimiser on iteration 1 even though the analytic dE/dn
-    // is non-zero. Clamping by a small margin and rescaling to preserve the
-    // electron count restores a non-zero dp-gradient without perturbing the
-    // final converged energy (the margin vanishes when the optimum has
-    // non-integer occupations).
-    const double m = config_.occ_init_margin;
-    if (m > 0.0 && m < 0.5)
-    {
-        // occ_init_nbands_top == 0: all bands (legacy). K > 0: only top K bands per k.
-        const int K_cfg = config_.occ_init_nbands_top;
-        const int K_eff = (K_cfg == 0) ? nbands_ : std::min(K_cfg, nbands_);
-        const int ib_min_target = nbands_ - K_eff;
+    // Start from KS occupations, apply deterministic perturbation to selected
+    // bands, then restore feasibility (box constraints + electron count).
+    // This guarantees the subsequent occupation parameterisation variables p
+    // are computed from the perturbed n.
+    const int K_cfg = config_.occ_init_nbands_top;
+    const int K_eff = (K_cfg == 0) ? nbands_ : std::min(K_cfg, nbands_);
+    const int ib_min_target = nbands_ - K_eff;
 
+    const double occ_perturb = config_.occ_init_perturb;
+    if (occ_perturb > 0.0 && K_eff > 0)
+    {
+        const double c_before = occ_constraint_->constraint_violation(occ_flat);
         for (int ik = 0; ik < nk_; ++ik)
         {
             for (int ib = ib_min_target; ib < nbands_; ++ib)
             {
-                double& n = occ_flat[ik * nbands_ + ib];
-                n = std::max(m, std::min(1.0 - m, n));
+                const int idx = ik * nbands_ + ib;
+                const double sign = (idx % 2 == 0) ? 1.0 : -1.0;
+                double& n = occ_flat[idx];
+                n += sign * occ_perturb;
+                n = std::max(0.0, std::min(1.0, n));
             }
         }
 
-        // Re-scale to restore the electron-number constraint  sum wk n = Ne.
-        // Only scale target-band values in (m, 1-m); values at the clamped boundaries are
-        // held fixed so they stay feasible under a uniform rescale.
-        double current = 0.0;
-        double free_sum = 0.0;
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            const double wk = kv_->wk[ik];
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const double n = occ_flat[ik * nbands_ + ib];
-                current += wk * n;
-                if (ib >= ib_min_target && n > m && n < 1.0 - m)
-                {
-                    free_sum += wk * n;
-                }
-            }
-        }
-        const double delta = n_electrons_ - current;
-        if (std::abs(delta) > 1e-12 && free_sum > 1e-12)
-        {
-            const double scale = (free_sum + delta) / free_sum;
-            for (int ik = 0; ik < nk_; ++ik)
-            {
-                for (int ib = ib_min_target; ib < nbands_; ++ib)
-                {
-                    double& n = occ_flat[ik * nbands_ + ib];
-                    if (n > m && n < 1.0 - m)
-                    {
-                        n *= scale;
-                        n = std::max(m, std::min(1.0 - m, n));
-                    }
-                }
-            }
-        }
+        // Restore strict feasibility after perturbation.
+        occ_constraint_->project(occ_flat);
+
+        const double c_after = occ_constraint_->constraint_violation(occ_flat);
+        GlobalV::ofs_running << "RDMFT init occupations: source=KS, perturb=deterministic(+/-delta), delta="
+                             << std::scientific << occ_perturb
+                             << ", top_k=" << K_eff
+                             << ", constraint_before=" << c_before
+                             << ", constraint_after=" << c_after
+                             << std::defaultfloat << std::endl;
     }
 
-    // S-orthonormalize the initial orbitals so that all subsequent gradient
-    // projections and Cholesky retractions start from a valid point on the
-    // generalised Stiefel manifold { C : C^H S C = I }.  Calling
-    // retract_orbitals with alpha = 0 applies only the Cholesky-QR
-    // re-orthonormalisation without any directional step (the gradient
-    // argument is irrelevant when alpha = 0, so we reuse wfc itself).
+    // Precompute S_k = U_k^H U_k and switch to the X_k = U_k C_k variable.
+    // All RDMFT manifold operations are performed only in X-space.
+    energy_grad_->precompute_cholesky_S();
+    energy_grad_->wfc_C_to_X(wfc);
+
+    // Orthonormalize in X-space so all subsequent manifold operations start
+    // from a valid point on the standard Stiefel manifold X^H X = I.
     energy_grad_->retract_orbitals(wfc, wfc, 0.0);
-
-    // The X-variable path (X = U*C with S = U^H U) is currently disabled in
-    // MPI runs because it can trigger heap corruption on layouts where some
-    // ranks own zero local blocks. Keep the stable C-space manifold updates.
-#ifdef __MPI
-    const bool enable_cholesky_x_variable = false;
-#else
-    const bool enable_cholesky_x_variable = true;
-#endif
-
-    energy_grad_->disable_X_variable();
-    if (enable_cholesky_x_variable)
-    {
-        // Precompute the Cholesky factorisation S_k = U_k^H U_k and switch to
-        // the X_k = U_k C_k variable for all subsequent manifold operations.
-        // In X-space X^H X = I, so projection, retraction, and inner product
-        // are the standard (S = I) Stiefel forms.
-        energy_grad_->precompute_cholesky_S();
-        if (energy_grad_->use_X_variable())
-        {
-            energy_grad_->wfc_C_to_X(wfc);
-        }
-    }
 
     double E = 0.0;
     switch (config_.strategy)
@@ -403,11 +356,7 @@ double RDMFTSolver<TK, TR>::solve(
     }
 
     // Transform back X -> C before returning to the caller.
-    if (enable_cholesky_x_variable && energy_grad_->use_X_variable())
-    {
-        energy_grad_->wfc_X_to_C(wfc);
-        energy_grad_->disable_X_variable();
-    }
+    energy_grad_->wfc_X_to_C(wfc);
 
     ModuleBase::timer::end("RDMFT", "solve");
     return E;
@@ -429,6 +378,8 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double last_occ_gnorm = 0.0;
     double last_orb_gnorm = 0.0;
     int outer_iters_done = 0;
+    int occ_small_dn_streak = 0;
+    bool skip_all_occ_optimization = false;
 
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
@@ -438,8 +389,8 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         {
             std::vector<double> stiefel_gram_frob_per_ik;
             energy_grad_->stiefel_gram_residual_frobenius_per_k(wfc, stiefel_gram_frob_per_ik);
-            GlobalV::ofs_running << "    Stiefel Gram residual ||G_k - I||_F per k-point (G_k = "
-                << (energy_grad_->use_X_variable() ? "X_k^H X_k" : "C_k^H S_k C_k") << "):" << std::endl;
+            GlobalV::ofs_running << "    Stiefel Gram residual ||G_k - I||_F per k-point (G_k = X_k^H X_k):"
+                << std::endl;
             for (int ik = 0; ik < wfc.get_nk(); ++ik)
             {
                 GlobalV::ofs_running << std::fixed << std::setprecision(10) << "      ik=" << ik
@@ -447,12 +398,49 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             }
         }
 
-        // 1. Optimize occupations with orbitals fixed
-        auto occ_result = optimize_occupations(occ_flat, wfc);
-        GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
-            << std::scientific << occ_result.grad_norm
-            << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
-            << (occ_result.converged ? "  (converged)" : "") << std::endl;
+        // 1. Optimize occupations with orbitals fixed. If the outer-cycle
+        // occupation change sum|dn| is tiny for two consecutive cycles,
+        // skip all subsequent occupation optimizations.
+        OptResult occ_result;
+        if (!skip_all_occ_optimization)
+        {
+            occ_result = optimize_occupations(occ_flat, wfc);
+            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
+            if (occ_outer_dn_sum < config_.occ_dn_sum_tol)
+            {
+                ++occ_small_dn_streak;
+                if (occ_small_dn_streak >= 2)
+                {
+                    skip_all_occ_optimization = true;
+                    GlobalV::ofs_running
+                        << "    occ inner: two consecutive outer sum|dn| below threshold ("
+                        << std::scientific << config_.occ_dn_sum_tol
+                        << "), skip all later occupation optimizations" << std::endl;
+                }
+            }
+            else
+            {
+                occ_small_dn_streak = 0;
+            }
+
+            GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
+                << std::scientific << occ_result.grad_norm
+                << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
+                << (occ_result.converged ? "  (converged)" : "")
+                << "  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
+                << "  tiny_streak=" << occ_small_dn_streak
+                << std::endl;
+        }
+        else
+        {
+            occ_result.converged = true;
+            occ_result.iterations = 0;
+            occ_result.grad_norm = 0.0;
+            occ_result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
+            GlobalV::ofs_running
+                << "    occ inner: skipped (two consecutive outer sum|dn| below threshold)"
+                << std::endl;
+        }
 
         // 2. Optimize orbitals with occupations fixed
         auto orb_result = optimize_orbitals(occ_flat, wfc);
@@ -465,6 +453,11 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;
         E = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc);
+        const double E_one = energy_grad_->E_one_body();
+        const double E_hartree = energy_grad_->E_hartree();
+        const double E_xc = energy_grad_->E_xc();
+        const double E_ewald = energy_grad_->E_ewald();
+        const double E_total = energy_grad_->E_total();
 
         double dE = std::abs(E - E_prev);
         double constraint_viol = occ_constraint_->constraint_violation(occ_flat);
@@ -483,6 +476,14 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  |c| = " << std::abs(constraint_viol)
             << "  occ_gnorm = " << occ_result.grad_norm
             << "  orb_gnorm = " << orb_result.grad_norm
+            << std::endl;
+
+        GlobalV::ofs_running << std::fixed << std::setprecision(10)
+            << "    Ecomp: E_one=" << E_one
+            << "  E_hartree=" << E_hartree
+            << "  E_xc=" << E_xc
+            << "  E_ewald=" << E_ewald
+            << "  E_total=" << E_total
             << std::endl;
 
         last_dE = dE;
@@ -511,9 +512,10 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     }
 
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
+    // Always print final occupations in tabular form.
+    print_occ_table_stdout(occ_flat, nk_, nbands_);
     if (!last_result_.converged)
     {
-        print_occ_table_stdout(occ_flat, nk_, nbands_);
         print_nonconverged_report_running_alternating(E,
                                                       last_dE,
                                                       last_abs_c,
@@ -682,7 +684,21 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         // Orbital gradient norm (Riemannian) for diagnostics and for the
         // steepest-descent fallback below.
-        const double orb_gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+        // Use Euclidean (plain) norm of the projected gradient G_R
+        double orb_gnorm2 = 0.0;
+        {
+            const int nk_local = grad_wfc.get_nk();
+            const int nb_local = grad_wfc.get_nbands();
+            const int nbs_local = grad_wfc.get_nbasis();
+            for (int ik = 0; ik < nk_local; ++ik)
+            {
+                const TK* gk = &grad_wfc(ik, 0, 0);
+                const int nelem = nb_local * nbs_local;
+                for (int i = 0; i < nelem; ++i)
+                    orb_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
+            }
+            Parallel_Reduce::reduce_all(orb_gnorm2);
+        }
 
         // Project the orbital search direction back onto the tangent space
         // at C. The optimiser's Euclidean update (especially for L-BFGS /
@@ -884,6 +900,14 @@ double RDMFTSolver<TK, TR>::solve_joint(
         double gnorm2_occ = 0.0;
         for (auto g : grad_params) gnorm2_occ += g * g;
         const double gnorm_total = std::sqrt(gnorm2_occ + std::max(0.0, orb_gnorm2));
+        const double E_one = energy_grad_->E_one_body();
+        const double E_hartree = energy_grad_->E_hartree();
+        const double E_xc = energy_grad_->E_xc();
+        const double E_ewald = energy_grad_->E_ewald();
+        const double E_total = energy_grad_->E_total();
+        const double E_penalty = (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+            ? occ_constraint_->augmented_lagrangian_penalty(occ_flat)
+            : 0.0;
 
         std::cout << std::fixed << std::setprecision(10)
             << "  RDMFT joint-iter " << iter + 1
@@ -901,6 +925,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
             << "  |grad_occ| = " << std::sqrt(gnorm2_occ)
             << "  |grad_orb| = " << std::sqrt(std::max(0.0, orb_gnorm2))
             << "  |grad_total| = " << gnorm_total
+            << std::endl;
+
+        GlobalV::ofs_running << std::fixed << std::setprecision(10)
+            << "    Ecomp: E_one=" << E_one
+            << "  E_hartree=" << E_hartree
+            << "  E_xc=" << E_xc
+            << "  E_ewald=" << E_ewald
+            << "  E_total=" << E_total
+            << "  E_penalty=" << E_penalty
+            << "  E_aug=" << (E_total + E_penalty)
             << std::endl;
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
@@ -934,9 +968,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
     }
 
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
+    // Always print final occupations in tabular form.
+    print_occ_table_stdout(occ_flat, nk_, nbands_);
     if (!last_result_.converged)
     {
-        print_occ_table_stdout(occ_flat, nk_, nbands_);
         print_nonconverged_report_running_joint(joint_last_E,
                                                 joint_last_dE,
                                                 joint_last_abs_c,
@@ -1513,16 +1548,28 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
                                           wfc, grad_occ, grad_wfc);
 
-        // Project onto the tangent space of the Stiefel manifold.
-        // In C-space (generalised Stiefel with overlap S):
-        //     G_R = G - C sym(C^H S G)
-        // In X-space (standard Stiefel, use_X_variable_ = true):
+        // Project onto the tangent space of the standard Stiefel manifold in
+        // X-space:
         //     G_R = G - X sym(X^H G)
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
         // Compute ||G_R||^2 in the appropriate metric (S-weighted or
         // Euclidean when in X-space) for descent / CG consistency.
-        double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+        // Use Euclidean (plain) norm of the projected gradient G_R
+        double gnorm2 = 0.0;
+        {
+            const int nk_local = grad_wfc.get_nk();
+            const int nb_local = grad_wfc.get_nbands();
+            const int nbs_local = grad_wfc.get_nbasis();
+            for (int ik = 0; ik < nk_local; ++ik)
+            {
+                const TK* gk = &grad_wfc(ik, 0, 0);
+                const int nelem = nb_local * nbs_local;
+                for (int i = 0; i < nelem; ++i)
+                    gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
+            }
+            Parallel_Reduce::reduce_all(gnorm2);
+        }
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
         GlobalV::ofs_running << "      orb inner " << inner + 1

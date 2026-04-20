@@ -151,17 +151,11 @@ struct RDMFTConfig
 
     double fd_epsilon = 1e-5;
 
-    /// Distance inside [0,1] that the initial occupations are clamped away
-    /// from the boundary before being passed to the optimiser. For the
-    /// cosine^2 / logistic parameterisations the Jacobian dn/dp vanishes at
-    /// 0 and 1, which stalls the parameter-space optimiser on a KS seed
-    /// with integer occupations. Setting occ_init_margin > 0 maps
-    ///     n -> clamp(n, m, 1-m)
-    /// (keeping sum preserved by normalising afterwards) so the parameter
-    /// gradient is non-zero at step 1.
-    /// Use 0.0 to disable; default 1e-3 is small enough to leave the
-    /// physical answer unchanged once the optimiser converges.
-    double occ_init_margin = 1e-3;
+    /// Deterministic initial perturbation magnitude applied on top of the KS
+    /// occupations before the first optimisation step. Perturbation is
+    /// alternating +/-delta by flattened (ik, ib) index and scoped by
+    /// occ_init_nbands_top.
+    double occ_init_perturb = 1e-3;
     /// 0: clamp/rescale all bands. K>0: only bands ib >= nbands-K (per k). Default 5 in INPUT.
     int occ_init_nbands_top = 5;
 
