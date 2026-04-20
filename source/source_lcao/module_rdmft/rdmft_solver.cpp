@@ -1540,6 +1540,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     }
 
     double prev_gnorm2 = 0.0;
+    double prev_orb_gnorm = 0.0;
+    double prev_orb_E = 0.0;
 
     for (int inner = 0; inner < config_.orb_maxiter; ++inner)
     {
@@ -1572,9 +1574,31 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
-        GlobalV::ofs_running << "      orb inner " << inner + 1
-            << "  E=" << std::fixed << std::setprecision(10) << E
-            << "  gnorm=" << std::scientific << result.grad_norm << std::endl;
+        // Log gradient norm with ratio to previous iteration for monitoring
+        // monotonic decrease (expected for steepest descent, approximate for CG).
+        {
+            std::ostringstream os;
+            os << "      orb inner " << inner + 1
+               << "  E=" << std::fixed << std::setprecision(10) << E
+               << "  gnorm=" << std::scientific << result.grad_norm;
+            if (inner > 0)
+            {
+                const double dE_orb = E - prev_orb_E;
+                os << "  dE=" << std::scientific << dE_orb;
+                if (prev_orb_gnorm > 1e-30)
+                {
+                    os << "  gnorm_ratio=" << std::fixed << std::setprecision(4)
+                       << (result.grad_norm / prev_orb_gnorm);
+                }
+                if (result.grad_norm > prev_orb_gnorm * 1.1)
+                {
+                    os << "  [WARNING: gnorm increased]";
+                }
+            }
+            GlobalV::ofs_running << os.str() << std::endl;
+        }
+        prev_orb_gnorm = result.grad_norm;
+        prev_orb_E = E;
 
         // Orbital sub-problem: exit when Riemannian gradient norm is below threshold.
         if (result.grad_norm < config_.grad_tol)
@@ -1827,6 +1851,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         result.iterations = inner + 1;
         result.final_energy = E_new;
     }
+
+    // Final summary of orbital sub-problem
+    GlobalV::ofs_running << "      orb sub-problem: " << result.iterations << " iters"
+        << "  final_gnorm=" << std::scientific << result.grad_norm
+        << "  final_E=" << std::fixed << std::setprecision(10) << result.final_energy
+        << (result.converged ? "  CONVERGED" : "  not converged")
+        << std::endl;
 
     return result;
 }

@@ -156,8 +156,8 @@ struct RDMFTConfig
     /// alternating +/-delta by flattened (ik, ib) index and scoped by
     /// occ_init_nbands_top.
     double occ_init_perturb = 1e-3;
-    /// 0: clamp/rescale all bands. K>0: only bands ib >= nbands-K (per k). Default 5 in INPUT.
-    int occ_init_nbands_top = 5;
+    /// 0: clamp/rescale all bands. K>0: only bands ib >= nbands-K (per k). Default 0 (all bands).
+    int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.
     bool print_stiefel_gram = false;

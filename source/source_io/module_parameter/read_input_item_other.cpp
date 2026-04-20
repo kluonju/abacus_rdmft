@@ -1050,8 +1050,8 @@ void ReadInput::item_others()
         item.type = "Integer";
         item.description = "When >0, only the highest K bands (per k) get the [m,1-m] margin clamp and "
                            "electron rescaling before RDMFT; lower bands stay at the KS values. "
-                           "0 means all bands are adjusted (legacy behavior). Default 5.";
-        item.default_value = "5";
+                           "0 means all bands are adjusted (default).";
+        item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_occ_init_nbands_top);

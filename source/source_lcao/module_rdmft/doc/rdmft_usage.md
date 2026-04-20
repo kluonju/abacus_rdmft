@@ -145,7 +145,7 @@ Before RDMFT optimisation starts, occupations may be pushed slightly away from 0
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_occ_init_nbands_top` | int | `5` | Number of **highest** bands (per k-point) that receive the `[m, 1−m]` clamp and participate in the electron-count rescaling. Bands with index `ib < nbands − K` are left unchanged. Set to `0` to apply the adjustment to **all** bands (legacy behaviour). |
+| `rdmft_occ_init_nbands_top` | int | `0` | Number of **highest** bands (per k-point) that receive the perturbation and participate in the electron-count rescaling. Bands with index `ib < nbands − K` are left unchanged when `K > 0`. Default `0` applies the perturbation to **all** bands. |
 
 ### Line search and optimiser tuning
 
