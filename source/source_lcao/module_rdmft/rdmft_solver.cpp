@@ -1084,6 +1084,21 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
         case ConstraintMethod::ProjectedGradient:
         {
+            // Projected gradient method for box-constrained optimization with
+            // electron-number equality constraint.
+            //
+            // At each iteration:
+            //   1. Compute energy E and gradient dE/dn at current n.
+            //   2. Use the configured optimizer (SD/CG/LBFGS/Adam) to compute
+            //      a search direction d in the occupation space.
+            //   3. Armijo backtracking: trial = Project(n + alpha*d).
+            //      Armijo condition:  E(trial) <= E(n) + c1 * <dE/dn, trial - n>.
+            //   4. Accept trial; update optimizer with (step, new gradient).
+            //
+            // Project() clips to [0,1] and rescales to conserve N_e.
+            EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
+            pg_opt.init(static_cast<int>(occ_flat.size()));
+
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
             bool have_E_prev = false;
@@ -1109,7 +1124,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 {
                     std::ostringstream os;
-                    os << "      occ inner " << (inner + 1) << "  E=" << std::fixed
+                    os << "      occ inner PG " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
                        << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
@@ -1123,12 +1138,92 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
-                const std::vector<double> occ_before_step(occ_flat);
-                double step = config_.line_search_alpha_init;
-                for (size_t i = 0; i < occ_flat.size(); ++i)
-                    occ_flat[i] -= step * grad_occ[i];
+                // Compute search direction from the configured optimizer.
+                std::vector<double> dir;
+                pg_opt.compute_direction(grad_occ, dir);
 
-                occ_constraint_->project(occ_flat);
+                // Descent safeguard: if d^T g >= 0, fall back to steepest descent.
+                double dd = 0.0;
+                for (size_t i = 0; i < dir.size(); ++i)
+                    dd += dir[i] * grad_occ[i];
+                if (dd >= 0.0)
+                {
+                    for (size_t i = 0; i < dir.size(); ++i)
+                        dir[i] = -grad_occ[i];
+                }
+
+                // Armijo backtracking with projection.
+                const std::vector<double> occ_before_step(occ_flat);
+                double alpha = config_.line_search_alpha_init;
+                bool ls_success = false;
+                std::vector<double> occ_trial;
+                // Tolerance for the electron-number constraint after projection.
+                const double proj_constraint_tol = 1e-6;
+
+                for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                {
+                    occ_trial = occ_flat;
+                    for (size_t i = 0; i < occ_trial.size(); ++i)
+                        occ_trial[i] += alpha * dir[i];
+                    occ_constraint_->project(occ_trial);
+
+                    // Reject if the projection failed to satisfy the constraint
+                    // (occurs when too many occupations clip to 0 or 1).
+                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                    {
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
+
+                    // Directional derivative: <dE/dn, trial - n>
+                    double dd_proj = 0.0;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                        dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+
+                    if (dd_proj >= 0.0)
+                    {
+                        // Step doesn't decrease energy directionally; reduce alpha.
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
+
+                    const double E_trial = energy_grad_->compute_energy(
+                        occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                    {
+                        ls_success = true;
+                        break;
+                    }
+                    alpha *= config_.line_search_rho;
+                }
+
+                if (ls_success)
+                {
+                    occ_flat = occ_trial;
+                }
+                else
+                {
+                    // Line search failed: fall back to a single projected steepest-descent
+                    // step with the initial step length and reset the optimiser.
+                    occ_flat = occ_before_step;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                        occ_flat[i] -= config_.line_search_alpha_init * grad_occ[i];
+                    occ_constraint_->project(occ_flat);
+                    pg_opt.init(static_cast<int>(occ_flat.size()));
+                    GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
+                                         << ", reset optimizer" << std::endl;
+                }
+
+                // Update the optimizer with the actual step taken.
+                std::vector<double> step_vec(occ_flat.size());
+                for (size_t i = 0; i < step_vec.size(); ++i)
+                    step_vec[i] = occ_flat[i] - occ_before_step[i];
+
+                std::vector<double> new_grad_occ;
+                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                       new_grad_occ, grad_wfc_dummy);
+                pg_opt.update(new_grad_occ, step_vec);
+
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
                     << std::endl;
@@ -1150,6 +1245,30 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
         case ConstraintMethod::ActiveSet:
         {
+            // Active set method for box-and-equality constrained occupation
+            // optimization.
+            //
+            // At each iteration:
+            //   1. Compute energy E and gradient dE/dn.
+            //   2. Identify the active set: bands at the lower (n=0) or upper
+            //      (n=1) bound where the gradient points out of the feasible set.
+            //   3. Apply the active set modification to the gradient: zero out
+            //      active-constraint components; subtract the Lagrange multiplier
+            //      contribution from free-variable components so the modified
+            //      gradient lies in the null space of the equality constraint.
+            //   4. Compute search direction from the configured optimizer on the
+            //      modified (reduced) gradient.
+            //   5. Armijo backtracking with clipping to [0,1] and re-projection
+            //      to restore the equality constraint.
+            //   6. When the active set changes significantly, restart the optimizer
+            //      to avoid using stale curvature information.
+            EuclideanOptimizer as_opt(config_.occ_optimizer, config_);
+            as_opt.init(static_cast<int>(occ_flat.size()));
+
+            // Track the active set pattern from the previous iteration so we can
+            // detect changes and restart the optimizer when needed.
+            int prev_n_active = -1;
+
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
             bool have_E_prev = false;
@@ -1164,8 +1283,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                        grad_occ, grad_wfc_dummy);
 
+                // Identify active set and compute modified (reduced) gradient.
                 auto as_info = occ_constraint_->identify_active_set(occ_flat, grad_occ);
-                occ_constraint_->apply_active_set(as_info, grad_occ);
+                std::vector<double> grad_mod(grad_occ);
+                occ_constraint_->apply_active_set(as_info, grad_mod);
+
+                // Count active constraints; restart optimizer if the set changed.
+                int n_active = 0;
+                for (size_t idx = 0; idx < grad_occ.size(); ++idx)
+                    if (!as_info.is_free[idx]) ++n_active;
+
+                if (n_active != prev_n_active && inner > 0)
+                {
+                    as_opt.init(static_cast<int>(occ_flat.size()));
+                    GlobalV::ofs_running << "      AS active set changed (n_active "
+                                         << prev_n_active << " -> " << n_active
+                                         << "), reset optimizer" << std::endl;
+                }
+                prev_n_active = n_active;
 
                 const double c_abs = std::abs(occ_constraint_->constraint_violation(occ_flat));
                 const double dE = have_E_prev ? (E - E_prev) : 0.0;
@@ -1173,14 +1308,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 have_E_prev = true;
 
                 result.grad_norm = 0.0;
-                for (auto g : grad_occ) result.grad_norm += g * g;
+                for (auto g : grad_mod) result.grad_norm += g * g;
                 result.grad_norm = std::sqrt(result.grad_norm);
 
                 {
                     std::ostringstream os;
-                    os << "      occ inner " << (inner + 1) << "  E=" << std::fixed
+                    os << "      occ inner AS " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
-                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm;
+                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm
+                       << "  n_active=" << n_active;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
@@ -1192,14 +1328,112 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
-                const std::vector<double> occ_before_step(occ_flat);
-                double step = config_.line_search_alpha_init;
-                for (size_t i = 0; i < occ_flat.size(); ++i)
-                    occ_flat[i] -= step * grad_occ[i];
+                // Compute search direction from the configured optimizer on the
+                // modified (reduced) gradient.
+                std::vector<double> dir;
+                as_opt.compute_direction(grad_mod, dir);
 
-                // Clip to [0,1]
-                for (auto& n : occ_flat)
-                    n = std::max(0.0, std::min(1.0, n));
+                // Zero out the direction for active-constraint components so the
+                // step doesn't move variables that are pinned at their bounds.
+                for (size_t idx = 0; idx < dir.size(); ++idx)
+                    if (!as_info.is_free[idx]) dir[idx] = 0.0;
+
+                // Descent safeguard on the modified gradient.
+                double dd = 0.0;
+                for (size_t i = 0; i < dir.size(); ++i)
+                    dd += dir[i] * grad_mod[i];
+                if (dd >= 0.0)
+                {
+                    for (size_t i = 0; i < dir.size(); ++i)
+                        dir[i] = -grad_mod[i];
+                    // Re-zero active directions.
+                    for (size_t idx = 0; idx < dir.size(); ++idx)
+                        if (!as_info.is_free[idx]) dir[idx] = 0.0;
+                }
+
+                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1)
+                // then project (rescale) to restore the equality constraint.
+                const std::vector<double> occ_before_step(occ_flat);
+                double alpha = config_.line_search_alpha_init;
+                bool ls_success = false;
+                std::vector<double> occ_trial;
+                // Tolerance for the electron-number constraint after projection.
+                const double proj_constraint_tol = 1e-6;
+
+                for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                {
+                    occ_trial = occ_flat;
+                    for (size_t i = 0; i < occ_trial.size(); ++i)
+                        occ_trial[i] += alpha * dir[i];
+                    // Clip to [0,1].
+                    for (auto& n : occ_trial)
+                        n = std::max(0.0, std::min(1.0, n));
+                    // Rescale to preserve the electron number.
+                    occ_constraint_->project(occ_trial);
+
+                    // Reject if the projection failed to satisfy the constraint.
+                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                    {
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
+
+                    double dd_proj = 0.0;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                        dd_proj += grad_mod[i] * (occ_trial[i] - occ_flat[i]);
+
+                    if (dd_proj >= 0.0)
+                    {
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
+
+                    const double E_trial = energy_grad_->compute_energy(
+                        occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                    {
+                        ls_success = true;
+                        break;
+                    }
+                    alpha *= config_.line_search_rho;
+                }
+
+                if (ls_success)
+                {
+                    occ_flat = occ_trial;
+                }
+                else
+                {
+                    // Fallback: single steepest-descent step on free variables.
+                    occ_flat = occ_before_step;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                        occ_flat[i] -= config_.line_search_alpha_init * grad_mod[i];
+                    for (auto& n : occ_flat)
+                        n = std::max(0.0, std::min(1.0, n));
+                    occ_constraint_->project(occ_flat);
+                    as_opt.init(static_cast<int>(occ_flat.size()));
+                    prev_n_active = -1;
+                    GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)
+                                         << ", reset optimizer" << std::endl;
+                }
+
+                // Update the optimizer with (step, new modified gradient).
+                std::vector<double> step_vec(occ_flat.size());
+                for (size_t i = 0; i < step_vec.size(); ++i)
+                    step_vec[i] = occ_flat[i] - occ_before_step[i];
+
+                // Compute new gradient for LBFGS/CG history update.
+                std::vector<double> new_grad_occ;
+                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                       new_grad_occ, grad_wfc_dummy);
+                auto new_as_info = occ_constraint_->identify_active_set(occ_flat, new_grad_occ);
+                std::vector<double> new_grad_mod(new_grad_occ);
+                occ_constraint_->apply_active_set(new_as_info, new_grad_mod);
+                // Zero active components to match the direction block structure.
+                for (size_t idx = 0; idx < new_grad_mod.size(); ++idx)
+                    if (!new_as_info.is_free[idx]) new_grad_mod[idx] = 0.0;
+
+                as_opt.update(new_grad_mod, step_vec);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn

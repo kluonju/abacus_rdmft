@@ -74,18 +74,6 @@ class RDMFTSolver
     /// updated simultaneously at every outer iteration.
     double solve_joint(std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
 
-    /// Single step of occupation optimization with augmented Lagrangian
-    void occ_step_augmented_lagrangian(std::vector<double>& occ_flat,
-                                        const psi::Psi<TK>& wfc);
-
-    /// Single step of occupation optimization with projected gradient
-    void occ_step_projected_gradient(std::vector<double>& occ_flat,
-                                      const psi::Psi<TK>& wfc);
-
-    /// Single step of occupation optimization with active set
-    void occ_step_active_set(std::vector<double>& occ_flat,
-                              const psi::Psi<TK>& wfc);
-
     /// Single step of orbital optimization on Stiefel manifold
     void orbital_step(const std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
 

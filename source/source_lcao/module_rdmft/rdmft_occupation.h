@@ -241,20 +241,64 @@ class OccupationConstraint
     double n_electrons() const { return n_electrons_; }
 
   private:
+    // Project occupations onto the electron-number equality constraint
+    // sum_k w_k * sum_i n_ki = N_e while keeping each n_ki in [0, 1].
+    //
+    // Algorithm: iterative water-filling.  In each pass, identify the
+    // "free" occupations (not yet saturated at 0 or 1), compute the
+    // ratio needed to bring their weighted sum to the remaining target,
+    // scale them, and re-clip.  Repeat until convergence.  This handles
+    // the case where a naive single-pass rescale would push values above
+    // the upper bound.
     void rescale_to_nel(std::vector<double>& occ) const
     {
-        double current = 0.0;
-        for (int ik = 0; ik < nk_; ++ik)
-            for (int i = 0; i < nbands_; ++i)
-                current += kweights_[ik] * occ[ik * nbands_ + i];
+        const int N = static_cast<int>(occ.size());
+        const double tol = 1e-13;
+        const int max_iter = N + 4;   // at most N bands can saturate
 
-        if (std::abs(current) < 1e-15) return;
-
-        double ratio = n_electrons_ / current;
-        for (auto& n : occ)
+        for (int it = 0; it < max_iter; ++it)
         {
-            n *= ratio;
-            n = std::max(0.0, std::min(1.0, n));
+            // Current weighted sum and the contribution of free values.
+            double current = 0.0;
+            double free_sum = 0.0;
+
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int i = 0; i < nbands_; ++i)
+                {
+                    double n = occ[ik * nbands_ + i];
+                    double w = kweights_[ik];
+                    current += w * n;
+                    if (n > tol && n < 1.0 - tol)
+                        free_sum += w * n;
+                }
+
+            if (std::abs(current - n_electrons_) < 1e-12)
+                return;   // already satisfied
+
+            if (free_sum < 1e-15)
+                return;   // all bands pinned; constraint cannot be enforced
+
+            // Target for the free values.
+            double target_free = n_electrons_ - (current - free_sum);
+            double ratio = target_free / free_sum;
+
+            bool any_clipped = false;
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int i = 0; i < nbands_; ++i)
+                {
+                    double& n = occ[ik * nbands_ + i];
+                    if (n > tol && n < 1.0 - tol)
+                    {
+                        n *= ratio;
+                        double n_clipped = std::max(0.0, std::min(1.0, n));
+                        if (std::abs(n_clipped - n) > 1e-14)
+                            any_clipped = true;
+                        n = n_clipped;
+                    }
+                }
+
+            if (!any_clipped)
+                return;   // no saturation → done after one pass
         }
     }
 
