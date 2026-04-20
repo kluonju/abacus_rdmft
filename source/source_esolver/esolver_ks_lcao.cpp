@@ -202,10 +202,17 @@ void ESolver_KS_LCAO<TK, TR>::before_scf(UnitCell& ucell, const int istep)
     // 17) update of RDMFT (only after first init in after_scf, post-KS)
     if (PARAM.inp.rdmft == true && this->rdmft_module_initialized)
     {
-        rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
-        if (rdmft_eg_initialized)
+        const bool use_new_rdmft_engine = !PARAM.inp.rdmft_functional.empty();
+        if (use_new_rdmft_engine)
         {
-            rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+            if (rdmft_eg_initialized)
+            {
+                rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+            }
+        }
+        else
+        {
+            rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
         }
     }
 #endif
@@ -510,23 +517,26 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
     if (PARAM.inp.rdmft == true && !this->rdmft_module_initialized)
     {
         const Input_para& inp_rdmft = PARAM.inp;
-        this->rdmft_solver.init(this->pv, ucell, this->gd, this->kv, *(this->pelec), this->orb_,
-                                two_center_bundle_, inp_rdmft.dft_functional, inp_rdmft.rdmft_power_alpha);
-        if (!inp_rdmft.rdmft_functional.empty())
+        const bool use_new_rdmft_engine = !inp_rdmft.rdmft_functional.empty();
+
+        if (use_new_rdmft_engine)
         {
             const rdmft::XCFunctionalType xc_type = rdmft::parse_xc_type(inp_rdmft.rdmft_functional);
             const rdmft::XCFunctional xc_func(xc_type, inp_rdmft.rdmft_power_alpha);
             this->rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv, this->pelec, &this->orb_,
                                 &two_center_bundle_, xc_func);
             this->rdmft_eg_initialized = true;
-        }
-        // Build ion-dependent one-body terms and set EnergyGradient::ion_initialized_ (was skipped in
-        // before_scf because rdmft_module_initialized was false until now).
-        this->rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
-        if (this->rdmft_eg_initialized)
-        {
+
+            // Build ion-dependent one-body terms and set EnergyGradient::ion_initialized_.
             this->rdmft_eg.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
         }
+        else
+        {
+            this->rdmft_solver.init(this->pv, ucell, this->gd, this->kv, *(this->pelec), this->orb_,
+                                    two_center_bundle_, inp_rdmft.dft_functional, inp_rdmft.rdmft_power_alpha);
+            this->rdmft_solver.update_ion(ucell, *(this->pw_rho), this->locpp.vloc, this->sf.strucFac);
+        }
+
         this->rdmft_module_initialized = true;
     }
 #endif

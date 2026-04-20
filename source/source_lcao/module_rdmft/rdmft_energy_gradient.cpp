@@ -52,6 +52,7 @@ extern "C" {
                  const std::complex<double>* A, const int* ia, const int* ja, const int* descA,
                  std::complex<double>* B, const int* ib, const int* jb, const int* descB);
     // pdtrmm_ and pztrmm_ are already declared (without const) in scalapack_connector.h
+    
     void pdtrtri_(const char* uplo, const char* diag, const int* n,
                   double* A, const int* ia, const int* ja, const int* descA,
                   int* info);
@@ -718,8 +719,11 @@ void EnergyGradient<TK, TR>::compute_diagonal(
     const TK zero = TK(0.0);
     char tc = detail::trans_char(TK());
 
-    // Compute Eij = psi^H * Hpsi in the 2D BLACS grid
-    std::vector<TK> Eij(para_Eij_.get_row_size() * para_Eij_.get_col_size(), TK(0));
+    // Compute Eij = psi^H * Hpsi in the 2D BLACS grid.
+    // Keep a non-null storage even when this rank owns zero local blocks.
+    const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
+    const std::int64_t eij_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> Eij(static_cast<size_t>(eij_alloc), TK(0));
 
     detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
         one, psi_k, 1, 1, ParaV_->desc_wfc,
@@ -771,6 +775,42 @@ inline double real_of_conj_prod(std::complex<double> a, std::complex<double> b)
     return a.real() * b.real() + a.imag() * b.imag();
 }
 
+template <typename TK>
+inline const TK* psi_k_ptr_or_dummy(const psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
+{
+    if (psi.get_nbands() > 0 && psi.get_nbasis() > 0)
+    {
+        return &psi(ik, 0, 0);
+    }
+    if (dummy.empty())
+    {
+        dummy.assign(1, TK(0));
+    }
+    else
+    {
+        dummy[0] = TK(0);
+    }
+    return dummy.data();
+}
+
+template <typename TK>
+inline TK* psi_k_ptr_or_dummy(psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
+{
+    if (psi.get_nbands() > 0 && psi.get_nbasis() > 0)
+    {
+        return &psi(ik, 0, 0);
+    }
+    if (dummy.empty())
+    {
+        dummy.assign(1, TK(0));
+    }
+    else
+    {
+        dummy[0] = TK(0);
+    }
+    return dummy.data();
+}
+
 } // namespace
 
 template <typename TK, typename TR>
@@ -783,19 +823,23 @@ double EnergyGradient<TK, TR>::s_inner_product(
     const int nbs_local = Y.get_nbasis();
 
 #ifdef __MPI
+    std::vector<TK> x_dummy(1, TK(0));
+    std::vector<TK> y_dummy(1, TK(0));
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* Xk = &X(ik, 0, 0);
-        const TK* Yk = &Y(ik, 0, 0);
+        const TK* Xk = psi_k_ptr_or_dummy(X, ik, x_dummy);
+        const TK* Yk = psi_k_ptr_or_dummy(Y, ik, y_dummy);
         for (int i = 0; i < nb_local * nbs_local; ++i)
             result += real_of_conj_prod(Xk[i], Yk[i]);
     }
     Parallel_Reduce::reduce_all(result);
 #else
+    std::vector<TK> x_dummy(1, TK(0));
+    std::vector<TK> y_dummy(1, TK(0));
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* Xk = &X(ik, 0, 0);
-        const TK* Yk = &Y(ik, 0, 0);
+        const TK* Xk = psi_k_ptr_or_dummy(X, ik, x_dummy);
+        const TK* Yk = psi_k_ptr_or_dummy(Y, ik, y_dummy);
         for (int i = 0; i < nbs_local * nb_local; ++i)
             result += real_of_conj_prod(Xk[i], Yk[i]);
     }
@@ -829,10 +873,11 @@ void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     const std::int64_t m_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
     std::vector<TK> SY(static_cast<size_t>(sy_alloc), TK(0));
     std::vector<TK> M(static_cast<size_t>(m_alloc), TK(0));
+    std::vector<TK> c_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* C = &wfc(ik, 0, 0);
+        const TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
         for (int i = 0; i < nb_local * nbs_local; ++i)
         {
             SY[i] = C[i];
@@ -871,10 +916,11 @@ void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     const int nbands = wfc.get_nbands();
     std::vector<TK> SY(nbasis * nbands, TK(0));
     std::vector<TK> M(nbands * nbands, TK(0));
+    std::vector<TK> c_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* C = &wfc(ik, 0, 0);
+        const TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
         for (int i = 0; i < nbasis * nbands; ++i)
         {
             SY[i] = C[i];
@@ -933,15 +979,17 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     const std::int64_t sc_alloc
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     const std::int64_t eij_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> psi_dummy(1, TK(0));
+    std::vector<TK> grad_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc(ik, 0, 0);
-        TK* g_k = &grad_wfc(ik, 0, 0);
+        const TK* psi_k = psi_k_ptr_or_dummy(wfc, ik, psi_dummy);
+        TK* g_k = psi_k_ptr_or_dummy(grad_wfc, ik, grad_dummy);
 
         // In X-space, SC is just X.
         std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
-        const int npsi = nbasis * wfc.get_nbands();
+        const int npsi = nb_local * nbs_local;
         for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
 
         // A = X^H G  (nbands x nbands)
@@ -970,11 +1018,13 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     // Non-MPI: nbs_local == nbasis. Use plain BLAS.
     const int nbasis = wfc.get_nbasis();
     const int nbands = wfc.get_nbands();
+    std::vector<TK> psi_dummy(1, TK(0));
+    std::vector<TK> grad_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc(ik, 0, 0);
-        TK* g_k = &grad_wfc(ik, 0, 0);
+        const TK* psi_k = psi_k_ptr_or_dummy(wfc, ik, psi_dummy);
+        TK* g_k = psi_k_ptr_or_dummy(grad_wfc, ik, grad_dummy);
 
         // In X-space, SC is just X.
         std::vector<TK> SC(nbasis * nbands, TK(0));
@@ -1027,11 +1077,13 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     const std::int64_t m_alloc_retract
         = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> c_dummy(1, TK(0));
+    std::vector<TK> g_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        TK* C = &wfc(ik, 0, 0);
-        const TK* G = &grad_wfc(ik, 0, 0);
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
+        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
 
         // Y = C - alpha * G (in-place on C)
         for (int i = 0; i < nb_local * nbs_local; ++i)
@@ -1104,11 +1156,13 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     // Non-MPI: nbs_local == nbasis. Use plain BLAS/LAPACK.
     const int nbasis = wfc.get_nbasis();
     const int nbands = wfc.get_nbands();
+    std::vector<TK> c_dummy(1, TK(0));
+    std::vector<TK> g_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        TK* C = &wfc(ik, 0, 0);
-        const TK* G = &grad_wfc(ik, 0, 0);
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
+        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
 
         // Y = C - alpha * G (in-place on C)
         for (int i = 0; i < nbasis * nbands; ++i)
@@ -1161,10 +1215,12 @@ double EnergyGradient<TK, TR>::compute(
 
     // 2. Build Hartree potential
     HR_hartree_->set_zero();
-    delete op_hartree_;
-    op_hartree_ = new Veff_rdmft_local<TK, TR>(
-        hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
-        orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
+    if (op_hartree_ == nullptr)
+    {
+        op_hartree_ = new Veff_rdmft_local<TK, TR>(
+            hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
+            orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
+    }
     op_hartree_->contributeHR();
 
     // 3. Build exchange from modified DM (RDMFT's private EXX)
@@ -1193,10 +1249,6 @@ double EnergyGradient<TK, TR>::compute(
             else
                 exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
-            delete op_exx_;
-            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
-                hsk_exx_, HR_exx_, *ucell_, *kv_,
-                &exx_lri_d_->Hexxs, nullptr, hamilt::Add_Hexx_Type::k);
         }
         else
         {
@@ -1209,10 +1261,6 @@ double EnergyGradient<TK, TR>::compute(
             else
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
-            delete op_exx_;
-            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
-                hsk_exx_, HR_exx_, *ucell_, *kv_,
-                nullptr, &exx_lri_c_->Hexxs, hamilt::Add_Hexx_Type::k);
         }
     
     }
@@ -1235,13 +1283,16 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
 
-    std::vector<TK> Hpsi_one(nb_local * nbs_local);
-    std::vector<TK> Hpsi_h(nb_local * nbs_local);
-    std::vector<TK> Hpsi_x(nb_local * nbs_local);
+    const std::int64_t hpsi_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    std::vector<TK> Hpsi_one(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<TK> Hpsi_h(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<TK> Hpsi_x(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<TK> psi_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc_eval(ik, 0, 0);
+        const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
 
         // One-body: H_one * psi
         hsk_one_->set_zero_hk();
@@ -1385,10 +1436,12 @@ double EnergyGradient<TK, TR>::compute_energy(
     build_charge(occ_flat, wfc_eval);
 
     HR_hartree_->set_zero();
-    delete op_hartree_;
-    op_hartree_ = new Veff_rdmft_local<TK, TR>(
-        hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
-        orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
+    if (op_hartree_ == nullptr)
+    {
+        op_hartree_ = new Veff_rdmft_local<TK, TR>(
+            hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
+            orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
+    }
     op_hartree_->contributeHR();
 
     // Exchange must also be rebuilt because the modified DM gamma_xc depends
@@ -1420,10 +1473,6 @@ double EnergyGradient<TK, TR>::compute_energy(
             else
                 exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
-            delete op_exx_;
-            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
-                hsk_exx_, HR_exx_, *ucell_, *kv_,
-                &exx_lri_d_->Hexxs, nullptr, hamilt::Add_Hexx_Type::k);
         }
         else
         {
@@ -1436,10 +1485,6 @@ double EnergyGradient<TK, TR>::compute_energy(
             else
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
-            delete op_exx_;
-            op_exx_ = new hamilt::OperatorEXX<hamilt::OperatorLCAO<TK, TR>>(
-                hsk_exx_, HR_exx_, *ucell_, *kv_,
-                nullptr, &exx_lri_c_->Hexxs, hamilt::Add_Hexx_Type::k);
         }
     }
 #endif
@@ -1450,12 +1495,15 @@ double EnergyGradient<TK, TR>::compute_energy(
         cached_h_one_diag_.resize(nk_);
         const int nb_local = wfc_eval.get_nbands();
         const int nbs_local = wfc_eval.get_nbasis();
-        std::vector<TK> Hpsi_buf(nb_local * nbs_local);
+        const std::int64_t hpsi_alloc
+            = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+        std::vector<TK> Hpsi_buf(static_cast<size_t>(hpsi_alloc), TK(0));
+        std::vector<TK> psi_dummy(1, TK(0));
 
         for (int ik = 0; ik < nk_; ++ik)
         {
             cached_h_one_diag_[ik].assign(nbands_, 0.0);
-            const TK* psi_k = &wfc_eval(ik, 0, 0);
+            const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
 
             hsk_one_->set_zero_hk();
             op_local_->contributeHk(ik);
@@ -1471,7 +1519,10 @@ double EnergyGradient<TK, TR>::compute_energy(
     const int nbs_local = wfc_eval.get_nbasis();
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
-    std::vector<TK> Hpsi_buf(nb_local * nbs_local);
+    const std::int64_t hpsi_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    std::vector<TK> Hpsi_buf(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<TK> psi_dummy(1, TK(0));
 
     E_one_ = 0.0;
     E_hartree_ = 0.0;
@@ -1479,7 +1530,7 @@ double EnergyGradient<TK, TR>::compute_energy(
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const TK* psi_k = &wfc_eval(ik, 0, 0);
+        const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
 
         // Hartree diag
         hsk_hartree_->set_zero_hk();
@@ -1693,12 +1744,13 @@ void EnergyGradient<TK, TR>::wfc_C_to_X(psi::Psi<TK>& wfc)
     const int nbands_const = ParaV_->desc_wfc[3];
     int nbasis = nbasis_const;
     int nbands = nbands_const;
+    std::vector<TK> c_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* C = &wfc(ik, 0, 0);
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
 
         // X = U * C via pdtrmm_: B <- alpha * A * B (side='L', uplo='U', trans='N')
         // pdtrmm_ is an in-place operation that overwrites B with A*B,
@@ -1729,12 +1781,13 @@ void EnergyGradient<TK, TR>::wfc_C_to_X(psi::Psi<TK>& wfc)
 #else
     const int nbasis = nbs_local;
     const int nbands = nb_local;
+    std::vector<TK> c_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* C = &wfc(ik, 0, 0);
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
 
         // X = U * C (in-place via trmm)
         detail::trmm_left_upper_notr(nbasis, nbands, Uk_[ik].data(), nbasis, C, nbasis);
@@ -1757,12 +1810,13 @@ void EnergyGradient<TK, TR>::wfc_X_to_C(psi::Psi<TK>& wfc)
 #ifdef __MPI
     int nbasis = ParaV_->desc[2];
     int nbands = ParaV_->desc_wfc[3];
+    std::vector<TK> x_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* X = &wfc(ik, 0, 0);
+        TK* X = psi_k_ptr_or_dummy(wfc, ik, x_dummy);
 
         // C = U^{-1} X: solve U * C = X for C, i.e. trsm side='L', uplo='U', trans='N'
         int one_int = 1;
@@ -1791,12 +1845,13 @@ void EnergyGradient<TK, TR>::wfc_X_to_C(psi::Psi<TK>& wfc)
 #else
     const int nbasis = nbs_local;
     const int nbands = nb_local;
+    std::vector<TK> x_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* X = &wfc(ik, 0, 0);
+        TK* X = psi_k_ptr_or_dummy(wfc, ik, x_dummy);
 
         // C = U^{-1} X via trsm
         detail::trsm_left_upper_notr(nbasis, nbands, Uk_[ik].data(), nbasis, X, nbasis);
@@ -1820,12 +1875,13 @@ void EnergyGradient<TK, TR>::grad_C_to_X(psi::Psi<TK>& grad_wfc)
 #ifdef __MPI
     int nbasis = ParaV_->desc[2];
     int nbands = ParaV_->desc_wfc[3];
+    std::vector<TK> g_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* G = &grad_wfc(ik, 0, 0);
+        TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
 
         // G_X = U^{-H} G_C: solve U^H * G_X = G_C, i.e.
         // trsm side='L', uplo='U', trans='C'/'T'
@@ -1857,12 +1913,13 @@ void EnergyGradient<TK, TR>::grad_C_to_X(psi::Psi<TK>& grad_wfc)
 #else
     const int nbasis = nbs_local;
     const int nbands = nb_local;
+    std::vector<TK> g_dummy(1, TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         if (Uk_[ik].empty()) continue;
 
-        TK* G = &grad_wfc(ik, 0, 0);
+        TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
 
         // G_X = U^{-H} G_C via trsm
         detail::trsm_left_upper_conjt(nbasis, nbands, Uk_[ik].data(), nbasis, G, nbasis);

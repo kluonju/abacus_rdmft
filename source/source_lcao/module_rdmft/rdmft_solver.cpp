@@ -11,6 +11,7 @@
 #include <memory>
 #include <type_traits>
 #include <complex>
+#include <cstdlib>
 
 namespace rdmft
 {
@@ -217,6 +218,10 @@ inline void psi_to_flat(const psi::Psi<double>& P, std::vector<double>& flat)
     const int nbs = P.get_nbasis();
     const int n = nk * nb * nbs;
     flat.resize(n);
+    if (n == 0)
+    {
+        return;
+    }
     const double* p = &P(0, 0, 0);
     std::copy(p, p + n, flat.begin());
 }
@@ -229,6 +234,10 @@ inline void psi_to_flat(const psi::Psi<std::complex<double>>& P,
     const int nbs = P.get_nbasis();
     const int n = nk * nb * nbs;
     flat.resize(2 * n);
+    if (n == 0)
+    {
+        return;
+    }
     const std::complex<double>* p = &P(0, 0, 0);
     for (int i = 0; i < n; ++i)
     {
@@ -243,6 +252,10 @@ inline void flat_to_psi(const std::vector<double>& flat, psi::Psi<double>& P)
     const int nb = P.get_nbands();
     const int nbs = P.get_nbasis();
     const int n = nk * nb * nbs;
+    if (n == 0)
+    {
+        return;
+    }
     double* p = &P(0, 0, 0);
     for (int i = 0; i < n; ++i) p[i] = flat[i];
 }
@@ -254,6 +267,10 @@ inline void flat_to_psi(const std::vector<double>& flat,
     const int nb = P.get_nbands();
     const int nbs = P.get_nbasis();
     const int n = nk * nb * nbs;
+    if (n == 0)
+    {
+        return;
+    }
     std::complex<double>* p = &P(0, 0, 0);
     for (int i = 0; i < n; ++i)
         p[i] = std::complex<double>(flat[2 * i], flat[2 * i + 1]);
@@ -338,6 +355,7 @@ double RDMFTSolver<TK, TR>::solve(
     // Precompute S_k = U_k^H U_k and switch to the X_k = U_k C_k variable.
     // All RDMFT manifold operations are performed only in X-space.
     energy_grad_->precompute_cholesky_S();
+
     energy_grad_->wfc_C_to_X(wfc);
 
     // Orthonormalize in X-space so all subsequent manifold operations start
@@ -692,8 +710,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
             const int nbs_local = grad_wfc.get_nbasis();
             for (int ik = 0; ik < nk_local; ++ik)
             {
-                const TK* gk = &grad_wfc(ik, 0, 0);
                 const int nelem = nb_local * nbs_local;
+                if (nelem == 0)
+                {
+                    continue;
+                }
+                const TK* gk = &grad_wfc(ik, 0, 0);
                 for (int i = 0; i < nelem; ++i)
                     orb_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
             }
@@ -737,9 +759,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // applies wfc <- wfc - alpha * (-orb_dir) = wfc + alpha * orb_dir).
         psi::Psi<TK> neg_orb_dir(orb_dir);
         {
-            TK* q = &neg_orb_dir(0, 0, 0);
-            const TK* p = &orb_dir(0, 0, 0);
-            for (int i = 0; i < orb_total_size; ++i) q[i] = -p[i];
+            if (orb_total_size > 0)
+            {
+                TK* q = &neg_orb_dir(0, 0, 0);
+                const TK* p = &orb_dir(0, 0, 0);
+                for (int i = 0; i < orb_total_size; ++i) q[i] = -p[i];
+            }
         }
 
         // Decide whether the orbital block actually needs to be stepped in
@@ -1505,6 +1530,40 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const int nbs_local = wfc.get_nbasis();
     const int total_size = nk * nb_local * nbs_local;
 
+#ifdef __MPI
+    const char* force_mpi_orbitals_env = std::getenv("ABACUS_RDMFT_FORCE_MPI_ORBITALS");
+    const bool force_mpi_orbitals = (force_mpi_orbitals_env != nullptr
+                                     && force_mpi_orbitals_env[0] == '1'
+                                     && force_mpi_orbitals_env[1] == '\0');
+    if (GlobalV::NPROC > 1)
+    {
+        if (force_mpi_orbitals)
+        {
+            if (GlobalV::MY_RANK == 0)
+            {
+                std::cout << "[RDMFT] MPI safeguard override enabled via "
+                          << "ABACUS_RDMFT_FORCE_MPI_ORBITALS=1; running distributed orbital optimization."
+                          << std::endl;
+            }
+        }
+        else
+        {
+            if (GlobalV::MY_RANK == 0)
+            {
+                std::cout << "[RDMFT] MPI safeguard: skip orbital optimization in alternating mode "
+                          << "(temporary workaround for distributed-memory manifold instability)."
+                          << std::endl;
+            }
+
+            result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
+            result.converged = true;
+            result.iterations = 0;
+            result.grad_norm = 0.0;
+            return result;
+        }
+    }
+#endif
+
     const OptimizerType opt_type = config_.orb_optimizer;
     const bool use_cg    = (opt_type == OptimizerType::ConjugateGradient);
     const bool use_lbfgs = (opt_type == OptimizerType::LBFGS);
@@ -1565,8 +1624,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             const int nbs_local = grad_wfc.get_nbasis();
             for (int ik = 0; ik < nk_local; ++ik)
             {
-                const TK* gk = &grad_wfc(ik, 0, 0);
                 const int nelem = nb_local * nbs_local;
+                if (nelem == 0)
+                {
+                    continue;
+                }
+                const TK* gk = &grad_wfc(ik, 0, 0);
                 for (int i = 0; i < nelem; ++i)
                     gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
             }
@@ -1719,9 +1782,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         // so we pass  step = -dir  to get the effective update  wfc + alpha*dir.
         psi::Psi<TK> neg_dir(dir);
         {
-            TK* q = &neg_dir(0, 0, 0);
-            const TK* p = &dir(0, 0, 0);
-            for (int i = 0; i < total_size; ++i) q[i] = -p[i];
+            if (total_size > 0)
+            {
+                TK* q = &neg_dir(0, 0, 0);
+                const TK* p = &dir(0, 0, 0);
+                for (int i = 0; i < total_size; ++i) q[i] = -p[i];
+            }
         }
 
         const double c1 = config_.line_search_c1;

@@ -51,6 +51,16 @@ void RDMFT<TK, TR>::cal_V_TV()
 {
     HR_TV->set_zero();
 
+    // Rebuild one-body operators for the current ionic geometry.
+    // These are recreated on each ion update, so release the previous
+    // instances first to avoid unbounded growth across ionic steps.
+    delete V_ekinetic_potential;
+    V_ekinetic_potential = nullptr;
+    delete V_nonlocal;
+    V_nonlocal = nullptr;
+    delete V_local;
+    V_local = nullptr;
+
     V_ekinetic_potential = new hamilt::EKinetic<hamilt::OperatorLCAO<TK, TR>>(hsk_TV,
                                                                                  kv->kvec_d,
                                                                                  HR_TV,
@@ -95,6 +105,9 @@ void RDMFT<TK, TR>::cal_V_hartree()
 {
     HR_hartree->set_zero();
 
+    delete V_hartree;
+    V_hartree = nullptr;
+
     V_hartree = new rdmft::Veff_rdmft<TK, TR>(hsk_hartree,
                                               kv->kvec_d,
                                               this->pelec->pot,
@@ -116,6 +129,12 @@ void RDMFT<TK, TR>::cal_V_hartree()
 template <typename TK, typename TR>
 void RDMFT<TK, TR>::cal_V_XC(const UnitCell& ucell)
 {
+    // XC operators are rebuilt from the current charge / DM each update.
+    delete V_dft_XC;
+    V_dft_XC = nullptr;
+    delete V_exx_XC;
+    V_exx_XC = nullptr;
+
     if (!only_exx_type)
     {
         HR_dft_XC->set_zero();
