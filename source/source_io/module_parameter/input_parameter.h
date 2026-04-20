@@ -684,6 +684,8 @@ struct Input_para
     int rdmft_lbfgs_memory = 10;                   // L-BFGS history vectors
     double rdmft_adam_lr = 0.001;                  // Adam learning rate
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
+    /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).
+    bool rdmft_print_stiefel_gram = false;
     double rdmft_joint_orb_scale = 1.0;             // joint-strategy per-block preconditioner on the orbital block (see RDMFTConfig::joint_orb_scale)
 
     // ==============   #Parameters (22.EXX PW) =====================

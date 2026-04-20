@@ -61,6 +61,7 @@ extern "C" {
 }
 
 #include <cmath>
+#include <cstdint>
 #include <algorithm>
 #include <iostream>
 #include <iomanip>
@@ -91,6 +92,10 @@ inline void pgemm_wrapper(char ta, char tb, int m, int n, int k,
 
 inline double real_of(double v) { return v; }
 inline double real_of(std::complex<double> v) { return v.real(); }
+
+// |v|^2 for Frobenius accumulation (C++14-friendly; avoids if constexpr / is_same_v)
+inline double gram_elem_frob_sq(double v) { return v * v; }
+inline double gram_elem_frob_sq(const std::complex<double>& v) { return std::norm(v); }
 
 // Transpose character for real/complex
 inline char trans_char(double) { return 'T'; }
@@ -787,7 +792,9 @@ double EnergyGradient<TK, TR>::s_inner_product(
     const TK one = TK(1.0);
     const TK zero = TK(0.0);
 
-    std::vector<TK> SY(ParaV_->nloc, TK(0));
+    const std::int64_t sy_alloc_ip
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    std::vector<TK> SY(static_cast<size_t>(sy_alloc_ip), TK(0));
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -846,6 +853,130 @@ double EnergyGradient<TK, TR>::s_inner_product(
 }
 
 template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
+    const psi::Psi<TK>& wfc,
+    std::vector<double>& frob_per_ik)
+{
+    frob_per_ik.assign(nk_, 0.0);
+    const bool skip_S = use_X_variable_;
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const char tc = detail::trans_char(TK());
+
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
+    const int nrow = para_Eij_.get_row_size();
+    const int ncol = para_Eij_.get_col_size();
+    const int eij_nloc = nrow * ncol;
+
+    // ScaLAPACK must not receive a null matrix pointer when local dimensions are zero;
+    // std::vector<T>(0).data() may be nullptr and breaks p*gemm / heap on some ranks.
+    const std::int64_t sy_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    const std::int64_t m_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> SY(static_cast<size_t>(sy_alloc), TK(0));
+    std::vector<TK> M(static_cast<size_t>(m_alloc), TK(0));
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* C = &wfc(ik, 0, 0);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
+
+        std::fill(SY.begin(), SY.end(), TK(0));
+        if (SK != nullptr)
+        {
+            detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, 1, 1, ParaV_->desc,
+                C, 1, 1, ParaV_->desc_wfc,
+                zero, SY.data(), 1, 1, ParaV_->desc_wfc);
+        }
+        else
+        {
+            for (int i = 0; i < nb_local * nbs_local; ++i)
+            {
+                SY[i] = C[i];
+            }
+        }
+
+        std::fill(M.begin(), M.end(), TK(0));
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, C, 1, 1, ParaV_->desc_wfc,
+            SY.data(), 1, 1, ParaV_->desc_wfc,
+            zero, M.data(), 1, 1, para_Eij_.desc);
+
+        double frob_sq = 0.0;
+        double tr = 0.0;
+        for (int i = 0; i < nrow; ++i)
+        {
+            const int ig = para_Eij_.local2global_row(i);
+            for (int j = 0; j < ncol; ++j)
+            {
+                const int jg = para_Eij_.local2global_col(j);
+                const TK val = M[i + j * nrow];
+                frob_sq += detail::gram_elem_frob_sq(val);
+                if (ig == jg)
+                {
+                    tr += detail::real_of(val);
+                }
+            }
+        }
+        Parallel_Reduce::reduce_all(frob_sq);
+        Parallel_Reduce::reduce_all(tr);
+
+        const double resid_sq = frob_sq - 2.0 * tr + static_cast<double>(nbands);
+        frob_per_ik[ik] = std::sqrt(std::max(0.0, resid_sq));
+    }
+#else
+    const int nbasis = wfc.get_nbasis();
+    const int nbands = wfc.get_nbands();
+    std::vector<TK> SY(nbasis * nbands, TK(0));
+    std::vector<TK> M(nbands * nbands, TK(0));
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* C = &wfc(ik, 0, 0);
+        const TK* SK = skip_S ? nullptr : get_SK(ik);
+
+        if (SK != nullptr)
+        {
+            detail::gemm_wrapper('N', 'N', nbasis, nbands, nbasis,
+                one, SK, nbasis, C, nbasis, zero, SY.data(), nbasis);
+        }
+        else
+        {
+            for (int i = 0; i < nbasis * nbands; ++i)
+            {
+                SY[i] = C[i];
+            }
+        }
+
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, C, nbasis, SY.data(), nbasis, zero, M.data(), nbands);
+
+        double frob_sq = 0.0;
+        double tr = 0.0;
+        for (int j = 0; j < nbands; ++j)
+        {
+            for (int i = 0; i < nbands; ++i)
+            {
+                const TK val = M[i + j * nbands];
+                frob_sq += detail::gram_elem_frob_sq(val);
+                if (i == j)
+                {
+                    tr += detail::real_of(val);
+                }
+            }
+        }
+        const double resid_sq = frob_sq - 2.0 * tr + static_cast<double>(nbands);
+        frob_per_ik[ik] = std::sqrt(std::max(0.0, resid_sq));
+    }
+#endif
+}
+
+template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::project_orbital_gradient(
     const psi::Psi<TK>& wfc,
     psi::Psi<TK>& grad_wfc)
@@ -872,8 +1003,13 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
 
     const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
+    const std::int64_t sc_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    const std::int64_t eij_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -881,7 +1017,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         TK* g_k = &grad_wfc(ik, 0, 0);
 
         // SC = S * C  (if S available and not in X-mode), otherwise SC == C
-        std::vector<TK> SC(ParaV_->nloc, TK(0));
+        std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
         const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
@@ -897,7 +1033,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
         }
 
         // A = (SC)^H G = C^H S G  (nbands x nbands)
-        std::vector<TK> A(eij_nloc, TK(0));
+        std::vector<TK> A(static_cast<size_t>(eij_alloc), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, SC.data(), 1, 1, ParaV_->desc_wfc,
             g_k, 1, 1, ParaV_->desc_wfc,
@@ -905,7 +1041,7 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
 
         // B = G^H (SC) = G^H S C, then symmetric part  A <- 0.5 (A + B) = sym(C^H S G)
         // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
-        std::vector<TK> B(eij_nloc, TK(0));
+        std::vector<TK> B(static_cast<size_t>(eij_alloc), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, g_k, 1, 1, ParaV_->desc_wfc,
             SC.data(), 1, 1, ParaV_->desc_wfc,
@@ -987,6 +1123,10 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
     const int eij_nloc = para_Eij_.get_row_size() * para_Eij_.get_col_size();
+    const std::int64_t sy_alloc_retract
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    const std::int64_t m_alloc_retract
+        = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -998,7 +1138,7 @@ void EnergyGradient<TK, TR>::retract_orbitals(
             C[i] -= TK(alpha) * G[i];
 
         // SY = S * Y (or SY = Y when skip_S or no overlap)
-        std::vector<TK> SY(ParaV_->nloc, TK(0));
+        std::vector<TK> SY(static_cast<size_t>(sy_alloc_retract), TK(0));
         const TK* SK = skip_S ? nullptr : get_SK(ik);
         if (SK != nullptr)
         {
@@ -1013,7 +1153,7 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         }
 
         // M = Y^H S Y
-        std::vector<TK> M(eij_nloc, TK(0));
+        std::vector<TK> M(static_cast<size_t>(m_alloc_retract), TK(0));
         detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
             one, C, 1, 1, ParaV_->desc_wfc,
             SY.data(), 1, 1, ParaV_->desc_wfc,
@@ -1560,6 +1700,8 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
 
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
+    const std::int64_t nloc = static_cast<std::int64_t>(ParaV_->nloc);
+    const std::int64_t nloc_alloc = std::max<std::int64_t>(nloc, 1);
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -1567,14 +1709,20 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         const TK* SK = get_SK(ik);
         if (SK == nullptr)
         {
-            // No overlap for this k-point => identity
-            Uk_[ik].clear();
-            Uk_inv_[ik].clear();
-            continue;
+            GlobalV::ofs_running << "WARNING: overlap matrix S_k is unavailable at ik=" << ik
+                << "; disabling X-variable mode." << std::endl;
+            use_X_variable_ = false;
+            cholesky_precomputed_ = false;
+            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+            return;
         }
 
         // Copy S_k into Uk_[ik] for in-place Cholesky
-        Uk_[ik].assign(SK, SK + ParaV_->nloc);
+        Uk_[ik].assign(static_cast<size_t>(nloc_alloc), TK(0));
+        if (nloc > 0)
+        {
+            std::copy(SK, SK + nloc, Uk_[ik].begin());
+        }
 
         // Upper Cholesky: S = U^H U (uplo='U')
         {
@@ -1707,7 +1855,7 @@ void EnergyGradient<TK, TR>::wfc_C_to_X(psi::Psi<TK>& wfc)
 
     for (int ik = 0; ik < nk_; ++ik)
     {
-        if (Uk_[ik].empty()) continue; // S = I for this k
+        if (Uk_[ik].empty()) continue;
 
         TK* C = &wfc(ik, 0, 0);
 

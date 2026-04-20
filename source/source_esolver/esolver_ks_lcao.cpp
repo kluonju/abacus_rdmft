@@ -575,6 +575,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
+        rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
 
         // Parse strategy. "joint" is the current name for the simultaneous
         // product-manifold optimisation; "product_manifold" is accepted as a

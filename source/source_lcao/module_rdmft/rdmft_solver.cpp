@@ -184,26 +184,6 @@ void print_nonconverged_report_running_joint(double E,
     }
 }
 
-template <typename TK, typename TR>
-double compute_s_fidelity_trace(EnergyGradient<TK, TR>* energy_grad,
-                                const psi::Psi<TK>& wfc)
-{
-    // Measure the deviation from the Stiefel manifold:
-    //   In C-space (generalised Stiefel):
-    //     S-fid = Tr(C^H S C) / (nk * nbands) - 1
-    //   In X-space (standard Stiefel, use_X_variable_ = true):
-    //     fid   = Tr(X^H X) / (nk * nbands) - 1
-    // Both should be close to 0 when the variable is on the manifold.
-    // The s_inner_product() method handles the S/I distinction internally.
-    const double s_trace = energy_grad->s_inner_product(wfc, wfc);
-    const double target = static_cast<double>(wfc.get_nk())
-                        * static_cast<double>(wfc.get_nbands());
-    if (target <= 0.0)
-    {
-        return 0.0;
-    }
-    return s_trace / target - 1.0;
-}
 } // namespace
 
 // Helper to get |x|^2 for both real and complex types
@@ -388,14 +368,27 @@ double RDMFTSolver<TK, TR>::solve(
     // argument is irrelevant when alpha = 0, so we reuse wfc itself).
     energy_grad_->retract_orbitals(wfc, wfc, 0.0);
 
-    // Precompute the Cholesky factorisation S_k = U_k^H U_k and switch to
-    // the X_k = U_k C_k variable for all subsequent manifold operations.
-    // In X-space X^H X = I, so projection, retraction, and inner product
-    // are the standard (S = I) Stiefel forms.
-    energy_grad_->precompute_cholesky_S();
-    if (energy_grad_->use_X_variable())
+    // The X-variable path (X = U*C with S = U^H U) is currently disabled in
+    // MPI runs because it can trigger heap corruption on layouts where some
+    // ranks own zero local blocks. Keep the stable C-space manifold updates.
+#ifdef __MPI
+    const bool enable_cholesky_x_variable = false;
+#else
+    const bool enable_cholesky_x_variable = true;
+#endif
+
+    energy_grad_->disable_X_variable();
+    if (enable_cholesky_x_variable)
     {
-        energy_grad_->wfc_C_to_X(wfc);
+        // Precompute the Cholesky factorisation S_k = U_k^H U_k and switch to
+        // the X_k = U_k C_k variable for all subsequent manifold operations.
+        // In X-space X^H X = I, so projection, retraction, and inner product
+        // are the standard (S = I) Stiefel forms.
+        energy_grad_->precompute_cholesky_S();
+        if (energy_grad_->use_X_variable())
+        {
+            energy_grad_->wfc_C_to_X(wfc);
+        }
     }
 
     double E = 0.0;
@@ -410,7 +403,7 @@ double RDMFTSolver<TK, TR>::solve(
     }
 
     // Transform back X -> C before returning to the caller.
-    if (energy_grad_->use_X_variable())
+    if (enable_cholesky_x_variable && energy_grad_->use_X_variable())
     {
         energy_grad_->wfc_X_to_C(wfc);
         energy_grad_->disable_X_variable();
@@ -441,13 +434,18 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     {
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
-        const double s_fidelity = compute_s_fidelity_trace(energy_grad_, wfc);
-        GlobalV::ofs_running << std::fixed << std::setprecision(10)
-            << "    orbital fidelity deviation ("
-            << (energy_grad_->use_X_variable()
-                ? "Tr(X^H X)/(nk*nb) - 1"
-                : "Tr(C^H S C)/(nk*nb) - 1")
-            << ") = " << s_fidelity << std::endl;
+        if (config_.print_stiefel_gram)
+        {
+            std::vector<double> stiefel_gram_frob_per_ik;
+            energy_grad_->stiefel_gram_residual_frobenius_per_k(wfc, stiefel_gram_frob_per_ik);
+            GlobalV::ofs_running << "    Stiefel Gram residual ||G_k - I||_F per k-point (G_k = "
+                << (energy_grad_->use_X_variable() ? "X_k^H X_k" : "C_k^H S_k C_k") << "):" << std::endl;
+            for (int ik = 0; ik < wfc.get_nk(); ++ik)
+            {
+                GlobalV::ofs_running << std::fixed << std::setprecision(10) << "      ik=" << ik
+                    << "  ||G_k - I||_F = " << stiefel_gram_frob_per_ik[ik] << std::endl;
+            }
+        }
 
         // 1. Optimize occupations with orbitals fixed
         auto occ_result = optimize_occupations(occ_flat, wfc);
@@ -476,7 +474,6 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  E = " << E
             << "  dE = " << std::scientific << dE
             << "  |c| = " << std::abs(constraint_viol)
-            << "  S-fid = " << std::fixed << std::setprecision(10) << s_fidelity
             << std::endl;
 
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
@@ -484,7 +481,6 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  E = " << E
             << "  dE = " << std::scientific << dE
             << "  |c| = " << std::abs(constraint_viol)
-            << "  S-fid = " << std::fixed << std::setprecision(10) << s_fidelity
             << "  occ_gnorm = " << occ_result.grad_norm
             << "  orb_gnorm = " << orb_result.grad_norm
             << std::endl;

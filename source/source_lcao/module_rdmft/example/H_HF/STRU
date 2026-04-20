@@ -1,0 +1,22 @@
+ATOMIC_SPECIES
+H 1.000 H.LDA.UPF
+
+NUMERICAL_ORBITAL
+H_gga_8au_60Ry_2s1p.orb
+
+LATTICE_CONSTANT
+1.0
+
+LATTICE_VECTORS
+10.0 0.0 0.0
+0.0 10.0 0.0
+0.0 0.0 10.0
+
+ATOMIC_POSITIONS # (in Angstrom)
+
+Direct              # or Cartesion
+
+H
+0.0
+1
+0.0 0.0 0.0

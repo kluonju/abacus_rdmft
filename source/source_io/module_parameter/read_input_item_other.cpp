@@ -1173,6 +1173,21 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_print_stiefel_gram");
+        item.annotation = "Print per-k-point Stiefel Gram residual ||G_k - I||_F (alternating strategy)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, each RDMFT alternating outer iteration logs the Frobenius norm of "
+                           "G_k - I (G_k = X_k^H X_k or C_k^H S_k C_k). This runs an extra distributed "
+                           "Gram-matrix multiply per k-point per outer step and increases memory traffic; "
+                           "leave false for production runs.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_print_stiefel_gram);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_joint_orb_scale");
         item.annotation = "Joint-strategy scaling factor between orbital and occupation blocks";
         item.category = "Reduced Density Matrix Functional Theory";

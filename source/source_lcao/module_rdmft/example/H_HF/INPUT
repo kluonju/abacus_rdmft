@@ -41,7 +41,7 @@ rdmft            true
 #     Leaving this unset falls back to the legacy single-step evaluator,
 #     which does NOT minimise the RDMFT energy and is only useful for
 #     checking functional values at the KS solution.
-rdmft_functional       muller
+rdmft_functional       hf
 
 # 6.4 Solver / optimiser configuration. Defaults shown; tweak as needed.
 rdmft_solver_strategy  alternating
@@ -54,4 +54,4 @@ rdmft_energy_tol       1e-6
 
 # Power-functional exponent alpha (0<alpha<1). For hf and muller this
 # value is overridden automatically by the reader (1.0 and 0.5 respectively).
-rdmft_power_alpha      0.656
+#rdmft_power_alpha      1.0

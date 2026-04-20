@@ -157,6 +157,11 @@ class EnergyGradient
     /// Euclidean inner product <X, Y> = Re Tr(X^H Y).
     double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
 
+    /// Per k-point Stiefel Gram residual ||G_k - I||_F with G_k = X_k^H X_k in
+    /// X-variable mode, else G_k = C_k^H S_k C_k.  frob_per_ik is resized to nk_.
+    void stiefel_gram_residual_frobenius_per_k(const psi::Psi<TK>& wfc,
+                                                std::vector<double>& frob_per_ik);
+
     // ================================================================
     // Cholesky-based S^{1/2} variable transformation
     //

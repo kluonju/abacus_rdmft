@@ -206,6 +206,29 @@ std::vector<double> make_tridiag_overlap(int n)
     return S;
 }
 
+// Frobenius norm ||C^H S C - I||_F (matches stiefel_gram_residual_frobenius_per_k in C-space)
+double frob_norm_gram_minus_I(const double* C, const double* S, int n, int p)
+{
+    double frob_sq = 0.0;
+    for (int i = 0; i < p; ++i)
+    {
+        for (int j = 0; j < p; ++j)
+        {
+            double gij = 0.0;
+            for (int a = 0; a < n; ++a)
+            {
+                for (int b = 0; b < n; ++b)
+                {
+                    gij += C[a + i * n] * S[a + b * n] * C[b + j * n];
+                }
+            }
+            const double diff = gij - ((i == j) ? 1.0 : 0.0);
+            frob_sq += diff * diff;
+        }
+    }
+    return std::sqrt(frob_sq);
+}
+
 // Maximum entry of |C^H S C - I|
 double gen_orthogonality_error(const double* C, const double* S,
                                int n, int p)
@@ -427,28 +450,15 @@ TEST_F(StiefelTest, gen_retract_preserves_gen_orthogonality)
     EXPECT_LT(gen_orthogonality_error(C_new.data(), S.data(), n, p), 1e-10);
 }
 
-TEST_F(StiefelTest, gen_s_fidelity_is_zero_on_manifold)
+TEST_F(StiefelTest, gen_stiefel_gram_residual_is_zero_on_manifold)
 {
-    // After reorthogonalization w.r.t. S, Tr(C^H S C) / p == 1,
-    // so the S-fidelity deviation Tr(C^H S C)/p - 1 should be 0.
-    // This mirrors the corrected compute_s_fidelity_trace formula in rdmft_solver.cpp.
+    // On the generalised Stiefel manifold, C^H S C = I, so ||C^H S C - I||_F = 0.
     const int n = 8, p = 3;
     auto S = make_diag_overlap(n);
     StiefelManifold<double> st(n, p, S.data());
 
     auto C = random_gen_stiefel_point(n, p, S, rng_);
 
-    // Compute Tr(C^H S C)
-    double trace_chsc = 0.0;
-    for (int j = 0; j < p; ++j)
-    {
-        // diagonal entry j: sum_{a,b} C_{aj} S_{ab} C_{bj}
-        for (int a = 0; a < n; ++a)
-            for (int b = 0; b < n; ++b)
-                trace_chsc += C[a + j * n] * S[a + b * n] * C[b + j * n];
-    }
-    // s_fidelity_deviation = trace / p - 1 should be 0
-    double s_fidelity = trace_chsc / static_cast<double>(p) - 1.0;
-    EXPECT_NEAR(s_fidelity, 0.0, 1e-10);
+    EXPECT_NEAR(frob_norm_gram_minus_I(C.data(), S.data(), n, p), 0.0, 1e-9);
 }
 

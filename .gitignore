@@ -30,3 +30,6 @@ compile_commands.json
 source/source_lcao/module_rdmft/example/ZnO_*/log
 source/source_lcao/module_rdmft/example/H2*/log
 source/source_lcao/module_rdmft/example/H2*/dissoc_runs/
+source/source_lcao/module_rdmft/example/H/log
+.gitignore
+source/source_lcao/module_rdmft/example/H_HF/log
