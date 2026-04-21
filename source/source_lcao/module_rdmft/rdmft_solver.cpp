@@ -11,7 +11,6 @@
 #include <memory>
 #include <type_traits>
 #include <complex>
-#include <cstdlib>
 
 namespace rdmft
 {
@@ -1529,40 +1528,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const int nb_local = wfc.get_nbands();
     const int nbs_local = wfc.get_nbasis();
     const int total_size = nk * nb_local * nbs_local;
-
-#ifdef __MPI
-    const char* force_mpi_orbitals_env = std::getenv("ABACUS_RDMFT_FORCE_MPI_ORBITALS");
-    const bool force_mpi_orbitals = (force_mpi_orbitals_env != nullptr
-                                     && force_mpi_orbitals_env[0] == '1'
-                                     && force_mpi_orbitals_env[1] == '\0');
-    if (GlobalV::NPROC > 1)
-    {
-        if (force_mpi_orbitals)
-        {
-            if (GlobalV::MY_RANK == 0)
-            {
-                std::cout << "[RDMFT] MPI safeguard override enabled via "
-                          << "ABACUS_RDMFT_FORCE_MPI_ORBITALS=1; running distributed orbital optimization."
-                          << std::endl;
-            }
-        }
-        else
-        {
-            if (GlobalV::MY_RANK == 0)
-            {
-                std::cout << "[RDMFT] MPI safeguard: skip orbital optimization in alternating mode "
-                          << "(temporary workaround for distributed-memory manifold instability)."
-                          << std::endl;
-            }
-
-            result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
-            result.converged = true;
-            result.iterations = 0;
-            result.grad_norm = 0.0;
-            return result;
-        }
-    }
-#endif
 
     const OptimizerType opt_type = config_.orb_optimizer;
     const bool use_cg    = (opt_type == OptimizerType::ConjugateGradient);
