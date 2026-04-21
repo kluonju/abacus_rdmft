@@ -155,11 +155,6 @@ struct PGRunner
             E = prob.energy(occ);
             auto grad = prob.gradient(occ);
 
-            double gnorm = 0.0;
-            for (auto g : grad) gnorm += g * g;
-            gnorm = std::sqrt(gnorm);
-            if (gnorm < config.occ_grad_tol) break;
-
             // Compute search direction.
             std::vector<double> dir;
             opt.compute_direction(grad, dir);
@@ -227,7 +222,7 @@ struct PGRunner
             // Convergence on step size.
             double sum_dn = 0.0;
             for (int i = 0; i < prob.nb; ++i) sum_dn += std::abs(step_vec[i]);
-            if (sum_dn < config.occ_dn_sum_tol && sum_dn > 1e-20) break;
+            if (sum_dn < config.rdmft_occ_tol && sum_dn > 1e-20) break;
         }
 
         return E;
@@ -273,12 +268,6 @@ struct ASRunner
             if (n_active != prev_n_active && iter > 0)
                 opt.init(prob.nb);
             prev_n_active = n_active;
-
-            // Zero out active directions.
-            double gnorm = 0.0;
-            for (auto g : grad_mod) gnorm += g * g;
-            gnorm = std::sqrt(gnorm);
-            if (gnorm < config.occ_grad_tol) break;
 
             // Compute direction on modified gradient.
             std::vector<double> dir;
@@ -359,7 +348,7 @@ struct ASRunner
 
             double sum_dn = 0.0;
             for (int i = 0; i < prob.nb; ++i) sum_dn += std::abs(step_vec[i]);
-            if (sum_dn < config.occ_dn_sum_tol && sum_dn > 1e-20) break;
+            if (sum_dn < config.rdmft_occ_tol && sum_dn > 1e-20) break;
         }
 
         return E;
@@ -398,9 +387,8 @@ TEST_F(PGOptimizerTest, SD_converges_4band)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::SteepestDescent;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -430,9 +418,8 @@ TEST_F(PGOptimizerTest, CG_converges_4band)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -455,8 +442,7 @@ TEST_F(PGOptimizerTest, LBFGS_converges_4band)
     cfg.occ_optimizer = OptimizerType::LBFGS;
     cfg.lbfgs_memory = 5;
     cfg.line_search_alpha_init = 1.0;
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+    cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -477,9 +463,8 @@ TEST_F(PGOptimizerTest, CG_converges_fractional)
     auto prob = make_6band_frac(3.5);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -500,8 +485,8 @@ TEST_F(PGOptimizerTest, constraint_satisfied_after_SD)
     auto prob = make_4band(1.5);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::SteepestDescent;
-    
-    cfg.occ_grad_tol = 1e-6;
+
+    cfg.rdmft_occ_tol = 1e-6;
 
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -525,9 +510,8 @@ TEST_F(ASOptimizerTest, SD_converges_4band)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::SteepestDescent;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -554,9 +538,8 @@ TEST_F(ASOptimizerTest, CG_converges_4band)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -579,8 +562,7 @@ TEST_F(ASOptimizerTest, LBFGS_converges_4band)
     cfg.occ_optimizer = OptimizerType::LBFGS;
     cfg.lbfgs_memory = 5;
     cfg.line_search_alpha_init = 1.0;
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+    cfg.rdmft_occ_tol = 1e-10;
 
     ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -603,9 +585,8 @@ TEST_F(ASOptimizerTest, active_set_change_restarts_optimizer)
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::LBFGS;
     cfg.lbfgs_memory = 5;
-    
-    cfg.occ_grad_tol = 1e-7;
-    cfg.occ_dn_sum_tol = 1e-9;
+
+    cfg.rdmft_occ_tol = 1e-9;
 
     ASRunner runner{prob, cfg};
     // Start uniformly (all free), expect active set to evolve.
@@ -627,8 +608,8 @@ TEST_F(ASOptimizerTest, constraint_satisfied_after_CG)
     auto prob = make_6band_frac(2.8);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    
-    cfg.occ_grad_tol = 1e-6;
+
+    cfg.rdmft_occ_tol = 1e-6;
 
     ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -653,9 +634,8 @@ TEST(OccOptimizerComparison, PG_and_AS_agree)
 
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    
-    cfg.occ_grad_tol = 1e-8;
-    cfg.occ_dn_sum_tol = 1e-10;
+
+    cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner pg{prob, cfg};
     ASRunner as{prob, cfg};

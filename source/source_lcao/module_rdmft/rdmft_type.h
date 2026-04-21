@@ -97,12 +97,10 @@ struct RDMFTConfig
     int occ_maxiter = 50;
     double energy_tol = 1e-8;
     /// Inner orbital step: stop when Riemannian gradient norm ||G_R|| falls below this.
-    double grad_tol = 1e-6;
-    /// Inner occupation step: stop when ||dL/dp|| (or ||dE/dn|| for PG/AS) falls below this.
-    double occ_grad_tol = 1e-6;
+    double orb_grad_tol = 1e-6;
     /// Inner occupation step: stop when sum_i |Δn_i| in one iteration falls below this
-    /// (guarded so an exact zero step from a failed line search does not count as converged).
-    double occ_dn_sum_tol = 1e-8;
+    /// as the occupation convergence criterion.
+    double rdmft_occ_tol = 1e-8;
 
     double aug_lag_mu_init = 1.0;
     double aug_lag_mu_factor = 2.0;

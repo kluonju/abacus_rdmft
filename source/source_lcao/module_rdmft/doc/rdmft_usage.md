@@ -137,7 +137,7 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
-| `rdmft_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
+| `rdmft_orb_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
 
 ### Initial KS occupation adjustment
 

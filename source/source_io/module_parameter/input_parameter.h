@@ -670,7 +670,7 @@ struct Input_para
     // double rdmft_wp22_omega;                 // the omega parameter of wp22-functional = exx_erfc_omega
 
     // RDMFT solver parameters (new optimization engine)
-    std::string rdmft_functional = "";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
+    std::string rdmft_functional = "muller";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
     std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
@@ -681,8 +681,8 @@ struct Input_para
     double rdmft_occ_init_perturb = 1e-3;          // KS-based initial occupation perturbation magnitude (deterministic +/-delta)
     int rdmft_occ_init_nbands_top = 0;             // initial [m,1-m] clamp: 0 = all bands (default), K>0 = top K bands only
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
-    double rdmft_grad_tol = 1e-6;                  // orbital inner: ||G_R||; occupation inner grad: same default
-    double rdmft_occ_dn_sum_tol = 1e-8;            // occupation inner: sum_i |Δn_i| per iteration
+    double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
+    double rdmft_occ_tol = 1e-7;                 // occupation inner: sum_i |Δn_i| per iteration
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
     std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint method
     double rdmft_alpha_step = 0.1;                 // initial line-search step length
