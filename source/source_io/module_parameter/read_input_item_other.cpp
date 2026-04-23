@@ -1020,14 +1020,40 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_init_mode");
+        item.annotation = "Initial occupation source for RDMFT: ks, perturbed, uniform";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "ks: use KS occupations directly. "
+                           "perturbed: in a Fermi window, add +delta above and -delta below. "
+                           "uniform: in the same Fermi window, set all selected occupations "
+                           "to the local average N_top / N_selected.";
+        item.default_value = "ks";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_occ_init_mode);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_occ_init_mode;
+                if (s != "ks" && s != "perturbed" && s != "uniform")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_occ_init_mode must be one of: ks, perturbed, uniform");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_init_perturb");
-        item.annotation = "Initial uniform-occupation perturbation magnitude for RDMFT";
+        item.annotation = "Initial occupation perturbation magnitude for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Before RDMFT starts, occupations are initialized uniformly as n = N_e/N_b. "
-                   "This keyword adds an optional additive perturbation +delta to the selected "
-                   "bands (controlled by rdmft_occ_init_nbands_top), followed by feasibility "
-                   "projection. 0 disables perturbation.";
+        item.description = "Perturbation delta used when rdmft_occ_init_mode = perturbed. "
+                           "In each k-point, selected bands above Fermi are increased by +delta "
+                           "and selected bands below Fermi are reduced by -delta, then projected "
+                           "to the feasible set. 0 disables the perturbation.";
         item.default_value = "0.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1046,16 +1072,26 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_init_nbands_top");
-        item.annotation = "Initial occupation perturbation scope: number of highest bands only";
+        item.annotation = "Initial occupation Fermi-window half-width";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "When >0, only the highest K bands (per k) receive the optional initial "
-                   "additive perturbation; lower bands remain at the uniform seed. "
-                   "0 means all bands are perturbed (default).";
+        item.description = "Fermi-window half-width K used by rdmft_occ_init_mode = perturbed/uniform. "
+                           "For each k-point, select K bands above and K bands below the Fermi boundary. "
+                           "K <= 0 disables these windowed initialisation modes and falls back to KS occupations.";
         item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_occ_init_nbands_top);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_occ_init_nbands_top < 0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_occ_init_nbands_top must be >= 0");
+                }
+            }
+        };
         this->add_item(item);
     }
     {
@@ -1140,6 +1176,65 @@ void ReadInput::item_others()
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
                         "rdmft_constraint must be 'augmented_lagrangian', 'projected_gradient', or 'active_set'");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_lambda_init");
+        item.annotation = "Initial ALM Lagrange multiplier lambda for RDMFT occupations";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Initial lambda value for the augmented Lagrangian method "
+                           "(used only when rdmft_constraint = augmented_lagrangian).";
+        item.default_value = "0.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_alm_lambda_init);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_mu_init");
+        item.annotation = "Initial ALM penalty parameter mu for RDMFT occupations";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Initial mu value for the augmented Lagrangian method "
+                           "(used only when rdmft_constraint = augmented_lagrangian).";
+        item.default_value = "1.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_alm_mu_init);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_alm_mu_init <= 0.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_mu_init must be > 0.0");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_mu_factor");
+        item.annotation = "ALM mu growth factor per update for RDMFT occupations";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Multiplicative factor for updating mu in augmented Lagrangian mode. "
+                           "Effective update is mu <- min(mu * factor, mu_max).";
+        item.default_value = "2.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_alm_mu_factor);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_alm_mu_factor < 1.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_mu_factor must be >= 1.0");
                 }
             }
         };

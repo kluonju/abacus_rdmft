@@ -576,11 +576,20 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
         rdmft_config.occ_maxiter = inp.rdmft_occ_maxiter;
+        if (inp.rdmft_occ_init_mode == "perturbed")
+            rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
+        else if (inp.rdmft_occ_init_mode == "uniform")
+            rdmft_config.occ_init_mode = rdmft::OccInitMode::Uniform;
+        else
+            rdmft_config.occ_init_mode = rdmft::OccInitMode::KS;
         rdmft_config.occ_init_perturb = inp.rdmft_occ_init_perturb;
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
         rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
+        rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
+        rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
+        rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
         rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
         rdmft_config.adam_lr = inp.rdmft_adam_lr;

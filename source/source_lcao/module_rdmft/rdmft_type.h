@@ -24,6 +24,16 @@ enum class OccParamType
     Logistic
 };
 
+enum class OccInitMode
+{
+    /// Keep occupations from the preceding KS calculation.
+    KS,
+    /// Around the Fermi window, add +delta above and -delta below.
+    Perturbed,
+    /// Around the Fermi window, replace by uniform average occupation.
+    Uniform
+};
+
 enum class ConstraintMethod
 {
     AugmentedLagrangian,
@@ -105,6 +115,7 @@ struct RDMFTConfig
     double aug_lag_mu_init = 1.0;
     double aug_lag_mu_factor = 2.0;
     double aug_lag_mu_max = 1e6;
+    double aug_lag_lambda_init = 0.0;
 
     double line_search_alpha_init = 0.1;
     double line_search_c1 = 1e-4;
@@ -150,10 +161,13 @@ struct RDMFTConfig
     double fd_epsilon = 1e-5;
 
     /// Optional additive perturbation magnitude applied on top of the
-    /// uniform initial occupations n = N_e / N_b before the first
-    /// optimisation step. Scoped by occ_init_nbands_top.
+    /// selected initial-occupation mode before the first optimisation step.
+    OccInitMode occ_init_mode = OccInitMode::KS;
+    /// Optional additive perturbation magnitude (delta) used by
+    /// OccInitMode::Perturbed.
     double occ_init_perturb = 0.0;
-    /// 0: perturb all bands. K>0: perturb only bands ib >= nbands-K (per k).
+    /// Number of bands in the Fermi window per side (above/below Fermi),
+    /// used by OccInitMode::Perturbed and OccInitMode::Uniform.
     int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.

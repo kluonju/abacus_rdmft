@@ -142,14 +142,18 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 ### Initial occupation setup
 
 Before RDMFT optimisation starts, occupations are initialised uniformly as
-`n(ik, ib) = N_e / N_b` for all k-point/band entries, then projected onto the
-feasible set (`0 <= n <= 1` with exact electron-number conservation). An
-optional additive perturbation can be applied afterwards.
+one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_occ_init_perturb` | real | `0.0` | Optional additive perturbation `+delta` applied to selected bands before a final feasibility projection. `0` disables perturbation. |
-| `rdmft_occ_init_nbands_top` | int | `0` | Number of **highest** bands (per k-point) that receive the perturbation and participate in the electron-count rescaling. Bands with index `ib < nbands − K` are left unchanged when `K > 0`. Default `0` applies the perturbation to **all** bands. |
+| `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `uniform`. |
+| `rdmft_occ_init_perturb` | real | `0.0` | Perturbation magnitude `delta` used by `rdmft_occ_init_mode = perturbed`. |
+| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` used by `perturbed`/`uniform`: select `K` bands above and `K` bands below the Fermi boundary (per k-point). |
+
+- `ks`: use KS occupations directly as RDMFT initial occupations.
+- `perturbed`: for each k-point and selected Fermi-window bands, apply `+delta` to bands above Fermi and `-delta` to bands below Fermi, then project back to the feasible set.
+- `uniform`: for each k-point, compute `N_top` over the selected `2K` Fermi-window bands and set each selected occupation to `N_top / (2K)` (or `N_top / N_selected` near band edges), then project.
+- If `K <= 0`, `perturbed` and `uniform` fall back to `ks`.
 
 ### Line search and optimiser tuning
 
@@ -158,6 +162,9 @@ optional additive perturbation can be applied afterwards.
 | `rdmft_alpha_step` | real | `0.1` | Initial trial step length for the Armijo backtracking line search. |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by L-BFGS. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
+| `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
+| `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
+| `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
 ### Debugging
 

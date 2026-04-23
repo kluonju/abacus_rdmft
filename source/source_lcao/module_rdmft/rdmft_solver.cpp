@@ -13,6 +13,7 @@
 #include <memory>
 #include <type_traits>
 #include <complex>
+#include <chrono>
 
 namespace rdmft
 {
@@ -32,6 +33,32 @@ bool occ_inner_should_stop(double sum_abs_dn,
                            double dn_tol)
 {
     return (sum_abs_dn < dn_tol);
+}
+
+int find_fermi_boundary_index(const std::vector<double>& occ_flat,
+                              const int ik,
+                              const int nbands)
+{
+    // Occupations are in [0,1] in RDMFT spin-channel convention.
+    // The Fermi boundary is approximated by the first band with n < 0.5.
+    for (int ib = 0; ib < nbands; ++ib)
+    {
+        if (occ_flat[ik * nbands + ib] < 0.5)
+        {
+            return ib - 1;
+        }
+    }
+
+    // Fallback for atypical ordering: last non-negligibly occupied band.
+    int last_occ = -1;
+    for (int ib = 0; ib < nbands; ++ib)
+    {
+        if (occ_flat[ik * nbands + ib] > 1e-8)
+        {
+            last_occ = ib;
+        }
+    }
+    return last_occ;
 }
 
 void log_occ_inner_line(const std::string& line)
@@ -240,6 +267,202 @@ void print_nonconverged_report_running_joint(double E,
     }
 }
 
+std::string occ_param_to_string(const OccParamType t)
+{
+    switch (t)
+    {
+        case OccParamType::CosineSq: return "cosine_sq";
+        case OccParamType::Logistic: return "logistic";
+    }
+    return "unknown";
+}
+
+std::string occ_init_mode_to_string(const OccInitMode m)
+{
+    switch (m)
+    {
+        case OccInitMode::KS: return "ks";
+        case OccInitMode::Perturbed: return "perturbed";
+        case OccInitMode::Uniform: return "uniform";
+    }
+    return "unknown";
+}
+
+std::string constraint_method_to_string(const ConstraintMethod m)
+{
+    switch (m)
+    {
+        case ConstraintMethod::AugmentedLagrangian: return "augmented_lagrangian";
+        case ConstraintMethod::ProjectedGradient: return "projected_gradient";
+        case ConstraintMethod::ActiveSet: return "active_set";
+    }
+    return "unknown";
+}
+
+std::string optimizer_to_string(const OptimizerType t)
+{
+    switch (t)
+    {
+        case OptimizerType::SteepestDescent: return "sd";
+        case OptimizerType::ConjugateGradient: return "cg";
+        case OptimizerType::LBFGS: return "lbfgs";
+        case OptimizerType::Adam: return "adam";
+    }
+    return "unknown";
+}
+
+std::string strategy_to_string(const SolverStrategy s)
+{
+    switch (s)
+    {
+        case SolverStrategy::Alternating: return "alternating";
+        case SolverStrategy::Joint: return "joint";
+    }
+    return "unknown";
+}
+
+void print_rdmft_run_config(const RDMFTConfig& cfg,
+                            const int nk,
+                            const int nbands,
+                            const double n_electrons)
+{
+    GlobalV::ofs_running << "\n===== RDMFT Run Configuration =====" << std::endl;
+    GlobalV::ofs_running << "  Path: KS -> RDMFT [strategy=" << strategy_to_string(cfg.strategy)
+                         << ", constraint=" << constraint_method_to_string(cfg.constraint_method)
+                         << "]" << std::endl;
+
+    const std::string occ_opt = (cfg.strategy == SolverStrategy::Joint)
+                                    ? "(joint mode: ignored)"
+                                    : optimizer_to_string(cfg.occ_optimizer);
+    const std::string orb_opt = (cfg.strategy == SolverStrategy::Joint)
+                                    ? "(joint mode: ignored)"
+                                    : optimizer_to_string(cfg.orb_optimizer);
+    const std::string joint_opt = (cfg.strategy == SolverStrategy::Joint)
+                                      ? optimizer_to_string(cfg.joint_optimizer)
+                                      : "(alternating mode: ignored)";
+
+    std::vector<std::string> keys;
+    std::vector<std::string> vals;
+    auto add_kv = [&](const std::string& k, const std::string& v) {
+        keys.push_back(k);
+        vals.push_back(v);
+    };
+    auto as_sci = [](const double v) {
+        std::ostringstream os;
+        os << std::scientific << std::setprecision(6) << v;
+        return os.str();
+    };
+
+    add_kv("nk", std::to_string(nk));
+    add_kv("nbands", std::to_string(nbands));
+    add_kv("n_electrons", as_sci(n_electrons));
+    add_kv("rdmft_solver_strategy", strategy_to_string(cfg.strategy));
+    add_kv("rdmft_constraint", constraint_method_to_string(cfg.constraint_method));
+    add_kv("rdmft_occ_optimizer", occ_opt);
+    add_kv("rdmft_orb_optimizer", orb_opt);
+    add_kv("rdmft_joint_optimizer", joint_opt);
+    add_kv("rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
+    add_kv("rdmft_occ_maxiter", std::to_string(cfg.occ_maxiter));
+    add_kv("rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
+    add_kv("rdmft_energy_tol", as_sci(cfg.energy_tol));
+    add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
+    add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
+    add_kv("rdmft_occ_param", occ_param_to_string(cfg.occ_param));
+    add_kv("rdmft_occ_init_mode", occ_init_mode_to_string(cfg.occ_init_mode));
+    add_kv("rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
+    add_kv("rdmft_occ_init_perturb", as_sci(cfg.occ_init_perturb));
+    add_kv("rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
+    add_kv("line_search_c1", as_sci(cfg.line_search_c1));
+    add_kv("line_search_rho", as_sci(cfg.line_search_rho));
+    add_kv("line_search_max_iter", std::to_string(cfg.line_search_max_iter));
+    add_kv("lbfgs_memory", std::to_string(cfg.lbfgs_memory));
+    add_kv("adam_lr", as_sci(cfg.adam_lr));
+    add_kv("joint_orb_scale", as_sci(cfg.joint_orb_scale));
+    add_kv("alm_lambda_init", as_sci(cfg.aug_lag_lambda_init));
+    add_kv("alm_mu_init", as_sci(cfg.aug_lag_mu_init));
+    add_kv("alm_mu_factor", as_sci(cfg.aug_lag_mu_factor));
+    add_kv("alm_mu_max", as_sci(cfg.aug_lag_mu_max));
+
+    FmtTable table(/*titles=*/{"RDMFT option", "value"},
+                   /*nrows=*/keys.size(),
+                   /*formats=*/{"%-34s", "%-40s"},
+                   /*indents=*/1,
+                   /*align=*/{/*value*/FmtTable::Align::LEFT, /*title*/FmtTable::Align::CENTER});
+    table << keys << vals;
+    GlobalV::ofs_running << table.str() << std::endl;
+}
+
+void print_rdmft_optimization_summary_alternating(const int outer_iters,
+                                                  const int occ_calls,
+                                                  const int orb_calls,
+                                                  const int occ_inner_total,
+                                                  const int orb_inner_total,
+                                                  const double occ_time_sec,
+                                                  const double orb_time_sec,
+                                                  const double total_time_sec)
+{
+    GlobalV::ofs_running << "\n===== RDMFT Optimization Summary =====" << std::endl;
+    std::vector<std::string> block;
+    std::vector<std::string> calls;
+    std::vector<std::string> inner_iters;
+    std::vector<double> wall_time_sec;
+    std::vector<double> avg_time_per_call;
+
+    block.push_back("occupation");
+    calls.push_back(std::to_string(occ_calls));
+    inner_iters.push_back(std::to_string(occ_inner_total));
+    wall_time_sec.push_back(occ_time_sec);
+    avg_time_per_call.push_back(occ_calls > 0 ? occ_time_sec / static_cast<double>(occ_calls) : 0.0);
+
+    block.push_back("orbital");
+    calls.push_back(std::to_string(orb_calls));
+    inner_iters.push_back(std::to_string(orb_inner_total));
+    wall_time_sec.push_back(orb_time_sec);
+    avg_time_per_call.push_back(orb_calls > 0 ? orb_time_sec / static_cast<double>(orb_calls) : 0.0);
+
+    block.push_back("total");
+    calls.push_back(std::to_string(outer_iters));
+    inner_iters.push_back("-");
+    wall_time_sec.push_back(total_time_sec);
+    avg_time_per_call.push_back(outer_iters > 0 ? total_time_sec / static_cast<double>(outer_iters) : 0.0);
+
+    FmtTable table(/*titles=*/{"Block", "Calls", "Inner iters", "Wall time (s)", "Avg/call (s)"},
+                   /*nrows=*/block.size(),
+                   /*formats=*/{"%-14s", "%-10s", "%-14s", "%16.6f", "%16.6f"},
+                   /*indents=*/1,
+                   /*align=*/{/*value*/FmtTable::Align::LEFT, /*title*/FmtTable::Align::CENTER});
+    table << block << calls << inner_iters << wall_time_sec << avg_time_per_call;
+    GlobalV::ofs_running << table.str() << std::endl;
+}
+
+void print_rdmft_optimization_summary_joint(const int outer_iters,
+                                            const double total_time_sec)
+{
+    GlobalV::ofs_running << "\n===== RDMFT Optimization Summary =====" << std::endl;
+    GlobalV::ofs_running << "  Strategy=joint: occupations and orbitals are optimized simultaneously." << std::endl;
+    std::vector<std::string> keys = {"joint_outer_iters", "joint_total_time_s", "joint_avg_time_per_outer_s"};
+    std::vector<std::string> vals;
+    vals.push_back(std::to_string(outer_iters));
+    {
+        std::ostringstream os;
+        os << std::fixed << std::setprecision(6) << total_time_sec;
+        vals.push_back(os.str());
+    }
+    {
+        std::ostringstream os;
+        os << std::fixed << std::setprecision(6)
+           << (outer_iters > 0 ? total_time_sec / static_cast<double>(outer_iters) : 0.0);
+        vals.push_back(os.str());
+    }
+    FmtTable table(/*titles=*/{"Metric", "value"},
+                   /*nrows=*/keys.size(),
+                   /*formats=*/{"%-28s", "%-24s"},
+                   /*indents=*/1,
+                   /*align=*/{/*value*/FmtTable::Align::LEFT, /*title*/FmtTable::Align::CENTER});
+    table << keys << vals;
+    GlobalV::ofs_running << table.str() << std::endl;
+}
+
 } // namespace
 
 // Helper to get |x|^2 for both real and complex types
@@ -359,6 +582,7 @@ void RDMFTSolver<TK, TR>::init(
     occ_optimizer_.reset(new EuclideanOptimizer(config_.occ_optimizer, config_));
     orb_optimizer_.reset(new EuclideanOptimizer(config_.orb_optimizer, config_));
 
+    occ_constraint_->set_lambda(config_.aug_lag_lambda_init);
     occ_constraint_->set_mu(config_.aug_lag_mu_init);
 }
 
@@ -370,60 +594,140 @@ double RDMFTSolver<TK, TR>::solve(
     ModuleBase::timer::start("RDMFT", "solve");
     last_result_ = {};
 
-    // Start from a uniform occupation seed n = N_e / N_b for every (k, b),
-    // then project to enforce feasibility exactly.
-    const double occ_uniform = (nbands_ > 0)
-        ? (n_electrons_ / static_cast<double>(nbands_))
-        : 0.0;
-    std::fill(occ_flat.begin(), occ_flat.end(), occ_uniform);
-    const double c_uniform_before_project = occ_constraint_->constraint_violation(occ_flat);
-    occ_constraint_->project(occ_flat);
-    const double c_uniform_after_project = occ_constraint_->constraint_violation(occ_flat);
+    print_rdmft_run_config(config_, nk_, nbands_, n_electrons_);
 
-    GlobalV::ofs_running << "RDMFT init occupations: source=uniform, n0=nelec/nbands="
-                         << std::scientific << occ_uniform
-                         << ", constraint_before_project=" << c_uniform_before_project
-                         << ", constraint_after_project=" << c_uniform_after_project
-                         << std::defaultfloat << std::endl;
+    // occ_flat on entry is the KS occupation seed from pelec->wg.
+    const std::vector<double> occ_ks_seed = occ_flat;
+    const double c_ks_seed = occ_constraint_->constraint_violation(occ_ks_seed);
 
-    // Optional additive perturbation on top bands. Re-project to keep
-    // the perturbed initial point feasible.
-    const int K_cfg = config_.occ_init_nbands_top;
-    const int K_eff = (K_cfg == 0) ? nbands_ : std::min(K_cfg, nbands_);
-    const int ib_min_target = nbands_ - K_eff;
+    auto log_init_common = [&](const std::string& mode_name,
+                               const std::string& details) {
+        GlobalV::ofs_running << "RDMFT init occupations: mode=" << mode_name
+                             << ", constraint_ks=" << std::scientific << c_ks_seed
+                             << ", " << details << std::defaultfloat << std::endl;
+    };
 
-    const double occ_perturb = config_.occ_init_perturb;
-    if (occ_perturb > 0.0 && K_eff > 0)
+    if (config_.occ_init_mode == OccInitMode::KS)
     {
-        const std::vector<double> occ_uniform_projected = occ_flat;
-        const double c_before = occ_constraint_->constraint_violation(occ_flat);
+        occ_flat = occ_ks_seed;
+        log_init_common("ks", "note=using KS occupations directly");
+    }
+    else if (config_.occ_init_mode == OccInitMode::Perturbed)
+    {
+        occ_flat = occ_ks_seed;
+        const int K = std::min(config_.occ_init_nbands_top, nbands_);
+        const double delta = config_.occ_init_perturb;
 
-        int perturbed_entries = 0;
-        for (int ik = 0; ik < nk_; ++ik)
+        if (K <= 0 || delta <= 0.0)
         {
-            for (int ib = ib_min_target; ib < nbands_; ++ib)
-            {
-                occ_flat[ik * nbands_ + ib] += occ_perturb;
-                ++perturbed_entries;
-            }
+            log_init_common("perturbed",
+                            "note=K<=0 or delta<=0, fallback=ks");
         }
+        else
+        {
+            int n_above = 0;
+            int n_below = 0;
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                for (int t = 0; t < K; ++t)
+                {
+                    const int ib_above = ib_fermi + 1 + t;
+                    if (ib_above >= 0 && ib_above < nbands_)
+                    {
+                        occ_flat[ik * nbands_ + ib_above] += delta;
+                        ++n_above;
+                    }
 
-        const double c_after_perturb = occ_constraint_->constraint_violation(occ_flat);
+                    const int ib_below = ib_fermi - t;
+                    if (ib_below >= 0 && ib_below < nbands_)
+                    {
+                        occ_flat[ik * nbands_ + ib_below] -= delta;
+                        ++n_below;
+                    }
+                }
+            }
 
-        // Keep the initial point exactly feasible: 0 <= n <= 1 and c(n) = 0.
-        occ_constraint_->project(occ_flat);
-        const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
+            const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
+            occ_constraint_->project(occ_flat);
+            const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
+            const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
-        const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_uniform_projected);
-        GlobalV::ofs_running << "RDMFT init occupations: source=uniform, perturb=additive, delta="
-                             << std::scientific << occ_perturb
-                             << ", top_k=" << K_eff
-                             << ", entries_updated=" << perturbed_entries
-                     << ", sum|n_init-uniform|=" << sum_abs_init_change
-                             << ", constraint_before=" << c_before
-                     << ", constraint_after_perturb=" << c_after_perturb
-                     << ", constraint_after_project=" << c_after_project
-                             << std::defaultfloat << std::endl;
+            std::ostringstream os;
+            os << "K=" << K
+               << ", delta=" << delta
+               << ", n_above=" << n_above
+               << ", n_below=" << n_below
+               << ", sum|n_init-ks|=" << sum_abs_init_change
+               << ", constraint_before_project=" << c_before_project
+               << ", constraint_after_project=" << c_after_project;
+            log_init_common("perturbed", os.str());
+        }
+    }
+    else
+    {
+        occ_flat = occ_ks_seed;
+        const int K = std::min(config_.occ_init_nbands_top, nbands_);
+
+        if (K <= 0)
+        {
+            log_init_common("uniform",
+                            "note=K<=0, fallback=ks");
+        }
+        else
+        {
+            int n_uniformized = 0;
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                std::vector<int> selected;
+                selected.reserve(2 * K);
+
+                for (int t = 0; t < K; ++t)
+                {
+                    const int ib_above = ib_fermi + 1 + t;
+                    if (ib_above >= 0 && ib_above < nbands_)
+                    {
+                        selected.push_back(ib_above);
+                    }
+                    const int ib_below = ib_fermi - t;
+                    if (ib_below >= 0 && ib_below < nbands_)
+                    {
+                        selected.push_back(ib_below);
+                    }
+                }
+
+                if (selected.empty())
+                {
+                    continue;
+                }
+
+                double n_top = 0.0;
+                for (const int ib : selected)
+                {
+                    n_top += occ_flat[ik * nbands_ + ib];
+                }
+                const double n_uniform = n_top / static_cast<double>(selected.size());
+                for (const int ib : selected)
+                {
+                    occ_flat[ik * nbands_ + ib] = n_uniform;
+                }
+                n_uniformized += static_cast<int>(selected.size());
+            }
+
+            const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
+            occ_constraint_->project(occ_flat);
+            const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
+            const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
+
+            std::ostringstream os;
+            os << "K=" << K
+               << ", n_uniformized=" << n_uniformized
+               << ", sum|n_init-ks|=" << sum_abs_init_change
+               << ", constraint_before_project=" << c_before_project
+               << ", constraint_after_project=" << c_after_project;
+            log_init_common("uniform", os.str());
+        }
     }
 
     // Precompute S_k = U_k^H U_k and switch to the X_k = U_k C_k variable.
@@ -460,6 +764,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     psi::Psi<TK>& wfc)
 {
     GlobalV::ofs_running << "\n===== RDMFT Alternating Optimization =====" << std::endl;
+    const auto t_alternating_start = std::chrono::steady_clock::now();
 
     double E_prev = 1e30;
     double E = 0.0;
@@ -472,6 +777,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     int outer_iters_done = 0;
     int occ_small_dn_streak = 0;
     bool skip_all_occ_optimization = false;
+    int occ_calls = 0;
+    int orb_calls = 0;
+    int occ_inner_total = 0;
+    int orb_inner_total = 0;
+    double occ_time_sec = 0.0;
+    double orb_time_sec = 0.0;
 
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
@@ -496,7 +807,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         OptResult occ_result;
         if (!skip_all_occ_optimization)
         {
+            const auto t_occ0 = std::chrono::steady_clock::now();
             occ_result = optimize_occupations(occ_flat, wfc);
+            const auto t_occ1 = std::chrono::steady_clock::now();
+            occ_time_sec += std::chrono::duration<double>(t_occ1 - t_occ0).count();
+            ++occ_calls;
+            occ_inner_total += occ_result.iterations;
             const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
             if (occ_outer_dn_sum < config_.rdmft_occ_tol)
             {
@@ -535,7 +851,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         }
 
         // 2. Optimize orbitals with occupations fixed
+        const auto t_orb0 = std::chrono::steady_clock::now();
         auto orb_result = optimize_orbitals(occ_flat, wfc);
+        const auto t_orb1 = std::chrono::steady_clock::now();
+        orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
+        ++orb_calls;
+        orb_inner_total += orb_result.iterations;
         GlobalV::ofs_running << "    orb inner: " << orb_result.iterations << " iters, gnorm="
             << std::scientific << orb_result.grad_norm
             << "  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
@@ -606,6 +927,16 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
+    const auto t_alternating_end = std::chrono::steady_clock::now();
+    const double total_time_sec = std::chrono::duration<double>(t_alternating_end - t_alternating_start).count();
+    print_rdmft_optimization_summary_alternating(outer_iters_done,
+                                                 occ_calls,
+                                                 orb_calls,
+                                                 occ_inner_total,
+                                                 orb_inner_total,
+                                                 occ_time_sec,
+                                                 orb_time_sec,
+                                                 total_time_sec);
     if (!last_result_.converged)
     {
         print_nonconverged_report_running_alternating(E,
@@ -651,6 +982,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
 {
     GlobalV::ofs_running << "\n===== RDMFT Joint (Product-Manifold) Optimization ====="
                          << std::endl;
+    const auto t_joint_start = std::chrono::steady_clock::now();
 
     // Convert occupations to unconstrained parameters.
     std::vector<double> params(occ_flat.size());
@@ -1076,6 +1408,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
+    const auto t_joint_end = std::chrono::steady_clock::now();
+    const double total_time_sec = std::chrono::duration<double>(t_joint_end - t_joint_start).count();
+    print_rdmft_optimization_summary_joint(joint_outer_done, total_time_sec);
     if (!last_result_.converged)
     {
         print_nonconverged_report_running_joint(joint_last_E,
