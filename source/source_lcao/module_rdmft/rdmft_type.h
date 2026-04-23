@@ -149,12 +149,11 @@ struct RDMFTConfig
 
     double fd_epsilon = 1e-5;
 
-    /// Deterministic initial perturbation magnitude applied on top of the KS
-    /// occupations before the first optimisation step. Perturbation is
-    /// alternating +/-delta by flattened (ik, ib) index and scoped by
-    /// occ_init_nbands_top.
-    double occ_init_perturb = 1e-3;
-    /// 0: clamp/rescale all bands. K>0: only bands ib >= nbands-K (per k). Default 0 (all bands).
+    /// Optional additive perturbation magnitude applied on top of the
+    /// uniform initial occupations n = N_e / N_b before the first
+    /// optimisation step. Scoped by occ_init_nbands_top.
+    double occ_init_perturb = 0.0;
+    /// 0: perturb all bands. K>0: perturb only bands ib >= nbands-K (per k).
     int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.

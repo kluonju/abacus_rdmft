@@ -139,12 +139,16 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
 | `rdmft_orb_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
 
-### Initial KS occupation adjustment
+### Initial occupation setup
 
-Before RDMFT optimisation starts, occupations may be pushed slightly away from 0 and 1 (margin `m` in `RDMFTConfig`, default `1e-3`) so the cosine-squared / logistic parameterisation has a non-vanishing Jacobian at the KS seed. By default only the **highest** bands are perturbed; lower bands keep the KS values.
+Before RDMFT optimisation starts, occupations are initialised uniformly as
+`n(ik, ib) = N_e / N_b` for all k-point/band entries, then projected onto the
+feasible set (`0 <= n <= 1` with exact electron-number conservation). An
+optional additive perturbation can be applied afterwards.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
+| `rdmft_occ_init_perturb` | real | `0.0` | Optional additive perturbation `+delta` applied to selected bands before a final feasibility projection. `0` disables perturbation. |
 | `rdmft_occ_init_nbands_top` | int | `0` | Number of **highest** bands (per k-point) that receive the perturbation and participate in the electron-count rescaling. Bands with index `ib < nbands − K` are left unchanged when `K > 0`. Default `0` applies the perturbation to **all** bands. |
 
 ### Line search and optimiser tuning

@@ -1021,13 +1021,14 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_init_perturb");
-        item.annotation = "Initial KS-occupation perturbation magnitude for RDMFT";
+        item.annotation = "Initial uniform-occupation perturbation magnitude for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Before RDMFT starts, use KS occupations as the base and add a deterministic "
-                           "alternating perturbation +/-delta to the selected bands (controlled by "
-                           "rdmft_occ_init_nbands_top). 0 disables perturbation.";
-        item.default_value = "1e-3";
+        item.description = "Before RDMFT starts, occupations are initialized uniformly as n = N_e/N_b. "
+                   "This keyword adds an optional additive perturbation +delta to the selected "
+                   "bands (controlled by rdmft_occ_init_nbands_top), followed by feasibility "
+                   "projection. 0 disables perturbation.";
+        item.default_value = "0.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_occ_init_perturb);
@@ -1045,12 +1046,12 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_init_nbands_top");
-        item.annotation = "Initial occupation clamp: number of highest bands only";
+        item.annotation = "Initial occupation perturbation scope: number of highest bands only";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "When >0, only the highest K bands (per k) get the [m,1-m] margin clamp and "
-                           "electron rescaling before RDMFT; lower bands stay at the KS values. "
-                           "0 means all bands are adjusted (default).";
+        item.description = "When >0, only the highest K bands (per k) receive the optional initial "
+                   "additive perturbation; lower bands remain at the uniform seed. "
+                   "0 means all bands are perturbed (default).";
         item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
