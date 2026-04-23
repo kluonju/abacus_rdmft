@@ -1326,15 +1326,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 else
                 {
-                    // Line search failed: fall back to a single projected steepest-descent
-                    // step with the initial step length and reset the optimiser.
+                    // If Armijo backtracking cannot find an acceptable projected
+                    // step, keep the current occupations unchanged so the energy
+                    // cannot jump upward due to an unchecked fallback move.
                     occ_flat = occ_before_step;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                        occ_flat[i] -= config_.line_search_alpha_init * grad_occ[i];
-                    occ_constraint_->project(occ_flat);
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << ", reset optimizer" << std::endl;
+                                         << ", rejected step and reset optimizer" << std::endl;
                 }
 
                 // Update the optimizer with the actual step taken.

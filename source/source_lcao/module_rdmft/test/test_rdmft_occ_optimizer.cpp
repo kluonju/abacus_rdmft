@@ -137,6 +137,7 @@ struct PGRunner
 {
     ToyOccProblem prob;
     RDMFTConfig   config;
+    mutable std::vector<double> energy_history;
 
     // Returns final occupations and energy after at most max_iter iterations.
     double run(std::vector<double>& occ, int max_iter = 200) const
@@ -153,6 +154,7 @@ struct PGRunner
         for (int iter = 0; iter < max_iter; ++iter)
         {
             E = prob.energy(occ);
+            energy_history.push_back(E);
             auto grad = prob.gradient(occ);
 
             // Compute search direction.
@@ -205,11 +207,9 @@ struct PGRunner
             }
             else
             {
-                // Fallback steepest-descent step.
+                // Mirror the solver: reject unchecked fallback steps so the
+                // objective cannot increase because Armijo failed.
                 occ = occ_old;
-                for (int i = 0; i < prob.nb; ++i)
-                    occ[i] -= config.line_search_alpha_init * grad[i];
-                constraint.project(occ);
                 opt.init(prob.nb);
             }
 
@@ -499,6 +499,25 @@ TEST_F(PGOptimizerTest, constraint_satisfied_after_SD)
     {
         EXPECT_GE(n, -1e-10);
         EXPECT_LE(n, 1.0 + 1e-10);
+    }
+}
+
+TEST_F(PGOptimizerTest, energy_is_monotone_nonincreasing)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+    cfg.line_search_alpha_init = 1.0;
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    runner.run(occ, 200);
+
+    ASSERT_FALSE(runner.energy_history.empty());
+    for (size_t i = 1; i < runner.energy_history.size(); ++i)
+    {
+        EXPECT_LE(runner.energy_history[i], runner.energy_history[i - 1] + 1e-12);
     }
 }
 
