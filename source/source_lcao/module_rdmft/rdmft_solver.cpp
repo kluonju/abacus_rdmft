@@ -371,8 +371,8 @@ double RDMFTSolver<TK, TR>::solve(
     last_result_ = {};
 
     // Start from KS occupations and apply an additive perturbation to the
-    // selected top bands. The occupation parameterisation later maps values
-    // back to the valid interval when building optimisation variables.
+    // selected top bands. Then enforce feasibility so the initial point
+    // satisfies both box bounds and electron-number conservation.
     const int K_cfg = config_.occ_init_nbands_top;
     const int K_eff = (K_cfg == 0) ? nbands_ : std::min(K_cfg, nbands_);
     const int ib_min_target = nbands_ - K_eff;
@@ -393,7 +393,12 @@ double RDMFTSolver<TK, TR>::solve(
             }
         }
 
-        const double c_after = occ_constraint_->constraint_violation(occ_flat);
+        const double c_after_perturb = occ_constraint_->constraint_violation(occ_flat);
+
+        // Keep the initial point exactly feasible: 0 <= n <= 1 and c(n) = 0.
+        occ_constraint_->project(occ_flat);
+        const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
+
         const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks);
         GlobalV::ofs_running << "RDMFT init occupations: source=KS, perturb=additive, delta="
                              << std::scientific << occ_perturb
@@ -401,7 +406,8 @@ double RDMFTSolver<TK, TR>::solve(
                              << ", entries_updated=" << perturbed_entries
                              << ", sum|n_init-KS|=" << sum_abs_init_change
                              << ", constraint_before=" << c_before
-                             << ", constraint_after=" << c_after
+                     << ", constraint_after_perturb=" << c_after_perturb
+                     << ", constraint_after_project=" << c_after_project
                              << std::defaultfloat << std::endl;
     }
 
