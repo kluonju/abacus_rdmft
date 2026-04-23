@@ -690,6 +690,10 @@ struct Input_para
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     double rdmft_alpha_step = 0.1;                 // initial line-search step length
+    bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein step seed in ALM
+    std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
+    double rdmft_alm_bb_alpha_min = 1e-8;          // ALM BB seed lower bound
+    double rdmft_alm_bb_alpha_max = 10.0;          // ALM BB seed upper bound
     int rdmft_lbfgs_memory = 10;                   // L-BFGS history vectors
     double rdmft_adam_lr = 0.001;                  // Adam learning rate
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation

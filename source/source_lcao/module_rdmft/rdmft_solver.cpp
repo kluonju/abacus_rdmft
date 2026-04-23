@@ -369,6 +369,17 @@ std::string strategy_to_string(const SolverStrategy s)
     return "unknown";
 }
 
+std::string bb_mode_to_string(const BBStepMode m)
+{
+    switch (m)
+    {
+        case BBStepMode::BB1: return "bb1";
+        case BBStepMode::BB2: return "bb2";
+        case BBStepMode::Alternate: return "alternate";
+    }
+    return "unknown";
+}
+
 void print_rdmft_run_config(const RDMFTConfig& cfg,
                             const int nk,
                             const int nbands,
@@ -420,6 +431,10 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
     add_kv("rdmft_occ_init_perturb", as_sci(cfg.occ_init_perturb));
     add_kv("rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
+    add_kv("alm_bb_enabled", cfg.alm_bb_enabled ? "true" : "false");
+    add_kv("alm_bb_mode", bb_mode_to_string(cfg.alm_bb_mode));
+    add_kv("alm_bb_alpha_min", as_sci(cfg.alm_bb_alpha_min));
+    add_kv("alm_bb_alpha_max", as_sci(cfg.alm_bb_alpha_max));
     add_kv("line_search_c1", as_sci(cfg.line_search_c1));
     add_kv("line_search_rho", as_sci(cfg.line_search_rho));
     add_kv("line_search_max_iter", std::to_string(cfg.line_search_max_iter));
@@ -1578,6 +1593,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             std::vector<double> params;
             occ_param_->occ_to_params(occ_flat, params);
 
+            BarzilaiBorweinStep bb_step;
+            bb_step.set_mode(config_.alm_bb_mode);
+            bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
+            bb_step.reset();
+
             EuclideanOptimizer opt(config_.occ_optimizer, config_);
             opt.init(params.size());
 
@@ -1644,7 +1664,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 };
 
                 auto ls = armijo_line_search(f_at_step, L, dd,
-                    config_.line_search_alpha_init, config_.line_search_c1,
+                    config_.alm_bb_enabled
+                        ? bb_step.suggest(params, grad_params, config_.line_search_alpha_init)
+                        : config_.line_search_alpha_init,
+                    config_.line_search_c1,
                     config_.line_search_rho, config_.line_search_max_iter);
 
                 std::vector<double> step_vec(params.size());
@@ -1661,6 +1684,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> new_grad_params;
                 occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
                 opt.update(new_grad_params, step_vec);
+                if (config_.alm_bb_enabled)
+                {
+                    bb_step.record_state(params, new_grad_params);
+                }
 
                 result.iterations = inner + 1;
                 result.final_energy = ls.f_new;

@@ -1254,6 +1254,93 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_alm_bb_enabled");
+        item.annotation = "Enable Barzilai-Borwein step seed for ALM occupations";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, ALM occupation optimization seeds Armijo backtracking with a "
+                           "Barzilai-Borwein step estimate in occupation-parameter space.";
+        item.default_value = "true";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_alm_bb_enabled);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_bb_mode");
+        item.annotation = "Barzilai-Borwein mode for ALM occupations: bb1, bb2, alternate";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "BB seed policy for ALM occupation Armijo initial step. "
+                           "bb1: alpha = (s^T s)/(s^T y); bb2: alpha = (s^T y)/(y^T y); "
+                           "alternate: alternate bb1 and bb2 each inner iteration.";
+        item.default_value = "alternate";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_alm_bb_mode);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_alm_bb_mode;
+                if (s != "bb1" && s != "bb2" && s != "alternate")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_bb_mode must be one of: bb1, bb2, alternate");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_bb_alpha_min");
+        item.annotation = "Lower bound for ALM BB step seed";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Lower clamp for the Barzilai-Borwein Armijo initial step in ALM occupation optimization.";
+        item.default_value = "1e-8";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_alm_bb_alpha_min);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_alm_bb_alpha_min <= 0.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_bb_alpha_min must be > 0.0");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_alm_bb_alpha_max");
+        item.annotation = "Upper bound for ALM BB step seed";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Upper clamp for the Barzilai-Borwein Armijo initial step in ALM occupation optimization.";
+        item.default_value = "10.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_alm_bb_alpha_max);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_alm_bb_alpha_max <= 0.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_bb_alpha_max must be > 0.0");
+                }
+                if (para.input.rdmft_alm_bb_alpha_max < para.input.rdmft_alm_bb_alpha_min)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_alm_bb_alpha_max must be >= rdmft_alm_bb_alpha_min");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_lbfgs_memory");
         item.annotation = "L-BFGS history vectors for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";

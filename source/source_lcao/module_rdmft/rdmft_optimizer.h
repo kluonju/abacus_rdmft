@@ -30,6 +30,114 @@ struct LineSearchResult
     bool success = false;
 };
 
+/// Standalone Barzilai-Borwein step-size estimator.
+///
+/// Usage pattern:
+/// 1) set_mode()/set_bounds() once.
+/// 2) each iteration, call suggest(current_x, current_grad, fallback_alpha).
+/// 3) after an accepted iterate is committed, call record_state(new_x, new_grad).
+class BarzilaiBorweinStep
+{
+  public:
+    BarzilaiBorweinStep() = default;
+
+    void set_mode(BBStepMode mode)
+    {
+        mode_ = mode;
+    }
+
+    void set_bounds(double alpha_min, double alpha_max)
+    {
+        alpha_min_ = std::max(1e-16, alpha_min);
+        alpha_max_ = std::max(alpha_min_, alpha_max);
+    }
+
+    void reset()
+    {
+        have_prev_ = false;
+        next_use_bb1_ = true;
+        prev_x_.clear();
+        prev_g_.clear();
+    }
+
+    void record_state(const std::vector<double>& x,
+                      const std::vector<double>& grad)
+    {
+        prev_x_ = x;
+        prev_g_ = grad;
+        have_prev_ = true;
+    }
+
+    double suggest(const std::vector<double>& x,
+                   const std::vector<double>& grad,
+                   const double fallback_alpha)
+    {
+        if (!have_prev_ || prev_x_.size() != x.size() || prev_g_.size() != grad.size())
+        {
+            return clamp_alpha(fallback_alpha);
+        }
+
+        double ss = 0.0;
+        double sy = 0.0;
+        double yy = 0.0;
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            const double s = x[i] - prev_x_[i];
+            const double y = grad[i] - prev_g_[i];
+            ss += s * s;
+            sy += s * y;
+            yy += y * y;
+        }
+
+        const auto valid = [](double v) {
+            return std::isfinite(v) && v > 0.0;
+        };
+
+        double alpha = fallback_alpha;
+        if (mode_ == BBStepMode::BB1)
+        {
+            if (valid(ss) && valid(sy)) alpha = ss / sy;
+        }
+        else if (mode_ == BBStepMode::BB2)
+        {
+            if (valid(sy) && valid(yy)) alpha = sy / yy;
+        }
+        else
+        {
+            const bool use_bb1 = next_use_bb1_;
+            next_use_bb1_ = !next_use_bb1_;
+            if (use_bb1)
+            {
+                if (valid(ss) && valid(sy)) alpha = ss / sy;
+            }
+            else
+            {
+                if (valid(sy) && valid(yy)) alpha = sy / yy;
+            }
+        }
+
+        return clamp_alpha(alpha);
+    }
+
+  private:
+    double clamp_alpha(double alpha) const
+    {
+        if (!std::isfinite(alpha) || alpha <= 0.0)
+        {
+            alpha = alpha_min_;
+        }
+        return std::min(alpha_max_, std::max(alpha_min_, alpha));
+    }
+
+    BBStepMode mode_ = BBStepMode::Alternate;
+    double alpha_min_ = 1e-8;
+    double alpha_max_ = 10.0;
+    bool have_prev_ = false;
+    bool next_use_bb1_ = true;
+    std::vector<double> prev_x_;
+    std::vector<double> prev_g_;
+};
+
 /// Armijo backtracking line search
 /// f_and_grad: evaluates function and gradient at point x + step * d
 inline LineSearchResult armijo_line_search(

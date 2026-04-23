@@ -453,3 +453,48 @@ TEST_F(OptimizerTest, LBFGS_and_SD_both_reach_Stiefel_minimum)
     EXPECT_NEAR(E_sd, E_ref, 1e-5);
     EXPECT_NEAR(E_lb, E_ref, 1e-5);
 }
+
+TEST_F(OptimizerTest, BBStep_BB1_and_BB2_match_formula)
+{
+    // x_prev -> x, g_prev -> g
+    // s = [1, 0], y = [2, 0]
+    // BB1 = (sTs)/(sTy) = 1/2
+    // BB2 = (sTy)/(yTy) = 2/4 = 1/2
+    std::vector<double> x_prev = {0.0, 0.0};
+    std::vector<double> g_prev = {0.0, 0.0};
+    std::vector<double> x = {1.0, 0.0};
+    std::vector<double> g = {2.0, 0.0};
+
+    BarzilaiBorweinStep bb;
+    bb.set_bounds(1e-8, 10.0);
+    bb.record_state(x_prev, g_prev);
+
+    bb.set_mode(BBStepMode::BB1);
+    const double a1 = bb.suggest(x, g, 0.1);
+    EXPECT_NEAR(a1, 0.5, 1e-14);
+
+    bb.set_mode(BBStepMode::BB2);
+    const double a2 = bb.suggest(x, g, 0.1);
+    EXPECT_NEAR(a2, 0.5, 1e-14);
+}
+
+TEST_F(OptimizerTest, BBStep_Alternate_toggles_BB1_BB2)
+{
+    BarzilaiBorweinStep bb;
+    bb.set_mode(BBStepMode::Alternate);
+    bb.set_bounds(1e-8, 10.0);
+
+    // State 0
+    bb.record_state({0.0, 0.0}, {0.0, 0.0});
+
+    // First query (BB1): s=[1,0], y=[2,0] => 0.5
+    const double a_first = bb.suggest({1.0, 0.0}, {2.0, 0.0}, 0.1);
+    EXPECT_NEAR(a_first, 0.5, 1e-14);
+
+    // Update recorded state to that accepted point.
+    bb.record_state({1.0, 0.0}, {2.0, 0.0});
+
+    // Second query (BB2): s=[1,0], y=[1,0] => 1.0
+    const double a_second = bb.suggest({2.0, 0.0}, {3.0, 0.0}, 0.1);
+    EXPECT_NEAR(a_second, 1.0, 1e-14);
+}

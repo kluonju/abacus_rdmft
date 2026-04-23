@@ -61,6 +61,13 @@ enum class SolverStrategy
     Joint
 };
 
+enum class BBStepMode
+{
+    BB1,
+    BB2,
+    Alternate
+};
+
 inline XCFunctionalType parse_xc_type(const std::string& name)
 {
     if (name == "hf") return XCFunctionalType::HF;
@@ -123,6 +130,15 @@ struct RDMFTConfig
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 30;
+
+    /// ALM occupation line-search seed policy.
+    /// When enabled, Armijo starts from a Barzilai-Borwein step estimate
+    /// computed in occupation-parameter space (fallback to
+    /// line_search_alpha_init when unavailable).
+    bool alm_bb_enabled = true;
+    BBStepMode alm_bb_mode = BBStepMode::Alternate;
+    double alm_bb_alpha_min = 1e-8;
+    double alm_bb_alpha_max = 10.0;
 
     /// Relative scaling between the orbital and occupation parameter blocks
     /// in the joint (product-manifold) strategy. The packed optimisation

@@ -593,6 +593,15 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
+        rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
+        if (inp.rdmft_alm_bb_mode == "bb1")
+            rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;
+        else if (inp.rdmft_alm_bb_mode == "bb2")
+            rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB2;
+        else
+            rdmft_config.alm_bb_mode = rdmft::BBStepMode::Alternate;
+        rdmft_config.alm_bb_alpha_min = inp.rdmft_alm_bb_alpha_min;
+        rdmft_config.alm_bb_alpha_max = inp.rdmft_alm_bb_alpha_max;
         rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
