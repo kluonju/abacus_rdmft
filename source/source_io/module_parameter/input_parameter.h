@@ -686,9 +686,9 @@ struct Input_para
     double rdmft_occ_tol = 1e-7;                 // occupation inner: sum_i |Δn_i| per iteration
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
     std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint method
-    double rdmft_alm_lambda_init = 0.0;            // initial ALM Lagrange multiplier lambda
+    double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
-    double rdmft_alm_mu_factor = 2.0;              // multiplicative ALM mu update factor
+    double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     double rdmft_alpha_step = 0.1;                 // initial line-search step length
     int rdmft_lbfgs_memory = 10;                   // L-BFGS history vectors
     double rdmft_adam_lr = 0.001;                  // Adam learning rate
