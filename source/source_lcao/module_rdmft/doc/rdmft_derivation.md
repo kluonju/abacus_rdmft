@@ -382,31 +382,174 @@ $$
 
 ### 6.2 Projected Gradient Method
 
-Perform gradient descent on $n_{i\mathbf{k}}$ and project back onto the feasible set:
+Perform gradient descent on $n_{i\mathbf{k}}$ and project back onto the feasible set.
+
+Overview:
+
+- Take an (unconstrained) gradient step for the occupations and then project the
+   candidate back onto the convex feasible set defined by the box bounds $[0,1]$
+   and the electron-number simplex. This is simple, robust and easy to implement.
+
+Basic iterate:
 
 $$
-n_{i\mathbf{k}}^{(t+1)} = \mathrm{Proj}_{[0,1]}\bigl(n_{i\mathbf{k}}^{(t)} - \alpha_t \frac{\partial E}{\partial n_{i\mathbf{k}}}\bigr)
+y = n^{(t)} - \alpha_t \, \nabla_n E(n^{(t)}),\qquad
+n^{(t+1)} = P_{\mathcal{C}}(y)
 $$
 
-followed by rescaling to enforce the electron number constraint:
+where $P_{\mathcal{C}}$ denotes projection onto the feasible set
+$$\mathcal{C} = \{n:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\}.$$ 
 
-$$
-n_{i\mathbf{k}}^{(t+1)} \leftarrow n_{i\mathbf{k}}^{(t+1)} \cdot \frac{N_e}{\sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i n_{i\mathbf{k}}^{(t+1)}}
-$$
+Projection strategies:
 
-(with re-clipping if rescaling violates box constraints).
+- Box-only projection: clip each component into $[0,1]$.
+- Simplex projection (fixed sum): when enforcing the sum constraint together with
+   non-negativity, use the O(n log n) sort-and-shift algorithm: find $\theta$ such
+   that $\sum_i \max(y_i - \theta,0) = s$ (here $s = N_e$ after absorbing weights),
+   then set $n_i = \max(y_i - \theta,0)$.
+- Combined approach: project first to $[0,1]$ then project to the weighted simplex
+   (with k-point weights included). If rescaling to enforce the sum violates
+   bounds, re-project and iterate; in practice the sort-and-shift simplex projection
+   that respects bounds is preferred.
+
+Step-size and line-search:
+
+- Use simple fixed step sizes for cheap iterations, or adaptively choose $\alpha_t$
+   with Barzilai–Borwein (BB) rules for acceleration.
+- For guaranteed decrease use Armijo backtracking on the composite map
+   $\phi(\alpha)=E(P_{\mathcal{C}}(n - \alpha\nabla E))$.
+
+Stopping criteria (recommended):
+
+- projected gradient norm: $\|n - P_{\mathcal{C}}(n - \tau \nabla E)\| < \varepsilon$;
+- change in objective $|E^{(t+1)}-E^{(t)}|<\varepsilon$;
+- maximum iterations or CPU/time budget.
+
+Numerical tips and implementation notes:
+
+- Use analytic gradients $\partial E/\partial n$; finite differences are costly.
+- For the weighted k-point sum include factors $w_{\mathbf{k}}$ inside the projection
+   (i.e. project onto the weighted simplex). Implement the simplex projection with
+   collapsed index $I=(i,\mathbf{k})$ if convenient.
+- If many occupations are interior (not at bounds), projected gradient is efficient.
+- If orthonormal orbitals are optimized concurrently, use separate step sizes for
+   orbitals and occupations or alternate updates (block coordinate style).
+- For orbital constraints (Stiefel), prefer Riemannian retraction (QR or polar)
+   rather than Euclidean clipping; see §5.4.
+
+Pseudocode (projected gradient on weighted simplex, neglecting spin labels):
+
+```text
+initialize n with feasible guess
+for t = 0..maxiter:
+   g = grad_n(E, n)
+   y = n - alpha * g
+   n_next = project_weighted_simplex_and_bounds(y, w, N_e)
+   if ||n_next - n|| < tol: break
+   n = n_next
+end
+```
+
+When not to use:
+
+- If the active-set (set of variables at bounds) is small and changes infrequently,
+   an active-set method or a second-order reduced Newton solve on the free set
+   may converge much faster near the solution.
 
 ### 6.3 Active Set Method
 
-Maintain active sets $\mathcal{A}_0 = \{(i,\mathbf{k}): n_{i\mathbf{k}} = 0\}$ and
-$\mathcal{A}_1 = \{(i,\mathbf{k}): n_{i\mathbf{k}} = 1\}$.
+Maintain active sets
+$$\mathcal{A}_0 = \{I:\; n_I = 0\},\qquad \mathcal{A}_1 = \{I:\; n_I = 1\}$$
+and the free set $\mathcal{F} = \{I:\; 0 < n_I < 1\}$, where again $I=(i,\mathbf{k})$.
 
-At each step:
+Overview:
 
-1. On the free set $\mathcal{F} = \{(i,\mathbf{k}): 0 < n_{i\mathbf{k}} < 1\}$, solve the
-  reduced problem with equality constraint.
-2. Check KKT multipliers for active constraints; release violated ones.
-3. Check feasibility for the updated free variables; add newly violated constraints.
+- The active-set method iteratively guesses which bounds are active (occupied at
+   0 or 1) and solves a reduced equality-constrained optimization on the free set.
+   It then updates Lagrange multipliers for the active constraints and adjusts the
+   active set until KKT conditions are satisfied.
+
+Core algorithm (bound/simplex case):
+
+1. Choose an initial active set (for example from the current projected-gradient iterate).
+2. Solve the reduced problem on free variables: minimize $E(n)$ subject to
+    $\sum_{I\in\mathcal{F}} w_I n_I = N_e - \sum_{I\in\mathcal{A}_1} w_I$ and
+    $n_I$ fixed at 0 or 1 on active indices. This can be done via a Newton step
+    on free variables or by solving the KKT linear system for a quadratic model.
+3. If the step violates a bound for some free index, move along the step until
+    the first bound is hit; add that index to the corresponding active set and go to 2.
+4. Compute multipliers $\lambda_I$ for active constraints. If any multiplier
+    violates complementarity (wrong sign), remove its constraint from the active
+    set and go to 2.
+5. Stop when primal feasibility, complementary slackness and dual feasibility
+    (KKT residuals) are below tolerances.
+
+Pseudocode (sketch):
+
+```text
+initialize n, form A0, A1, F
+while not converged:
+   solve reduced Newton system on F (or perform CG on Hessian-free model)
+   compute candidate step and max step length before hitting bounds
+   if bound hit:
+      step to bound, add index to A0 or A1
+      continue
+   accept full step
+   compute multipliers for active constraints
+   if any multiplier violates sign condition:
+      remove violating index from active set
+      continue
+   check KKT residuals -> break if small
+end
+```
+
+Computing multipliers and KKT system:
+
+- If the reduced problem is solved by Newton, form the KKT linear system
+   (H_F  A^T; A 0) for Hessian on free set $H_F$ and equality constraint matrix
+   $A$ (the weighted-sum row). Solve for primal step and multiplier update.
+- For large systems use iterative solvers (CG, MINRES) preconditioned by a
+   diagonal or limited-memory factor.
+
+Numerical tips:
+
+- Warm-start linear solves: cache factorizations of the reduced Hessian and update
+   incrementally when the active set changes.
+- Use limited-memory quasi-Newton (L-BFGS) on the free set if exact Hessians are
+   expensive; form a small KKT system for the equality constraint.
+- Add trust-region safeguards or fallback to projected-gradient when the
+   reduced-step increases the objective (nonconvexity caution).
+
+When to prefer active-set:
+
+- When only a small fraction of occupations are at the bounds (sparse active set),
+   the reduced Newton/QUASI-NEWTON solves can converge in very few outer iterations
+   and achieve fast (superlinear) local convergence.
+
+Hybrid strategies:
+
+- A practical pattern is to run projected-gradient iterations to approach
+   a neighborhood of the solution, then switch to an active-set solver to
+   enforce exact complementary slackness and remove the residual projected gradient.
+- For RDMFT: use projected gradient for several outer iterations, detect when
+   many occupations settle near 0 or 1, then invoke active-set on the remaining
+   free occupations while holding orbitals fixed (or solved together in a
+   reduced joint solve).
+
+Stopping and tolerances:
+
+- KKT residual tolerances for active-set: primal feasibility ~1e-8–1e-6,
+   dual complementarity ~1e-6–1e-4 depending on problem scale.
+- Use looser tolerances during early iterations and tighten near convergence.
+
+Examples and diagnostics:
+
+- Log active-set entries and multiplier signs each iteration to diagnose
+   oscillations (add/remove cycles). If oscillations occur, increase damping
+   or use a small trust-region.
+- Compare final active-set with projected-gradient saturations to validate
+   the hybrid strategy.
+
 
 ---
 
