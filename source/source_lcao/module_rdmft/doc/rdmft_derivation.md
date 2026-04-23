@@ -539,16 +539,264 @@ For $\Gamma$-point-only calculations ($\mathbf{k} = 0$):
 
 ---
 
-## 11. Summary of Implementation Requirements
+## 11. Spin-Polarized Case (nspin=2)
+
+The derivation above uses a spin-restricted notation in which spin is either
+suppressed or absorbed into an overall factor. For a collinear spin-polarized
+calculation with `nspin=2`, the natural orbitals and occupation numbers carry
+an additional spin label $\sigma \in \{\uparrow, \downarrow\}$, and the 1-RDM is
+block-diagonal in spin.
+
+### 11.1 Spin-Resolved 1-RDM
+
+Introduce the combined coordinate $x = (\mathbf{r}, \sigma)$. Then
+
+$$
+\gamma(x, x') = \gamma(\mathbf{r}\sigma, \mathbf{r}'\sigma')
+= \delta_{\sigma\sigma'} \, \gamma_{\sigma}(\mathbf{r}, \mathbf{r}')
+$$
+
+with
+
+$$
+\gamma_{\sigma}(\mathbf{r}, \mathbf{r}')
+= \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_{i=1}^{N_b}
+n_{i\mathbf{k}\sigma} \, \phi_{i\mathbf{k}\sigma}(\mathbf{r}) \, \phi_{i\mathbf{k}\sigma}^*(\mathbf{r}')
+$$
+
+The spin densities and magnetization density are
+
+$$
+\rho_{\sigma}(\mathbf{r}) = \gamma_{\sigma}(\mathbf{r}, \mathbf{r}),
+\qquad
+\rho(\mathbf{r}) = \rho_{\uparrow}(\mathbf{r}) + \rho_{\downarrow}(\mathbf{r}),
+\qquad
+m_z(\mathbf{r}) = \rho_{\uparrow}(\mathbf{r}) - \rho_{\downarrow}(\mathbf{r})
+$$
+
+In an LCAO basis with spin-independent spatial orbitals $\chi_{\mu\mathbf{k}}$
+and orthonormal spinors $\zeta_{\sigma}$, we write
+
+$$
+\phi_{i\mathbf{k}\sigma}(\mathbf{r}, \sigma')
+= \delta_{\sigma\sigma'} \sum_{\mu=1}^{N_{\mathrm{basis}}}
+C_{\mu i}^{\mathbf{k}\sigma} \, \chi_{\mu\mathbf{k}}(\mathbf{r})
+$$
+
+so each spin channel satisfies its own orthonormality constraint:
+
+$$
+(C^{\mathbf{k}\sigma})^\dagger S^{\mathbf{k}} C^{\mathbf{k}\sigma} = I_{N_b}
+$$
+
+Hence, for `nspin=2`, the orbital manifold is the product
+
+$$
+\prod_{\sigma \in \{\uparrow,\downarrow\}} \prod_{\mathbf{k}}
+\mathrm{St}(N_b, N_{\mathrm{basis}}; S^{\mathbf{k}})
+$$
+
+and the spin-resolved LCAO density matrix is
+
+$$
+\gamma_{\mu\nu}^{\mathbf{k}\sigma}
+= C^{\mathbf{k}\sigma}
+\operatorname{diag}(\mathbf{n}_{\mathbf{k}\sigma})
+(C^{\mathbf{k}\sigma})^\dagger
+$$
+
+### 11.2 Total Energy Functional
+
+The total energy becomes
+
+$$
+E[\{n_{i\mathbf{k}\sigma}, C^{\mathbf{k}\sigma}\}]
+= E_{\mathrm{one}} + E_H[\rho] + E_{xc}[\gamma_{\uparrow}, \gamma_{\downarrow}] + E_{\mathrm{Ewald}}
+$$
+
+with $\rho = \rho_{\uparrow} + \rho_{\downarrow}$.
+
+The one-body term is
+
+$$
+E_{\mathrm{one}}
+= \sum_{\sigma} \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i
+n_{i\mathbf{k}\sigma} \, h_{ii}^{\mathrm{one},\sigma}(\mathbf{k})
+$$
+
+In the usual collinear case without spin-orbit coupling, the kinetic and ionic
+one-body operators are spin-independent, so the explicit $\sigma$ label on
+$h^{\mathrm{one},\sigma}$ is often only a bookkeeping label.
+
+The Hartree term depends on the total density:
+
+$$
+E_H[\rho]
+= \frac{1}{2} \iint
+\frac{[\rho_{\uparrow}(\mathbf{r}) + \rho_{\downarrow}(\mathbf{r})]
+[\rho_{\uparrow}(\mathbf{r}') + \rho_{\downarrow}(\mathbf{r}')]}{|\mathbf{r} - \mathbf{r}'|}
+d\mathbf{r} \, d\mathbf{r}'
+$$
+
+For the exchange-like RDMFT contribution, only equal-spin pairs contribute:
+
+$$
+E_{xc}[\gamma_{\uparrow}, \gamma_{\downarrow}]
+= -\frac{1}{2} \sum_{\sigma}
+\sum_{\mathbf{k}\mathbf{k}'} w_{\mathbf{k}} w_{\mathbf{k}'}
+\sum_{ij} f(n_{i\mathbf{k}\sigma}, n_{j\mathbf{k}'\sigma})
+K_{ij}^{\mathbf{k}\mathbf{k}',\sigma}
+$$
+
+because the spin functions are orthogonal and there is therefore no exchange
+between $\uparrow$ and $\downarrow$ blocks.
+
+For the separable functionals (HF, Müller, Power), define the spin-resolved
+modified density matrix
+
+$$
+\gamma_{\mathrm{xc},\mu\nu}^{\mathbf{k}\sigma}
+= \sum_i w_{\mathbf{k}} \, g(n_{i\mathbf{k}\sigma})
+C_{\mu i}^{\mathbf{k}\sigma} (C_{\nu i}^{\mathbf{k}\sigma})^*
+$$
+
+Then the exchange energy is the sum of the two spin-channel contributions:
+
+$$
+E_{xc} = \frac{1}{2} \sum_{\sigma}
+\operatorname{Tr}\bigl[\gamma_{\mathrm{xc},\sigma}
+H_{\mathrm{exx}}[\gamma_{\mathrm{xc},\sigma}]\bigr]
+$$
+
+For the GU functional, the self-interaction correction is also spin-resolved:
+
+$$
+E_{xc}^{\mathrm{GU}}
+= E_{xc}^{\mathrm{Müller}}
++ \frac{1}{2} \sum_{\sigma} \sum_{\mathbf{k}} w_{\mathbf{k}}^2 \sum_i
+(n_{i\mathbf{k}\sigma}^2 - n_{i\mathbf{k}\sigma}) J_{ii}^{\mathbf{k}\mathbf{k},\sigma}
+$$
+
+### 11.3 Constraints
+
+The total electron-number constraint becomes
+
+$$
+\sum_{\sigma} \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i n_{i\mathbf{k}\sigma} = N_e
+$$
+
+The ensemble $N$-representability bounds remain
+
+$$
+0 \le n_{i\mathbf{k}\sigma} \le 1
+$$
+
+and each spin channel has its own Stiefel constraint:
+
+$$
+(C^{\mathbf{k}\sigma})^\dagger S^{\mathbf{k}} C^{\mathbf{k}\sigma} = I
+$$
+
+If one additionally imposes a fixed collinear magnetization, then one adds the
+constraint
+
+$$
+\sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i
+\bigl(n_{i\mathbf{k}\uparrow} - n_{i\mathbf{k}\downarrow}\bigr) = M_z
+$$
+
+with a second Lagrange multiplier (or augmented-Lagrangian penalty) associated
+with $M_z$.
+
+### 11.4 Gradients
+
+The occupation-number gradient is the direct spin-resolved analogue of §5.1:
+
+$$
+\frac{\partial E}{\partial n_{i\mathbf{k}\sigma}}
+= w_{\mathbf{k}} \, h_{ii}^{\mathrm{one},\sigma}(\mathbf{k})
+- w_{\mathbf{k}} \, v_{H,ii}^{\sigma}(\mathbf{k})
+- \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}\sigma}}
+$$
+
+For the separable functionals,
+
+$$
+\frac{\partial E_{xc}}{\partial n_{i\mathbf{k}\sigma}}
+= w_{\mathbf{k}} \, g'(n_{i\mathbf{k}\sigma})
+\langle \phi_{i\mathbf{k}\sigma}
+| H_{\mathrm{exx}}[\gamma_{\mathrm{xc},\sigma}] |
+\phi_{i\mathbf{k}\sigma} \rangle
+$$
+
+The Euclidean orbital gradient for each spin block is likewise
+
+$$
+G^{\mathbf{k}\sigma}
+= w_{\mathbf{k}} \Bigl[
+\bigl(h^{\mathbf{k}\sigma} + V_H^{\mathbf{k}}\bigr)
+C^{\mathbf{k}\sigma} \operatorname{diag}(\mathbf{n}_{\mathbf{k}\sigma})
+- H_{\mathrm{exx}}^{\mathbf{k}\sigma}
+C^{\mathbf{k}\sigma} \operatorname{diag}(g(\mathbf{n}_{\mathbf{k}\sigma}))
+\Bigr]
+$$
+
+The Riemannian projection and retraction are then applied independently to each
+$C^{\mathbf{k}\sigma}$:
+
+$$
+\operatorname{grad} E^{\mathbf{k}\sigma}
+= \Pi_{T_{C^{\mathbf{k}\sigma}}\mathrm{St}}\bigl(G^{\mathbf{k}\sigma}\bigr),
+\qquad
+C_{\mathrm{new}}^{\mathbf{k}\sigma}
+= R_{C^{\mathbf{k}\sigma}}\bigl(\eta^{\mathbf{k}\sigma}\bigr)
+$$
+
+The occupation parameterizations from §4 also extend trivially by carrying the
+spin index:
+
+$$
+n_{i\mathbf{k}\sigma} = \cos^2(\theta_{i\mathbf{k}\sigma})
+\qquad \text{or} \qquad
+n_{i\mathbf{k}\sigma} = \frac{1}{1 + e^{-x_{i\mathbf{k}\sigma}}}
+$$
+
+### 11.5 Reduction to the Current Implementation
+
+For `nspin=2`, the implementation can be viewed as folding the spin label into
+a composite index $I = (\sigma, \mathbf{k})$. Equivalently,
+
+$$
+\sum_I \equiv \sum_{\sigma} \sum_{\mathbf{k}}
+$$
+
+Then the spin-polarized formulas reduce to the same algebraic form as the
+spin-restricted ones after the replacements
+
+$$
+n_{i\mathbf{k}} \to n_{iI},
+\qquad
+C^{\mathbf{k}} \to C^I,
+\qquad
+w_{\mathbf{k}} \to w_I = w_{\mathbf{k}}
+$$
+
+The only physical caveat is that the exchange operator remains block-diagonal in
+spin, so $H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}]$ is built independently for the
+$\uparrow$ and $\downarrow$ channels before their contributions are summed.
+
+---
+
+## 12. Summary of Implementation Requirements
 
 
-| Component                   | Variables | Manifold               | Gradient             |
-| --------------------------- | --------- | ---------------------- | -------------------- |
-| One-body energy             | n, C      | —                      | Eqs. in §5.1, §5.2   |
-| Hartree energy              | n, C      | —                      | Eqs. in §5.1, §5.2   |
-| XC energy (HF/Müller/Power) | n, C      | —                      | Eqs. in §5.1, §5.2   |
-| XC energy (GU)              | n, C      | —                      | Additional SIC terms |
-| Occupation constraint       | n         | $[0,1]$, $\sum w n = N_e$ | §4, §6               |
-| Orbital orthogonality       | C         | Stiefel                | §5.3, §5.4           |
+| Component                   | Variables | Manifold               | Gradient                |
+| --------------------------- | --------- | ---------------------- | ----------------------- |
+| One-body energy             | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
+| Hartree energy              | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
+| XC energy (HF/Müller/Power) | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
+| XC energy (GU)              | n, C      | —                      | Additional SIC terms, §11 |
+| Occupation constraint       | n         | $[0,1]$, $\sum w n = N_e$ | §4, §6, §11            |
+| Orbital orthogonality       | C         | Stiefel                | §5.3, §5.4, §11        |
 
 

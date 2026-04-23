@@ -463,10 +463,10 @@ void EnergyGradient<TK, TR>::init(
 
     nspin_ = PARAM.inp.nspin;
     nbands_ = PARAM.inp.nbands;
-    nk_ = ModuleSymmetry::Symmetry::symm_flag == -1
-              ? kv_->get_nkstot_full()
-              : kv_->get_nks();
-    nk_ *= nspin_;
+    // Use the actual k-spin row count used by occupations / psi in this SCF.
+    // kv::get_nks() may already include spin in some paths; multiplying by
+    // nspin again can over-count and later drive ik loops out of range.
+    nk_ = pelec_->wg.nr;
     nbasis_local_ = ParaV_->nrow;
 
 #ifdef __MPI
