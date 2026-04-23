@@ -689,8 +689,8 @@ struct Input_para
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
-    double rdmft_alpha_step = 0.1;                 // initial line-search step length
-    bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein step seed in ALM
+    double rdmft_alpha_step = 0.1;                 // initial Armijo trial step length (orbital path uses Armijo only)
+    bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps only
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // ALM BB seed lower bound
     double rdmft_alm_bb_alpha_max = 10.0;          // ALM BB seed upper bound

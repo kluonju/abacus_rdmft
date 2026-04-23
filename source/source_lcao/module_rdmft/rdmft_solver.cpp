@@ -193,14 +193,19 @@ void print_rdmft_energy_table_running(const std::vector<std::string>& titles,
     GlobalV::ofs_running << table.str() << std::endl;
 }
 
-void print_occ_table_running(const std::vector<double>& occ_flat, int nk, int nbands)
+void print_occ_table_to_stream(std::ostream& os,
+                               const std::vector<double>& occ_flat,
+                               int nk,
+                               int nbands,
+                               const std::string& header,
+                               int indents)
 {
-    GlobalV::ofs_running << "  Occupations n(ik, ib):" << std::endl;
+    os << header << std::endl;
 
     const size_t nrows = static_cast<size_t>(nk) * static_cast<size_t>(nbands);
     if (nrows == 0)
     {
-        GlobalV::ofs_running << "  (empty)" << std::endl;
+        os << "  (empty)" << std::endl;
         return;
     }
 
@@ -223,10 +228,30 @@ void print_occ_table_running(const std::vector<double>& occ_flat, int nk, int nb
     FmtTable table(/*titles=*/{"ik", "ib", "n(ik,ib)"},
                    /*nrows=*/nrows,
                    /*formats=*/{"%-6s", "%-6s", "%20.10f"},
-                   /*indents=*/2,
+                   /*indents=*/indents,
                    /*align=*/{/*value*/FmtTable::Align::RIGHT, /*title*/FmtTable::Align::CENTER});
     table << col_ik << col_ib << col_occ;
-    GlobalV::ofs_running << table.str() << std::endl;
+    os << table.str() << std::endl;
+}
+
+void print_occ_table_running(const std::vector<double>& occ_flat, int nk, int nbands)
+{
+    print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk, nbands,
+                              "  Occupations n(ik, ib):", 2);
+}
+
+void print_inner_loop_stdout(const std::string& label,
+                             int inner_iter,
+                             double end_energy,
+                             const std::vector<double>& occ_flat,
+                             int nk,
+                             int nbands)
+{
+    std::cout << std::fixed << std::setprecision(10)
+              << "  " << label << " " << inner_iter << " end: E = " << end_energy
+              << std::defaultfloat << std::endl;
+    print_occ_table_to_stream(std::cout, occ_flat, nk, nbands,
+                              "  Occupations n(ik, ib):", 2);
 }
 
 void print_nonconverged_report_running_alternating(double E,
@@ -1691,6 +1716,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 result.iterations = inner + 1;
                 result.final_energy = ls.f_new;
+                print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
@@ -1781,6 +1808,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double alpha = config_.line_search_alpha_init;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
+                double E_after = E;
                 // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
 
@@ -1815,6 +1843,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     if (E_trial <= E + config_.line_search_c1 * dd_proj)
                     {
+                        E_after = E_trial;
                         ls_success = true;
                         break;
                     }
@@ -1846,6 +1875,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                        new_grad_occ, grad_wfc_dummy);
                 pg_opt.update(new_grad_occ, step_vec);
 
+                result.iterations = inner + 1;
+                result.final_energy = E_after;
+                print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
+
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
                     << std::endl;
@@ -1857,12 +1891,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     || pg_stop_norm < config_.rdmft_occ_tol)
                 {
                     result.converged = true;
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
                     break;
                 }
-                result.iterations = inner + 1;
-                result.final_energy = E;
             }
             break;
         }
@@ -1991,6 +2021,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double alpha = config_.line_search_alpha_init;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
+                double E_after = E;
                 // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
 
@@ -2026,6 +2057,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     if (E_trial <= E + config_.line_search_c1 * dd_proj)
                     {
+                        E_after = E_trial;
                         ls_success = true;
                         break;
                     }
@@ -2069,6 +2101,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 as_opt.update(new_grad_mod, step_vec);
 
+                result.iterations = inner + 1;
+                result.final_energy = E_after;
+                print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
+
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
                     << std::endl;
@@ -2102,12 +2139,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         && comp_violation_new < config_.rdmft_occ_tol))
                 {
                     result.converged = true;
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
                     break;
                 }
-                result.iterations = inner + 1;
-                result.final_energy = E;
             }
             break;
         }
@@ -2229,6 +2262,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             result.converged = true;
             result.iterations = inner + 1;
             result.final_energy = E;
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_);
             break;
         }
 
@@ -2352,6 +2387,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         const double c1 = config_.line_search_c1;
         const double rho = config_.line_search_rho;
+        // Initial Armijo trial step for the orbital sub-problem.
+        // This path never uses the ALM Barzilai-Borwein seed; BB is limited
+        // to optimize_occupations() under the augmented-Lagrangian constraint.
         // Initial line-search step size:
         //   - SD/CG: use the configured Armijo start (small, because the
         //            gradient has arbitrary scale).
@@ -2359,7 +2397,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         //             properly scaled) and backtrack if needed.
         //   - Adam:   start at 1.0 (Adam incorporates its own learning
         //             rate into the direction).
-        double alpha = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
+        const double armijo_alpha_init = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
+        double alpha = armijo_alpha_init;
         double E_new = E;
         bool ls_success = false;
 
@@ -2411,6 +2450,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                             prev_dir(ik, ib, mu) = TK(0);
                 result.iterations = inner + 1;
                 result.final_energy = E;
+                print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
                 continue;
             }
 
@@ -2422,11 +2463,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 eucl_opt.init(flat_size);
                 result.iterations = inner + 1;
                 result.final_energy = E;
+                print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
                 continue;
             }
 
             result.iterations = inner + 1;
             result.final_energy = E;
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_);
             break;
         }
 
@@ -2476,6 +2521,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         energy_grad_->invalidate_hone_cache();
         result.iterations = inner + 1;
         result.final_energy = E_new;
+        print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                occ_flat, nk_, nbands_);
     }
 
     // Final summary of orbital sub-problem

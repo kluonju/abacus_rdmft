@@ -159,12 +159,14 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `0.1` | Initial trial step length for the Armijo backtracking line search. |
+| `rdmft_alpha_step` | real | `0.1` | Initial trial step length for the Armijo backtracking line search. The orbital sub-problem uses Armijo only; BB seeding is not used there. |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by L-BFGS. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
+
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` apply only to the augmented-Lagrangian occupation update. They do not affect orbital optimisation, which always uses Armijo backtracking.
 
 ### Debugging
 

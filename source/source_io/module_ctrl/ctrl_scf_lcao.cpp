@@ -446,11 +446,16 @@ void ctrl_scf_lcao_impl(UnitCell& ucell,
             ModuleBase::WARNING_QUIT("ModuleIO::ctrl_scf_lcao", "RDMFT solver is null.");
         }
         ModuleBase::matrix occ_num(pelec->wg);
+        const int nks = kv.get_nks();
+        auto kv_wk = [&](int ik) -> double {
+            return kv.wk[ik < nks ? ik : ik - nks];
+        };
         for (int ik = 0; ik < occ_num.nr; ++ik)
         {
+            const double wk = kv_wk(ik);
             for (int inb = 0; inb < occ_num.nc; ++inb)
             {
-                occ_num(ik, inb) /= kv.wk[ik];
+                occ_num(ik, inb) = (wk > 0.0) ? occ_num(ik, inb) / wk : 0.0;
             }
         }
         rdmft_solver->update_elec(ucell, occ_num, *psi);
