@@ -30,6 +30,8 @@ enum class OccInitMode
     KS,
     /// Around the Fermi window, add +delta above and -delta below.
     Perturbed,
+    /// Around the Fermi window, set to 1-delta (occ>=0.5) or delta (occ<0.5).
+    Binary,
     /// Around the Fermi window, replace by uniform average occupation.
     Uniform
 };

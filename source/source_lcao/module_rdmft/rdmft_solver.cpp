@@ -35,6 +35,53 @@ bool occ_inner_should_stop(double sum_abs_dn,
     return (sum_abs_dn < dn_tol);
 }
 
+double projected_gradient_map_norm(const std::vector<double>& occ,
+                                   const std::vector<double>& grad,
+                                   const OccupationConstraint& constraint,
+                                   const double tau)
+{
+    std::vector<double> trial(occ.size());
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        trial[i] = occ[i] - tau * grad[i];
+    }
+    constraint.project(trial);
+
+    double n2 = 0.0;
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        const double d = occ[i] - trial[i];
+        n2 += d * d;
+    }
+    return std::sqrt(std::max(0.0, n2));
+}
+
+double active_set_dual_complementarity_violation(const std::vector<double>& grad,
+                                                 const OccupationConstraint::ActiveSetInfo& as_info,
+                                                 const OccupationConstraint& constraint)
+{
+    const int nbands = constraint.nbands();
+    const auto& kweights = constraint.kweights();
+    double max_violation = 0.0;
+    for (size_t idx = 0; idx < grad.size(); ++idx)
+    {
+        const int ik = static_cast<int>(idx) / nbands;
+        const double wk = kweights[ik];
+        const double gkkt = grad[idx] + as_info.lagrange_mult * wk;
+
+        // KKT sign conditions on active bounds.
+        if (as_info.at_lower[idx])
+        {
+            max_violation = std::max(max_violation, std::max(0.0, -gkkt));
+        }
+        else if (as_info.at_upper[idx])
+        {
+            max_violation = std::max(max_violation, std::max(0.0, gkkt));
+        }
+    }
+    return max_violation;
+}
+
 int find_fermi_boundary_index(const std::vector<double>& occ_flat,
                               const int ik,
                               const int nbands)
@@ -283,6 +330,7 @@ std::string occ_init_mode_to_string(const OccInitMode m)
     {
         case OccInitMode::KS: return "ks";
         case OccInitMode::Perturbed: return "perturbed";
+        case OccInitMode::Binary: return "binary";
         case OccInitMode::Uniform: return "uniform";
     }
     return "unknown";
@@ -625,8 +673,8 @@ double RDMFTSolver<TK, TR>::solve(
         }
         else
         {
-            int n_above = 0;
-            int n_below = 0;
+            int n_plus = 0;
+            int n_minus = 0;
             for (int ik = 0; ik < nk_; ++ik)
             {
                 const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
@@ -635,15 +683,33 @@ double RDMFTSolver<TK, TR>::solve(
                     const int ib_above = ib_fermi + 1 + t;
                     if (ib_above >= 0 && ib_above < nbands_)
                     {
-                        occ_flat[ik * nbands_ + ib_above] += delta;
-                        ++n_above;
+                        const int idx = ik * nbands_ + ib_above;
+                        if (occ_ks_seed[idx] < 0.5)
+                        {
+                            occ_flat[idx] += delta;
+                            ++n_plus;
+                        }
+                        else
+                        {
+                            occ_flat[idx] -= delta;
+                            ++n_minus;
+                        }
                     }
 
                     const int ib_below = ib_fermi - t;
                     if (ib_below >= 0 && ib_below < nbands_)
                     {
-                        occ_flat[ik * nbands_ + ib_below] -= delta;
-                        ++n_below;
+                        const int idx = ik * nbands_ + ib_below;
+                        if (occ_ks_seed[idx] < 0.5)
+                        {
+                            occ_flat[idx] += delta;
+                            ++n_plus;
+                        }
+                        else
+                        {
+                            occ_flat[idx] -= delta;
+                            ++n_minus;
+                        }
                     }
                 }
             }
@@ -656,12 +722,82 @@ double RDMFTSolver<TK, TR>::solve(
             std::ostringstream os;
             os << "K=" << K
                << ", delta=" << delta
-               << ", n_above=" << n_above
-               << ", n_below=" << n_below
+               << ", n_plus=" << n_plus
+               << ", n_minus=" << n_minus
                << ", sum|n_init-ks|=" << sum_abs_init_change
                << ", constraint_before_project=" << c_before_project
                << ", constraint_after_project=" << c_after_project;
             log_init_common("perturbed", os.str());
+        }
+    }
+    else if (config_.occ_init_mode == OccInitMode::Binary)
+    {
+        occ_flat = occ_ks_seed;
+        const int K = std::min(config_.occ_init_nbands_top, nbands_);
+        const double delta = config_.occ_init_perturb;
+
+        if (K <= 0 || delta <= 0.0)
+        {
+            log_init_common("binary",
+                            "note=K<=0 or delta<=0, fallback=ks");
+        }
+        else
+        {
+            int n_high = 0;
+            int n_low = 0;
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                for (int t = 0; t < K; ++t)
+                {
+                    const int ib_above = ib_fermi + 1 + t;
+                    if (ib_above >= 0 && ib_above < nbands_)
+                    {
+                        const int idx = ik * nbands_ + ib_above;
+                        if (occ_ks_seed[idx] < 0.5)
+                        {
+                            occ_flat[idx] = delta;
+                            ++n_low;
+                        }
+                        else
+                        {
+                            occ_flat[idx] = 1.0 - delta;
+                            ++n_high;
+                        }
+                    }
+
+                    const int ib_below = ib_fermi - t;
+                    if (ib_below >= 0 && ib_below < nbands_)
+                    {
+                        const int idx = ik * nbands_ + ib_below;
+                        if (occ_ks_seed[idx] < 0.5)
+                        {
+                            occ_flat[idx] = delta;
+                            ++n_low;
+                        }
+                        else
+                        {
+                            occ_flat[idx] = 1.0 - delta;
+                            ++n_high;
+                        }
+                    }
+                }
+            }
+
+            const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
+            occ_constraint_->project(occ_flat);
+            const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
+            const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
+
+            std::ostringstream os;
+            os << "K=" << K
+               << ", delta=" << delta
+               << ", n_high=" << n_high
+               << ", n_low=" << n_low
+               << ", sum|n_init-ks|=" << sum_abs_init_change
+               << ", constraint_before_project=" << c_before_project
+               << ", constraint_after_project=" << c_after_project;
+            log_init_common("binary", os.str());
         }
     }
     else
@@ -1583,6 +1719,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double dE = have_E_prev ? (E - E_prev) : 0.0;
                 E_prev = E;
                 have_E_prev = true;
+                const double pg_map_norm = projected_gradient_map_norm(
+                    occ_flat, grad_occ, *occ_constraint_, config_.line_search_alpha_init);
 
                 result.grad_norm = 0.0;
                 for (auto g : grad_occ) result.grad_norm += g * g;
@@ -1592,7 +1730,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     std::ostringstream os;
                     os << "      occ inner PG " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
-                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm;
+                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm
+                       << "  pg_map_norm=" << pg_map_norm;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
@@ -1683,8 +1822,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
                     << std::endl;
-                if (occ_inner_should_stop(sum_abs_dn,
-                    config_.rdmft_occ_tol))
+                const double pg_stop_norm = projected_gradient_map_norm(
+                    occ_flat, new_grad_occ, *occ_constraint_, config_.line_search_alpha_init);
+                GlobalV::ofs_running << "      PG stop-check: pg_map_norm=" << std::scientific
+                                     << pg_stop_norm << "  tol=" << config_.rdmft_occ_tol << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol)
+                    || pg_stop_norm < config_.rdmft_occ_tol)
                 {
                     result.converged = true;
                     result.iterations = inner + 1;
@@ -1761,6 +1904,21 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 E_prev = E;
                 have_E_prev = true;
 
+                // Free-set stationarity residual (dual residual surrogate).
+                double free_stationarity_n2 = 0.0;
+                int n_free = 0;
+                for (size_t idx = 0; idx < grad_mod.size(); ++idx)
+                {
+                    if (as_info.is_free[idx])
+                    {
+                        free_stationarity_n2 += grad_mod[idx] * grad_mod[idx];
+                        ++n_free;
+                    }
+                }
+                const double free_stationarity = std::sqrt(std::max(0.0, free_stationarity_n2));
+                const double comp_violation = active_set_dual_complementarity_violation(
+                    grad_occ, as_info, *occ_constraint_);
+
                 result.grad_norm = 0.0;
                 for (auto g : grad_mod) result.grad_norm += g * g;
                 result.grad_norm = std::sqrt(result.grad_norm);
@@ -1770,7 +1928,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     os << "      occ inner AS " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
                        << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm
-                       << "  n_active=" << n_active;
+                       << "  n_active=" << n_active
+                       << "  n_free=" << n_free
+                       << "  free_stationarity=" << free_stationarity
+                       << "  comp_violation=" << comp_violation;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
@@ -1884,8 +2045,34 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
                     << std::endl;
-                if (occ_inner_should_stop(sum_abs_dn,
-                    config_.rdmft_occ_tol))
+
+                // KKT-style stopping checks (as in derivation notes):
+                // primal feasibility + free-set stationarity + complementarity.
+                auto as_info_new = occ_constraint_->identify_active_set(occ_flat, new_grad_occ);
+                std::vector<double> grad_mod_new(new_grad_occ);
+                occ_constraint_->apply_active_set(as_info_new, grad_mod_new);
+                double free_stationarity_new_n2 = 0.0;
+                for (size_t idx = 0; idx < grad_mod_new.size(); ++idx)
+                {
+                    if (as_info_new.is_free[idx])
+                    {
+                        free_stationarity_new_n2 += grad_mod_new[idx] * grad_mod_new[idx];
+                    }
+                }
+                const double free_stationarity_new = std::sqrt(std::max(0.0, free_stationarity_new_n2));
+                const double comp_violation_new = active_set_dual_complementarity_violation(
+                    new_grad_occ, as_info_new, *occ_constraint_);
+                const double primal_res = std::abs(occ_constraint_->constraint_violation(occ_flat));
+
+                GlobalV::ofs_running << "      AS stop-check: primal=" << std::scientific << primal_res
+                                     << "  free_stationarity=" << free_stationarity_new
+                                     << "  comp_violation=" << comp_violation_new
+                                     << "  tol=" << config_.rdmft_occ_tol << std::endl;
+
+                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol)
+                    || (primal_res < config_.rdmft_occ_tol
+                        && free_stationarity_new < config_.rdmft_occ_tol
+                        && comp_violation_new < config_.rdmft_occ_tol))
                 {
                     result.converged = true;
                     result.iterations = inner + 1;

@@ -678,7 +678,7 @@ struct Input_para
     int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
     int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
-    std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, uniform
+    std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, binary, uniform
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
     int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)

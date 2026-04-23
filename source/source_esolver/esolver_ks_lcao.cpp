@@ -578,6 +578,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_maxiter = inp.rdmft_occ_maxiter;
         if (inp.rdmft_occ_init_mode == "perturbed")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
+        else if (inp.rdmft_occ_init_mode == "binary")
+            rdmft_config.occ_init_mode = rdmft::OccInitMode::Binary;
         else if (inp.rdmft_occ_init_mode == "uniform")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Uniform;
         else

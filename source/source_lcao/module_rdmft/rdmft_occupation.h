@@ -239,6 +239,7 @@ class OccupationConstraint
     int nk() const { return nk_; }
     int nbands() const { return nbands_; }
     double n_electrons() const { return n_electrons_; }
+    const std::vector<double>& kweights() const { return kweights_; }
 
   private:
     // Project occupations onto the electron-number equality constraint

@@ -1021,13 +1021,14 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_init_mode");
-        item.annotation = "Initial occupation source for RDMFT: ks, perturbed, uniform";
+        item.annotation = "Initial occupation source for RDMFT: ks, perturbed, binary, uniform";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "ks: use KS occupations directly. "
-                           "perturbed: in a Fermi window, add +delta above and -delta below. "
-                           "uniform: in the same Fermi window, set all selected occupations "
-                           "to the local average N_top / N_selected.";
+                   "perturbed: in a Fermi window, apply +/-delta based on the KS occupation. "
+                   "binary: in the same Fermi window, set to 1-delta if occ>=0.5, or delta if occ<0.5. "
+                   "uniform: in the same Fermi window, set all selected occupations "
+                   "to the local average N_top / N_selected.";
         item.default_value = "ks";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1036,10 +1037,10 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_occ_init_mode;
-                if (s != "ks" && s != "perturbed" && s != "uniform")
+                if (s != "ks" && s != "perturbed" && s != "binary" && s != "uniform")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_occ_init_mode must be one of: ks, perturbed, uniform");
+                    "rdmft_occ_init_mode must be one of: ks, perturbed, binary, uniform");
                 }
             }
         };
