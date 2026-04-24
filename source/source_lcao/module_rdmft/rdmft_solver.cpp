@@ -28,11 +28,19 @@ double sum_abs_diff(const std::vector<double>& a, const std::vector<double>& b)
     return s;
 }
 
-/// Stop occupation inner loop when the total occupation change is small.
+/// Stop augmented-Lagrangian occupation inner loop when the total occupation change is small.
 bool occ_inner_should_stop(double sum_abs_dn,
                            double dn_tol)
 {
     return (sum_abs_dn < dn_tol);
+}
+
+inline double euclidean_norm(const std::vector<double>& v)
+{
+    double s = 0.0;
+    for (double x : v)
+        s += x * x;
+    return std::sqrt(s);
 }
 
 double projected_gradient_map_norm(const std::vector<double>& occ,
@@ -165,14 +173,14 @@ void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
 
 void print_rdmft_outer_energy_stdout(bool converged, double E)
 {
-    std::cout << std::fixed << std::setprecision(10);
+    GlobalV::ofs_running << std::fixed << std::setprecision(10);
     if (converged)
     {
-        std::cout << "  RDMFT outer: converged  E = " << E << std::defaultfloat << std::endl;
+        GlobalV::ofs_running << "  RDMFT outer: converged  E = " << E << std::defaultfloat << std::endl;
     }
     else
     {
-        std::cout << "  RDMFT outer: NOT converged  E = " << E << std::defaultfloat << std::endl;
+        GlobalV::ofs_running << "  RDMFT outer: NOT converged  E = " << E << std::defaultfloat << std::endl;
     }
 }
 
@@ -240,6 +248,7 @@ void print_occ_table_running(const std::vector<double>& occ_flat, int nk, int nb
                               "  Occupations n(ik, ib):", 2);
 }
 
+/// Inner occ/orb iterations: log to running file only (no stdout).
 void print_inner_loop_stdout(const std::string& label,
                              int inner_iter,
                              double end_energy,
@@ -247,10 +256,10 @@ void print_inner_loop_stdout(const std::string& label,
                              int nk,
                              int nbands)
 {
-    std::cout << std::fixed << std::setprecision(10)
-              << "  " << label << " " << inner_iter << " end: E = " << end_energy
-              << std::defaultfloat << std::endl;
-    print_occ_table_to_stream(std::cout, occ_flat, nk, nbands,
+    GlobalV::ofs_running << std::fixed << std::setprecision(10)
+                         << "  " << label << " " << inner_iter << " end: E = " << end_energy
+                         << std::defaultfloat << std::endl;
+    print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk, nbands,
                               "  Occupations n(ik, ib):", 2);
 }
 
@@ -452,6 +461,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_energy_tol", as_sci(cfg.energy_tol));
     add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
     add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
+    add_kv("rdmft_occ_grad_tol", as_sci(cfg.occ_grad_tol));
     add_kv("rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
     add_kv("rdmft_occ_param", occ_param_to_string(cfg.occ_param));
     add_kv("rdmft_occ_init_mode", occ_init_mode_to_string(cfg.occ_init_mode));
@@ -1054,13 +1064,6 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         double dE = std::abs(E - E_prev);
         double constraint_viol = occ_constraint_->constraint_violation(occ_flat);
 
-        std::cout << std::fixed << std::setprecision(10)
-            << "  RDMFT iter " << iter + 1
-            << "  E = " << E
-            << "  dE = " << std::scientific << dE
-            << "  |c| = " << std::abs(constraint_viol)
-            << std::endl;
-
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
             << "  RDMFT iter " << iter + 1
             << "  E = " << E
@@ -1082,6 +1085,10 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             print_rdmft_energy_table_running({"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total"},
                                              {E_one, E_hartree, E_xc, E_ewald, E_total});
         }
+
+        // stdout: occupation table once per outer iteration only (inner loops stay off stdout).
+        std::cout << "  RDMFT outer iter " << (iter + 1) << std::endl;
+        print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
 
         last_dE = dE;
         last_abs_c = std::abs(constraint_viol);
@@ -1444,9 +1451,6 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
             joint_opt.init(packed_size);
 
-            std::cout << "  RDMFT joint-iter " << iter + 1
-                      << "  line search failed, restarting optimiser state"
-                      << std::endl;
             GlobalV::ofs_running << "  RDMFT joint-iter " << iter + 1
                 << "  line search failed, restarting optimiser state" << std::endl;
             E_prev = E;
@@ -1534,15 +1538,6 @@ double RDMFTSolver<TK, TR>::solve_joint(
             ? occ_constraint_->augmented_lagrangian_penalty(occ_flat)
             : 0.0;
 
-        std::cout << std::fixed << std::setprecision(10)
-            << "  RDMFT joint-iter " << iter + 1
-            << "  E = " << E_new
-            << "  dE = " << std::scientific << dE
-            << "  alpha = " << alpha
-            << "  sum|dn| = " << sum_abs_dn_joint
-            << "  |grad| = " << gnorm_total
-            << std::endl;
-
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
             << "  RDMFT joint-iter " << iter + 1
             << "  E = " << E_new
@@ -1568,6 +1563,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 {"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total", "E_penalty", "E_aug"},
                 {E_one, E_hartree, E_xc, E_ewald, E_total, E_penalty, E_total + E_penalty});
         }
+
+        // stdout: occupation table once per joint outer iteration only.
+        std::cout << "  RDMFT joint iter " << (iter + 1) << std::endl;
+        print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
         joint_last_E = E_new;
@@ -1794,9 +1793,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> grad_params;
                 occ_param_->transform_gradient_batch_solver(grad_occ, params, *occ_constraint_, grad_params);
 
-                result.grad_norm = 0.0;
-                for (auto g : grad_params) result.grad_norm += g * g;
-                result.grad_norm = std::sqrt(result.grad_norm);
+                result.grad_norm = euclidean_norm(grad_params);
 
                 {
                     std::ostringstream os;
@@ -1804,6 +1801,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
                        << "  |c|=" << std::abs(c) << "  gnorm=" << result.grad_norm;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (result.grad_norm < config_.occ_grad_tol)
+                {
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    result.converged = true;
+                    print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                            occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      occ DM: ||dE/dp||=" << std::scientific << result.grad_norm
+                                         << " < occ_grad_tol=" << config_.occ_grad_tol << std::endl;
+                    break;
                 }
 
                 std::vector<double> dir;
@@ -1851,9 +1860,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                         occ_flat, nk_, nbands_);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
+                const double gnorm_post = euclidean_norm(new_grad_params);
+                result.grad_norm = gnorm_post;
                 GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
-                                     << std::endl;
-                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol))
+                                     << "  ||dE/dp||_post=" << gnorm_post
+                                     << "  occ_grad_tol=" << config_.occ_grad_tol << std::endl;
+                if (gnorm_post < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     break;
@@ -2009,9 +2021,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double pg_stop_norm = projected_gradient_map_norm(
                     occ_flat, new_grad_occ, *occ_constraint_, config_.line_search_alpha_init);
                 GlobalV::ofs_running << "      PG stop-check: pg_map_norm=" << std::scientific
-                                     << pg_stop_norm << "  tol=" << config_.rdmft_occ_tol << std::endl;
+                                     << pg_stop_norm << "  tol=" << config_.occ_grad_tol << std::endl;
                 if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol)
-                    || pg_stop_norm < config_.rdmft_occ_tol)
+                    || pg_stop_norm < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     break;

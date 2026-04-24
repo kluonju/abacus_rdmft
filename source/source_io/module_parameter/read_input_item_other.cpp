@@ -1133,6 +1133,22 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_grad_tol");
+        item.annotation = "RDMFT occupation inner: gradient norm threshold (direct / joint non-ALM)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "For direct_minimization, projected_gradient, active_set, and joint strategy "
+                           "without augmented Lagrangian: declare the occupation sub-problem converged "
+                           "when ||dE/dp|| (after the step for DM; PG also uses projected-gradient map norm) "
+                           "is below this. Augmented Lagrangian occupation inner loop still uses rdmft_occ_tol "
+                           "on sum|Δn|.";
+        item.default_value = "1e-6";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_grad_tol);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_entropy_gamma");
         item.annotation = "RDMFT HF: binary-entropy regularization γ for occupation optimization";
         item.category = "Reduced Density Matrix Functional Theory";

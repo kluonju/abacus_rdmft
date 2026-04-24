@@ -589,6 +589,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
         rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
+        rdmft_config.occ_grad_tol = inp.rdmft_occ_grad_tol;
         rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;

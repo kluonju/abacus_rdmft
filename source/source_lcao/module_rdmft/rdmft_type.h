@@ -118,9 +118,12 @@ struct RDMFTConfig
     double energy_tol = 1e-8;
     /// Inner orbital step: stop when Riemannian gradient norm ||G_R|| falls below this.
     double orb_grad_tol = 1e-6;
-    /// Inner occupation step: stop when sum_i |Δn_i| in one iteration falls below this
-    /// as the occupation convergence criterion.
+    /// Inner occupation step (e.g. augmented Lagrangian): stop when sum_i |Δn_i| in one iteration
+    /// falls below this.
     double rdmft_occ_tol = 1e-8;
+    /// Direct minimization / joint (non-ALM): stop occupation inner loop when the Euclidean norm of
+    /// the occupation-parameter gradient ||dE/dp|| is below this (after projected-gradient map for PG).
+    double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
 
