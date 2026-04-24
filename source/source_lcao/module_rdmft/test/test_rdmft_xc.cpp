@@ -4,6 +4,21 @@
 
 using namespace rdmft;
 
+namespace {
+// Mirrors rdmft_energy_gradient.cpp binary entropy helpers (HF occupation regularization).
+constexpr double occ_entropy_n_eps = 1e-12;
+double test_binary_entropy_f(double n)
+{
+    n = std::max(occ_entropy_n_eps, std::min(1.0 - occ_entropy_n_eps, n));
+    return n * std::log(n) + (1.0 - n) * std::log(1.0 - n);
+}
+double test_binary_entropy_dfdn(double n)
+{
+    n = std::max(occ_entropy_n_eps, std::min(1.0 - occ_entropy_n_eps, n));
+    return std::log(n / (1.0 - n));
+}
+} // namespace
+
 class XCFunctionalTest : public ::testing::Test {};
 
 TEST_F(XCFunctionalTest, HF_g_is_identity)
@@ -99,6 +114,23 @@ TEST_F(XCFunctionalTest, gradient_consistency_numerical)
                 << "type=" << static_cast<int>(type) << " n=" << n;
         }
     }
+}
+
+TEST_F(XCFunctionalTest, BinaryEntropy_interior_matches_formula)
+{
+    const double n = 0.25;
+    const double f = test_binary_entropy_f(n);
+    const double f_expected = n * std::log(n) + (1.0 - n) * std::log(1.0 - n);
+    EXPECT_NEAR(f, f_expected, 1e-14);
+    EXPECT_NEAR(test_binary_entropy_dfdn(n), std::log(n / (1.0 - n)), 1e-14);
+}
+
+TEST_F(XCFunctionalTest, BinaryEntropy_clamped_boundaries_are_finite)
+{
+    EXPECT_FALSE(std::isnan(test_binary_entropy_f(0.0)));
+    EXPECT_FALSE(std::isnan(test_binary_entropy_f(1.0)));
+    EXPECT_FALSE(std::isnan(test_binary_entropy_dfdn(0.0)));
+    EXPECT_FALSE(std::isnan(test_binary_entropy_dfdn(1.0)));
 }
 
 TEST_F(XCFunctionalTest, boundary_values)

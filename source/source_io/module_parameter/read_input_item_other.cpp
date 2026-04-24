@@ -1133,6 +1133,20 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_entropy_gamma");
+        item.annotation = "RDMFT HF: binary-entropy regularization γ for occupation optimization";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "When rdmft_functional is hf and this is > 0, adds γ·Σ_k w_k Σ_i (n ln n + (1-n)ln(1-n)) "
+                           "to the objective and matching ∂E/∂n so CG/L-BFGS has curvature (typical 1e-6). "
+                           "Ignored for non-HF functionals. Use 0 for muller (default).";
+        item.default_value = "0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_entropy_gamma);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_param");
         item.annotation = "Occupation parameterisation for RDMFT: cosine_sq, logistic";
         item.category = "Reduced Density Matrix Functional Theory";

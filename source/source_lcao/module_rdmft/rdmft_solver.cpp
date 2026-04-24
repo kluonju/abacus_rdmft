@@ -452,6 +452,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_energy_tol", as_sci(cfg.energy_tol));
     add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
     add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
+    add_kv("rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
     add_kv("rdmft_occ_param", occ_param_to_string(cfg.occ_param));
     add_kv("rdmft_occ_init_mode", occ_init_mode_to_string(cfg.occ_init_mode));
     add_kv("rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
@@ -1046,6 +1047,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         const double E_one = energy_grad_->E_one_body();
         const double E_hartree = energy_grad_->E_hartree();
         const double E_xc = energy_grad_->E_xc();
+        const double E_entropy = energy_grad_->E_entropy();
         const double E_ewald = energy_grad_->E_ewald();
         const double E_total = energy_grad_->E_total();
 
@@ -1070,8 +1072,16 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             << "  orb_conv = " << (orb_result.converged ? "Y" : "N")
             << std::endl;
 
-        print_rdmft_energy_table_running({"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total"},
-                                         {E_one, E_hartree, E_xc, E_ewald, E_total});
+        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+        {
+            print_rdmft_energy_table_running({"E_one_elec", "E_Hartree", "E_xc", "E_entropy", "E_Ewald", "E_total"},
+                                             {E_one, E_hartree, E_xc, E_entropy, E_ewald, E_total});
+        }
+        else
+        {
+            print_rdmft_energy_table_running({"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total"},
+                                             {E_one, E_hartree, E_xc, E_ewald, E_total});
+        }
 
         last_dE = dE;
         last_abs_c = std::abs(constraint_viol);
@@ -1517,6 +1527,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         const double E_one = energy_grad_->E_one_body();
         const double E_hartree = energy_grad_->E_hartree();
         const double E_xc = energy_grad_->E_xc();
+        const double E_entropy = energy_grad_->E_entropy();
         const double E_ewald = energy_grad_->E_ewald();
         const double E_total = energy_grad_->E_total();
         const double E_penalty = (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
@@ -1545,9 +1556,18 @@ double RDMFTSolver<TK, TR>::solve_joint(
             << "  orb_conv = " << (orb_conv_joint ? "Y" : "N")
             << std::endl;
 
-        print_rdmft_energy_table_running(
-            {"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total", "E_penalty", "E_aug"},
-            {E_one, E_hartree, E_xc, E_ewald, E_total, E_penalty, E_total + E_penalty});
+        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+        {
+            print_rdmft_energy_table_running({"E_one_elec", "E_Hartree", "E_xc", "E_entropy", "E_Ewald", "E_total",
+                                              "E_penalty", "E_aug"},
+                {E_one, E_hartree, E_xc, E_entropy, E_ewald, E_total, E_penalty, E_total + E_penalty});
+        }
+        else
+        {
+            print_rdmft_energy_table_running(
+                {"E_one_elec", "E_Hartree", "E_xc", "E_Ewald", "E_total", "E_penalty", "E_aug"},
+                {E_one, E_hartree, E_xc, E_ewald, E_total, E_penalty, E_total + E_penalty});
+        }
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
         joint_last_E = E_new;

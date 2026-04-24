@@ -121,6 +121,8 @@ struct RDMFTConfig
     /// Inner occupation step: stop when sum_i |Δn_i| in one iteration falls below this
     /// as the occupation convergence criterion.
     double rdmft_occ_tol = 1e-8;
+    /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
+    double occ_entropy_gamma = 0.0;
 
     double aug_lag_mu_init = 1.0;
     double aug_lag_mu_factor = 2.0;

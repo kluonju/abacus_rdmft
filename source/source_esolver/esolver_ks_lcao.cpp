@@ -606,6 +606,11 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
         rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
+        rdmft_config.occ_entropy_gamma = inp.rdmft_occ_entropy_gamma;
+        if (rdmft_config.xc_type != rdmft::XCFunctionalType::HF)
+        {
+            rdmft_config.occ_entropy_gamma = 0.0;
+        }
 
         // Parse strategy. "joint" is the current name for the simultaneous
         // product-manifold optimisation; "product_manifold" is accepted as a
@@ -653,6 +658,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         const double n_electrons = PARAM.inp.nelec;
         rdmft::RDMFTSolver<TK, TR> rdmft_new_solver;
         rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons);
+        this->rdmft_eg.set_occ_entropy_gamma(rdmft_config.occ_entropy_gamma);
 
         // Optional gradient check
         if (inp.rdmft_grad_check)

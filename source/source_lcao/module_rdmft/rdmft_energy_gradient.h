@@ -53,6 +53,9 @@ class EnergyGradient
               const TwoCenterBundle* two_center_bundle_in,
               const XCFunctional& xc_func_in);
 
+    /// HF-only occupation entropy prefactor γ (set from INPUT / RDMFTConfig each solve).
+    void set_occ_entropy_gamma(double gamma) { occ_entropy_gamma_ = gamma; }
+
     /// Update ion-step quantities (HR for kinetic/local/nonlocal, EXX ions)
     void update_ion(const UnitCell& ucell,
                     const ModulePW::PW_Basis& rho_basis,
@@ -84,6 +87,8 @@ class EnergyGradient
     double E_xc() const { return E_xc_; }
     double E_ewald() const { return E_ewald_; }
     double E_total() const { return E_total_; }
+    /// Binary-entropy regularization energy γ·Σ w_k f(n) from last compute / compute_energy.
+    double E_entropy() const { return E_entropy_; }
 
     int nk() const { return nk_; }
     int nbands() const { return nbands_; }
@@ -199,6 +204,8 @@ class EnergyGradient
     const ModuleBase::ComplexMatrix* sf_ = nullptr;
 
     XCFunctional xc_func_{XCFunctionalType::HF};
+    /// HF occupation entropy prefactor; 0 disables (see set_occ_entropy_gamma).
+    double occ_entropy_gamma_{0.0};
 
     int nk_ = 0;
     int nbands_ = 0;
@@ -237,6 +244,7 @@ class EnergyGradient
     double E_hartree_ = 0.0;
     double E_xc_ = 0.0;
     double E_ewald_ = 0.0;
+    double E_entropy_ = 0.0;
     double E_total_ = 0.0;
     double etxc_ = 0.0;
     double vtxc_ = 0.0;

@@ -775,6 +775,21 @@ inline double real_of_conj_prod(std::complex<double> a, std::complex<double> b)
     return a.real() * b.real() + a.imag() * b.imag();
 }
 
+/// f(n) = n ln n + (1-n) ln(1-n); n clamped like OccupationParam::to_param
+inline double binary_entropy_f(double n)
+{
+    constexpr double eps = 1e-12;
+    n = std::max(eps, std::min(1.0 - eps, n));
+    return n * std::log(n) + (1.0 - n) * std::log(1.0 - n);
+}
+
+inline double binary_entropy_dfdn(double n)
+{
+    constexpr double eps = 1e-12;
+    n = std::max(eps, std::min(1.0 - eps, n));
+    return std::log(n / (1.0 - n));
+}
+
 template <typename TK>
 inline const TK* psi_k_ptr_or_dummy(const psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
 {
@@ -1277,6 +1292,7 @@ double EnergyGradient<TK, TR>::compute(
     E_one_ = 0.0;
     E_hartree_ = 0.0;
     E_xc_ = 0.0;
+    E_entropy_ = 0.0;
 
     cached_h_one_diag_.resize(nk_);
     std::vector<double> h_one_diag(nbands_, 0.0);
@@ -1403,13 +1419,27 @@ double EnergyGradient<TK, TR>::compute(
         }
     }
 
+    if (occ_entropy_gamma_ > 0.0 && xc_func_.type() == XCFunctionalType::HF)
+    {
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            const double wk = kv_->wk[ik];
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                E_entropy_ += occ_entropy_gamma_ * wk * binary_entropy_f(n);
+                grad_occ[ik * nbands_ + ib] += occ_entropy_gamma_ * wk * binary_entropy_dfdn(n);
+            }
+        }
+    }
+
     // h_one_diag / vh_diag / vx_diag are already globally replicated by
     // compute_diagonal(); the per-rank accumulations above all produced the
     // same value, so NO MPI reduction of E_* is needed (that would double-
     // count). The same is true for grad_occ.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
 
     // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
     grad_C_to_X(grad_wfc);
@@ -1527,6 +1557,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     E_one_ = 0.0;
     E_hartree_ = 0.0;
     E_xc_ = 0.0;
+    E_entropy_ = 0.0;
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -1579,11 +1610,24 @@ double EnergyGradient<TK, TR>::compute_energy(
         }
     }
 
+    if (occ_entropy_gamma_ > 0.0 && xc_func_.type() == XCFunctionalType::HF)
+    {
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            const double wk = kv_->wk[ik];
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                E_entropy_ += occ_entropy_gamma_ * wk * binary_entropy_f(n);
+            }
+        }
+    }
+
     // As in compute(), the *_diag arrays are replicated across ranks so no MPI
     // reduction of E_* is needed here.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_ewald_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
 
     ModuleBase::timer::end("RDMFT_EG", "compute_energy");
     return E_total_;
