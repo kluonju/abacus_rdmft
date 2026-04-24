@@ -1137,8 +1137,9 @@ void ReadInput::item_others()
         item.annotation = "Occupation parameterisation for RDMFT: cosine_sq, logistic";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
-        item.description = "Maps unconstrained real parameter to [0,1]. "
-                           "cosine_sq: n = cos^2(theta). logistic: n = 1/(1+exp(-x)).";
+        item.description = "Occupation map used in the solver. "
+                           "cosine_sq: n = cos^2(theta), used by the augmented_lagrangian path. "
+                           "logistic: n = 1/(1+exp(-(x+mu*w_k))) with a single global mu solved by bisection to satisfy the electron-number constraint, used by the direct_minimization path.";
         item.default_value = "cosine_sq";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1162,9 +1163,10 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Method to enforce the electron-number constraint sum_k w_k sum_i n_ik = N_e. "
-                           "augmented_lagrangian: penalty + Lagrange multiplier update. "
-                           "projected_gradient: clip and rescale after each step. "
-                           "active_set: track pinned occupations.";
+                           "augmented_lagrangian: cosine-square parameterisation with Armijo line search and ALM penalty updates. "
+                           "direct_minimization: logistic parameterisation with global-mu bisection and line search, without penalty term. "
+                           "projected_gradient: occupation-space projected gradient with Barzilai-Borwein step lengths. "
+                           "active_set: legacy reduced-space method that tracks pinned occupations.";
         item.default_value = "augmented_lagrangian";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1173,10 +1175,11 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_constraint;
-                if (s != "augmented_lagrangian" && s != "projected_gradient" && s != "active_set")
+                if (s != "augmented_lagrangian" && s != "direct_minimization"
+                    && s != "projected_gradient" && s != "active_set")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_constraint must be 'augmented_lagrangian', 'projected_gradient', or 'active_set'");
+                        "rdmft_constraint must be 'augmented_lagrangian', 'direct_minimization', 'projected_gradient', or 'active_set'");
                 }
             }
         };

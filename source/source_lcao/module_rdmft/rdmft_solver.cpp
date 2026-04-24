@@ -366,6 +366,7 @@ std::string constraint_method_to_string(const ConstraintMethod m)
     switch (m)
     {
         case ConstraintMethod::AugmentedLagrangian: return "augmented_lagrangian";
+        case ConstraintMethod::DirectMinimization: return "direct_minimization";
         case ConstraintMethod::ProjectedGradient: return "projected_gradient";
         case ConstraintMethod::ActiveSet: return "active_set";
     }
@@ -1218,7 +1219,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     {
         // Refresh occupations from params so downstream code always sees a
         // consistent (p, n) pair.
-        occ_param_->params_to_occ(params, occ_flat);
+        occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
         const std::vector<double> occ_before_joint_step(occ_flat);
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
@@ -1240,7 +1241,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // Transform occupation gradient dE/dn -> dE/dp (chain rule through the
         // cosine^2 / logistic parameterisation).
         std::vector<double> grad_params;
-        occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
+        occ_param_->transform_gradient_batch_solver(grad_occ, params, *occ_constraint_, grad_params);
 
         // Project orbital gradient onto the Stiefel tangent space at C.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
@@ -1407,7 +1408,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
             for (int i = 0; i < n_occ_params; ++i)
                 params_new[i] = params[i] + alpha * occ_dir[i];
-            occ_param_->params_to_occ(params_new, occ_flat_new);
+            occ_param_->params_to_occ_batch(params_new, *occ_constraint_, occ_flat_new);
 
             E_new = total_energy(occ_flat_new, wfc);
             if (E_new <= E + c1 * alpha * dd_total)
@@ -1449,7 +1450,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             packed_step[i] = alpha * occ_dir[i];
             params[i] += packed_step[i];
         }
-        occ_param_->params_to_occ(params, occ_flat);
+        occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
 
         // Build the packed step for the orbital block. Store the step in
         // the *internal* (scaled) units that match packed_dir:
@@ -1478,7 +1479,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
                     new_grad_occ[i] += pen_grad[i];
             }
             std::vector<double> new_grad_params;
-            occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
+            occ_param_->transform_gradient_batch_solver(new_grad_occ, params, *occ_constraint_, new_grad_params);
             energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
 
             std::vector<double> new_grad_orb_flat;
@@ -1573,7 +1574,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         E = E_new;
     }
 
-    occ_param_->params_to_occ(params, occ_flat);
+    occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
     last_result_.final_energy = E;
     if (!last_result_.converged)
     {
@@ -1738,22 +1739,131 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             break;
         }
 
+        case ConstraintMethod::DirectMinimization:
+        {
+            // Direct minimization in the logistic parameter space. The batch
+            // map solves for the global mu shift so the equality constraint is
+            // satisfied without an augmented-Lagrangian penalty.
+            std::vector<double> params;
+            occ_param_->occ_to_params(occ_flat, params);
+
+            EuclideanOptimizer opt(config_.occ_optimizer, config_);
+            opt.init(params.size());
+
+            double E_prev = 0.0;
+            bool have_E_prev = false;
+            std::vector<double> occ_snap_start;
+
+            for (int inner = 0; inner < config_.occ_maxiter; ++inner)
+            {
+                occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
+
+                const std::vector<double> occ_prev_for_dn = occ_snap_start;
+                occ_snap_start = occ_flat;
+                const std::vector<double> occ_at_step_start(occ_flat);
+
+                std::vector<double> grad_occ;
+                psi::Psi<TK> grad_wfc_dummy;
+                const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                                       grad_occ, grad_wfc_dummy);
+                const double c = occ_constraint_->constraint_violation(occ_flat);
+                const double dE = have_E_prev ? (E - E_prev) : 0.0;
+                E_prev = E;
+                have_E_prev = true;
+
+                std::vector<double> grad_params;
+                occ_param_->transform_gradient_batch_solver(grad_occ, params, *occ_constraint_, grad_params);
+
+                result.grad_norm = 0.0;
+                for (auto g : grad_params) result.grad_norm += g * g;
+                result.grad_norm = std::sqrt(result.grad_norm);
+
+                {
+                    std::ostringstream os;
+                    os << "      occ inner DM " << (inner + 1) << "  E=" << std::fixed
+                       << std::setprecision(10) << E << "  dE=" << std::scientific << dE
+                       << "  |c|=" << std::abs(c) << "  gnorm=" << result.grad_norm;
+                    log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                std::vector<double> dir;
+                opt.compute_direction(grad_params, dir);
+
+                double dd = 0.0;
+                for (size_t i = 0; i < dir.size(); ++i)
+                    dd += dir[i] * grad_params[i];
+
+                auto f_at_step = [&](double step) -> double {
+                    std::vector<double> p_trial(params);
+                    for (size_t i = 0; i < p_trial.size(); ++i)
+                        p_trial[i] += step * dir[i];
+                    std::vector<double> occ_trial;
+                    occ_param_->params_to_occ_batch(p_trial, *occ_constraint_, occ_trial);
+                    return energy_grad_->compute_energy(occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                };
+
+                auto ls = armijo_line_search(f_at_step,
+                                             E,
+                                             dd,
+                                             config_.line_search_alpha_init,
+                                             config_.line_search_c1,
+                                             config_.line_search_rho,
+                                             config_.line_search_max_iter);
+
+                std::vector<double> step_vec(params.size());
+                for (size_t i = 0; i < params.size(); ++i)
+                {
+                    step_vec[i] = ls.step * dir[i];
+                    params[i] += step_vec[i];
+                }
+
+                occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
+                std::vector<double> new_grad_occ;
+                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                      new_grad_occ, grad_wfc_dummy);
+                std::vector<double> new_grad_params;
+                occ_param_->transform_gradient_batch_solver(new_grad_occ, params, *occ_constraint_, new_grad_params);
+                opt.update(new_grad_params, step_vec);
+
+                result.iterations = inner + 1;
+                result.final_energy = ls.f_new;
+                print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                        occ_flat, nk_, nbands_);
+
+                const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
+                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
+                                     << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol))
+                {
+                    result.converged = true;
+                    break;
+                }
+            }
+            break;
+        }
+
         case ConstraintMethod::ProjectedGradient:
         {
             // Projected gradient method for box-constrained optimization with
-            // electron-number equality constraint.
+            // electron-number equality constraint using BB step lengths with a
+            // monotone backtracking safeguard.
             //
             // At each iteration:
             //   1. Compute energy E and gradient dE/dn at current n.
             //   2. Use the configured optimizer (SD/CG/LBFGS/Adam) to compute
             //      a search direction d in the occupation space.
-            //   3. Armijo backtracking: trial = Project(n + alpha*d).
-            //      Armijo condition:  E(trial) <= E(n) + c1 * <dE/dn, trial - n>.
+            //   3. Set alpha from the Barzilai-Borwein update in occupation
+            //      space and backtrack until the projected step lowers E.
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
+
+            BarzilaiBorweinStep bb_step;
+            bb_step.set_mode(config_.alm_bb_mode);
+            bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
+            bb_step.reset();
 
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
@@ -1803,9 +1913,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         dir[i] = -grad_occ[i];
                 }
 
-                // Armijo backtracking with projection.
+                // BB step with monotone backtracking and projection.
                 const std::vector<double> occ_before_step(occ_flat);
-                double alpha = config_.line_search_alpha_init;
+                double alpha = bb_step.suggest(occ_flat, grad_occ, config_.line_search_alpha_init);
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 double E_after = E;
@@ -1827,21 +1937,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         continue;
                     }
 
-                    // Directional derivative: <dE/dn, trial - n>
-                    double dd_proj = 0.0;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                        dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-
-                    if (dd_proj >= 0.0)
-                    {
-                        // Step doesn't decrease energy directionally; reduce alpha.
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
-
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                    if (E_trial < E)
                     {
                         E_after = E_trial;
                         ls_success = true;
@@ -1861,6 +1959,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     // cannot jump upward due to an unchecked fallback move.
                     occ_flat = occ_before_step;
                     pg_opt.init(static_cast<int>(occ_flat.size()));
+                    bb_step.reset();
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
                                          << ", rejected step and reset optimizer" << std::endl;
                 }
@@ -1874,6 +1973,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                        new_grad_occ, grad_wfc_dummy);
                 pg_opt.update(new_grad_occ, step_vec);
+                if (ls_success)
+                {
+                    bb_step.record_state(occ_flat, new_grad_occ);
+                }
 
                 result.iterations = inner + 1;
                 result.final_energy = E_after;

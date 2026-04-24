@@ -80,26 +80,34 @@ Both options map an unconstrained real parameter to the interval [0, 1]:
 
 - **`cosine_sq`** — n = cos²(θ).  The gradient transforms as
   dE/dθ = −sin(2θ) · dE/dn.
-- **`logistic`** — n = σ(x) = 1/(1+e^{−x}).  The gradient transforms as
-  dE/dx = n(1−n) · dE/dn.
+- **`logistic`** — for fixed per-state logits x, the solver determines a single
+  global shift μ from the equality constraint and sets
+  n_{ik} = σ(x_{ik} + μ w_k). The root μ is found by bisection so that
+  Σ_k w_k Σ_i n_{ik}(μ) = N_e exactly up to numerical tolerance. The gradient
+  transform is coupled across all occupations because μ depends on the full
+  parameter vector. This parameterisation is intended for
+  `rdmft_constraint = direct_minimization`.
 
 ### Electron-number constraint
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_constraint` | string | `augmented_lagrangian` | `augmented_lagrangian`, `projected_gradient`, `active_set` |
+| `rdmft_constraint` | string | `augmented_lagrangian` | `augmented_lagrangian`, `direct_minimization`, `projected_gradient`, `active_set` |
 
 The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
 
-- **`augmented_lagrangian`** — Adds a penalty λ·c + (μ/2)·c² to the energy.
-  The multiplier λ and penalty μ are updated automatically.  Works well with
-  the cosine_sq or logistic parameterisation where the box constraint [0,1]
-  is already built in.
-- **`projected_gradient`** — After each gradient step, clip occupations to
-  [0,1] and rescale to satisfy the electron-number constraint.  Simple but can
-  be slow to converge.
-- **`active_set`** — Track which occupations are pinned at 0 or 1, solve the
-  reduced equality-constrained problem on the free variables.
+- **`augmented_lagrangian`** — The main ALM path. Uses the cosine-square
+  parameterisation, Armijo backtracking, and updates the multiplier λ and
+  penalty μ automatically.
+- **`direct_minimization`** — Direct line-search minimisation in the logistic
+  parameter space. The global shift μ is solved by bisection at each batch map,
+  so the electron-number constraint is enforced without an ALM penalty term.
+- **`projected_gradient`** — Projected occupation updates in occupation space.
+  Trial steps use Barzilai-Borwein step lengths with backtracking, then clip to
+  [0,1] and re-project to satisfy the electron-number constraint.
+- **`active_set`** — Legacy reduced equality-constrained solver on the free
+  occupations. It remains available, but it is not one of the main recommended
+  paths above.
 
 ### Optimiser selection
 
@@ -159,14 +167,14 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `0.1` | Initial trial step length for the Armijo backtracking line search. The orbital sub-problem uses Armijo only; BB seeding is not used there. |
+| `rdmft_alpha_step` | real | `0.1` | Initial trial step length for line search. The orbital sub-problem uses Armijo only; `direct_minimization` also uses Armijo, while `projected_gradient` uses this value as the fallback BB seed. |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by L-BFGS. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` apply only to the augmented-Lagrangian occupation update. They do not affect orbital optimisation, which always uses Armijo backtracking.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control occupation-space BB step seeding. They affect the augmented-Lagrangian path when BB seeding is enabled and the projected-gradient path, but do not affect orbital optimisation, which always uses Armijo backtracking.
 
 ### Debugging
 

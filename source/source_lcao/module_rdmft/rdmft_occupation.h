@@ -11,6 +11,8 @@
 namespace rdmft
 {
 
+class OccupationConstraint;
+
 /// Parameterization of occupation numbers to enforce box constraint n in [0,1].
 /// Provides mapping from unconstrained parameter to n, and chain-rule Jacobian.
 class OccupationParam
@@ -93,7 +95,37 @@ class OccupationParam
             dE_dp[i] = transform_gradient(dE_dn[i], params[i]);
     }
 
+    /// Batch map used by the solver. For logistic, enforce the equality
+    /// constraint by solving a single global shift mu so that
+    /// sum_k w_k sum_i n_ik(mu) = N_e.
+    void params_to_occ_batch(const std::vector<double>& params,
+                             const OccupationConstraint& constraint,
+                             std::vector<double>& occ) const;
+
+    /// Batch chain rule used by the solver. For logistic with a global mu,
+    /// the Jacobian is dense because mu depends on all parameters; this
+    /// method applies the exact coupled derivative.
+    void transform_gradient_batch_solver(const std::vector<double>& dE_dn,
+                                         const std::vector<double>& params,
+                                         const OccupationConstraint& constraint,
+                                         std::vector<double>& dE_dp) const;
+
   private:
+    static double logistic_sigmoid(double x)
+    {
+        if (x >= 0.0)
+        {
+            const double exp_neg = std::exp(-x);
+            return 1.0 / (1.0 + exp_neg);
+        }
+        const double exp_pos = std::exp(x);
+        return exp_pos / (1.0 + exp_pos);
+    }
+
+    void logistic_params_to_occ_with_mu(const std::vector<double>& params,
+                                        const OccupationConstraint& constraint,
+                                        std::vector<double>& occ) const;
+
     OccParamType type_;
 };
 
@@ -311,6 +343,141 @@ class OccupationConstraint
     double lambda_;
     double mu_;
 };
+
+inline void OccupationParam::params_to_occ_batch(const std::vector<double>& params,
+                                                 const OccupationConstraint& constraint,
+                                                 std::vector<double>& occ) const
+{
+    if (type_ != OccParamType::Logistic)
+    {
+        params_to_occ(params, occ);
+        return;
+    }
+
+    logistic_params_to_occ_with_mu(params, constraint, occ);
+}
+
+inline void OccupationParam::transform_gradient_batch_solver(const std::vector<double>& dE_dn,
+                                                             const std::vector<double>& params,
+                                                             const OccupationConstraint& constraint,
+                                                             std::vector<double>& dE_dp) const
+{
+    if (type_ != OccParamType::Logistic)
+    {
+        transform_gradient_batch(dE_dn, params, dE_dp);
+        return;
+    }
+
+    std::vector<double> occ;
+    logistic_params_to_occ_with_mu(params, constraint, occ);
+
+    dE_dp.assign(dE_dn.size(), 0.0);
+    double sum_w2_a = 0.0;
+    double sum_gwa = 0.0;
+    for (size_t idx = 0; idx < dE_dn.size(); ++idx)
+    {
+        const int ik = static_cast<int>(idx) / constraint.nbands();
+        const double wk = constraint.kweights()[ik];
+        const double a = occ[idx] * (1.0 - occ[idx]);
+        sum_w2_a += wk * wk * a;
+        sum_gwa += dE_dn[idx] * wk * a;
+    }
+
+    if (sum_w2_a <= 1e-18)
+    {
+        return;
+    }
+
+    for (size_t idx = 0; idx < dE_dn.size(); ++idx)
+    {
+        const int ik = static_cast<int>(idx) / constraint.nbands();
+        const double wk = constraint.kweights()[ik];
+        const double a = occ[idx] * (1.0 - occ[idx]);
+        dE_dp[idx] = a * (dE_dn[idx] - wk * sum_gwa / sum_w2_a);
+    }
+}
+
+inline void OccupationParam::logistic_params_to_occ_with_mu(const std::vector<double>& params,
+                                                            const OccupationConstraint& constraint,
+                                                            std::vector<double>& occ) const
+{
+    occ.resize(params.size());
+    if (params.empty())
+    {
+        return;
+    }
+
+    const auto constraint_at_mu = [&](double mu) {
+        double sum = 0.0;
+        for (size_t idx = 0; idx < params.size(); ++idx)
+        {
+            const int ik = static_cast<int>(idx) / constraint.nbands();
+            const double wk = constraint.kweights()[ik];
+            sum += wk * logistic_sigmoid(params[idx] + mu * wk);
+        }
+        return sum - constraint.n_electrons();
+    };
+
+    double mu_lo = -1.0;
+    double mu_hi = 1.0;
+    double f_lo = constraint_at_mu(mu_lo);
+    double f_hi = constraint_at_mu(mu_hi);
+
+    int expand_iter = 0;
+    while (f_lo > 0.0 && expand_iter < 200)
+    {
+        mu_hi = mu_lo;
+        f_hi = f_lo;
+        mu_lo *= 2.0;
+        f_lo = constraint_at_mu(mu_lo);
+        ++expand_iter;
+    }
+    while (f_hi < 0.0 && expand_iter < 200)
+    {
+        mu_lo = mu_hi;
+        f_lo = f_hi;
+        mu_hi *= 2.0;
+        f_hi = constraint_at_mu(mu_hi);
+        ++expand_iter;
+    }
+
+    double mu = 0.0;
+    if (f_lo > 0.0)
+    {
+        mu = mu_lo;
+    }
+    else if (f_hi < 0.0)
+    {
+        mu = mu_hi;
+    }
+    else
+    {
+        for (int iter = 0; iter < 200; ++iter)
+        {
+            mu = 0.5 * (mu_lo + mu_hi);
+            const double f_mid = constraint_at_mu(mu);
+            if (std::abs(f_mid) < 1e-13 || std::abs(mu_hi - mu_lo) < 1e-13)
+            {
+                break;
+            }
+            if (f_mid > 0.0)
+            {
+                mu_hi = mu;
+            }
+            else
+            {
+                mu_lo = mu;
+            }
+        }
+    }
+
+    for (size_t idx = 0; idx < params.size(); ++idx)
+    {
+        const int ik = static_cast<int>(idx) / constraint.nbands();
+        const double wk = constraint.kweights()[ik];
+        occ[idx] = logistic_sigmoid(params[idx] + mu * wk);
+    }
+}
 
 } // namespace rdmft
 

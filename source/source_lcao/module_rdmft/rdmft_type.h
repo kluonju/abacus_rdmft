@@ -39,6 +39,7 @@ enum class OccInitMode
 enum class ConstraintMethod
 {
     AugmentedLagrangian,
+    DirectMinimization,
     ProjectedGradient,
     ActiveSet
 };

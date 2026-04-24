@@ -679,6 +679,9 @@ TEST(RdmftConfigTest, constraint_method_roundtrip)
     cfg.constraint_method = ConstraintMethod::ProjectedGradient;
     EXPECT_EQ(cfg.constraint_method, ConstraintMethod::ProjectedGradient);
 
+    cfg.constraint_method = ConstraintMethod::DirectMinimization;
+    EXPECT_EQ(cfg.constraint_method, ConstraintMethod::DirectMinimization);
+
     cfg.constraint_method = ConstraintMethod::ActiveSet;
     EXPECT_EQ(cfg.constraint_method, ConstraintMethod::ActiveSet);
 
