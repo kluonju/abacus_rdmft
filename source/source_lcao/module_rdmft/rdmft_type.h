@@ -157,7 +157,13 @@ struct RDMFTConfig
     double line_search_alpha_init = 1.0;
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
-    int line_search_max_iter = 30;
+    int line_search_max_iter = 20;
+    /// If true, backtracking after a failed Armijo trial uses a quadratic
+    /// model on the first failure and a cubic on later failures; if false, use
+    /// geometric reduction (multiply by `line_search_rho` only). Polynomial
+    /// suggestions are safeguarded inside the line search (fixed 0.1--0.5 of
+    /// the last failed step; see `armijo_line_search` in `rdmft_optimizer.h`).
+    bool line_search_polynomial = true;
 
     /// ALM occupation line-search seed policy.
     /// When enabled, Armijo starts from a Barzilai-Borwein step estimate

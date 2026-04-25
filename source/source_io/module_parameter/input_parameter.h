@@ -696,6 +696,8 @@ struct Input_para
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     double rdmft_alpha_step = 1.0;                 // initial occupation/orbital line-search step length
+    /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
+    bool rdmft_line_search_polynomial = true;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates

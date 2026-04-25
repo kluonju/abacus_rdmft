@@ -49,12 +49,16 @@ double projected_gradient_map_norm(const std::vector<double>& occ,
                                    const OccupationConstraint& constraint,
                                    const double tau)
 {
+    (void)constraint; // PG/AS use box-only projection in line-search steps.
     std::vector<double> trial(occ.size());
     for (size_t i = 0; i < occ.size(); ++i)
     {
         trial[i] = occ[i] - tau * grad[i];
     }
-    constraint.project(trial);
+    for (auto& n : trial)
+    {
+        n = std::max(0.0, std::min(1.0, n));
+    }
 
     double n2 = 0.0;
     for (size_t i = 0; i < occ.size(); ++i)
@@ -137,7 +141,8 @@ void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
     {
         log_occ_inner_line("      note: table dn compares n to the start of the *previous* inner iteration; "
                            "the first inner lists dn=0 by convention (not the step change). "
-                           "See sum|dn| in the log after each step for |Δn| vs step start.");
+                           "The line sum|dn|_step is the L1 size of the occupation change that step, "
+                           "not the electron total (use sum(w*n) vs N_e on that line for the count).");
     }
     const size_t nrows = static_cast<size_t>(nk) * static_cast<size_t>(nbands);
     if (nrows == 0)
@@ -483,6 +488,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("line_search_c1", as_sci(cfg.line_search_c1));
     add_kv("line_search_rho", as_sci(cfg.line_search_rho));
     add_kv("line_search_max_iter", std::to_string(cfg.line_search_max_iter));
+    add_kv("line_search_polynomial", cfg.line_search_polynomial ? "true" : "false");
     add_kv("lbfgs_memory", std::to_string(cfg.lbfgs_memory));
     add_kv("adam_lr", as_sci(cfg.adam_lr));
     add_kv("joint_orb_scale", as_sci(cfg.joint_orb_scale));
@@ -1448,16 +1454,19 @@ double RDMFTSolver<TK, TR>::solve_joint(
                                       ? 1.0
                                       : config_.line_search_alpha_init;
         double alpha = alpha_init;
+        const double joint_ls_alpha0 = alpha;
         const double c1 = config_.line_search_c1;
         const double rho = config_.line_search_rho;
         double E_new = E;
         bool ls_success = false;
+        int joint_ls_trials = 0;
 
         std::vector<double> occ_flat_new;
         std::vector<double> params_new(params.size());
 
         for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
         {
+            joint_ls_trials = ls + 1;
             if (step_orbitals)
             {
                 // Roll back orbitals and retract along +alpha * orb_dir.
@@ -1482,6 +1491,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
             alpha *= rho;
         }
 
+        if (ls_success)
+        {
+            GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
+                << "  line search (joint Armijo): alpha_init=" << std::scientific << joint_ls_alpha0
+                << " step=" << alpha << " n_trial=" << joint_ls_trials << "  E0=" << E
+                << " E1=" << E_new << "  dd=" << dd_total << "  c1=" << std::defaultfloat << c1
+                << " rho=" << rho << "  step_orb=" << (step_orbitals ? 1 : 0) << std::endl;
+        }
+
         if (!ls_success)
         {
             // Line search failed: roll back, restart the optimiser state and
@@ -1497,8 +1515,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
             joint_opt.init(packed_size);
 
-            GlobalV::ofs_running << "  RDMFT joint-iter " << iter + 1
-                << "  line search failed, restarting optimiser state" << std::endl;
+            GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
+                << "  line search (joint Armijo) failed: alpha_init=" << std::scientific << joint_ls_alpha0
+                << " last_alpha=" << alpha << " n_trial=" << joint_ls_trials << "  E_last=" << E_new
+                << std::defaultfloat << ", restarting optimiser state" << std::endl;
             E_prev = E;
             continue;
         }
@@ -1589,7 +1609,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
             << "  E = " << E_new
             << "  dE = " << std::scientific << dE
             << "  alpha = " << alpha
-            << "  sum|dn| = " << sum_abs_dn_joint
+            << "  sum|dn|_step (L1) = " << sum_abs_dn_joint
+            << "  sum(w*n) = " << occ_constraint_->weighted_occupation_sum(occ_flat)
+            << "  N_e = " << n_electrons_
             << "  |grad_occ| = " << gnorm_occ
             << "  |grad_orb| = " << gnorm_orb
             << "  |grad_total| = " << gnorm_total
@@ -1793,7 +1815,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         ? bb_step.suggest(params, grad_params, config_.line_search_alpha_init)
                         : config_.line_search_alpha_init,
                     config_.line_search_c1,
-                    config_.line_search_rho, config_.line_search_max_iter);
+                    config_.line_search_rho,
+                    config_.line_search_max_iter,
+                    config_.line_search_polynomial);
+
+                GlobalV::ofs_running << "      occ line search (ALM Armijo): alpha_init=" << std::scientific
+                    << ls.alpha_init << " step=" << ls.step << " n_feval=" << ls.n_feval << "  L0=" << L
+                    << " L1=" << ls.f_new << " dd=" << dd << "  c1=" << std::defaultfloat
+                    << config_.line_search_c1 << " rho=" << config_.line_search_rho
+                    << (ls.success ? "  ok" : "  fail") << std::endl;
 
                 std::vector<double> step_vec(params.size());
                 for (size_t i = 0; i < params.size(); ++i)
@@ -1827,8 +1857,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                         occ_flat, nk_, nbands_);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
-                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
-                    << std::endl;
+                GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
+                    << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                    << "  N_e=" << n_electrons_ << std::endl;
                 if (occ_inner_should_stop(sum_abs_dn,
                         config_.rdmft_occ_tol))
                 {
@@ -1928,40 +1959,46 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         dir[i] = -grad_occ[i];
                 }
 
-                // BB step with monotone backtracking and projection.
+                // BB step with monotone backtracking and box clipping.
                 const std::vector<double> occ_before_step(occ_flat);
-                double alpha = bb_step.suggest(occ_flat, grad_occ, config_.line_search_alpha_init);
+                const double alpha_pg0 = bb_step.suggest(occ_flat, grad_occ, config_.line_search_alpha_init);
+                double alpha = alpha_pg0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 double E_after = E;
-                // Tolerance for the electron-number constraint after projection.
-                const double proj_constraint_tol = 1e-6;
-
+                int pg_ls_trial = 0;
+                double pg_step_acc = 0.0;
+                double E_last_trial = E;
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
+                    pg_ls_trial = ls + 1;
+                    const double alpha_try = alpha;
                     occ_trial = occ_flat;
                     for (size_t i = 0; i < occ_trial.size(); ++i)
                         occ_trial[i] += alpha * dir[i];
-                    occ_constraint_->project(occ_trial);
-
-                    // Reject if the projection failed to satisfy the constraint
-                    // (occurs when too many occupations clip to 0 or 1).
-                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                    for (auto& n : occ_trial)
                     {
-                        alpha *= config_.line_search_rho;
-                        continue;
+                        n = std::max(0.0, std::min(1.0, n));
                     }
 
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                    E_last_trial = E_trial;
                     if (E_trial < E)
                     {
                         E_after = E_trial;
+                        pg_step_acc = alpha_try;
                         ls_success = true;
                         break;
                     }
                     alpha *= config_.line_search_rho;
                 }
+
+                GlobalV::ofs_running << "      occ line search (PG backtrack): alpha_init=" << std::scientific
+                    << alpha_pg0 << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
+                    << " E0=" << E << " E_trial=" << E_last_trial << "  rho=" << std::defaultfloat
+                    << config_.line_search_rho
+                    << (ls_success ? "  ok" : "  fail") << std::endl;
 
                 if (ls_success)
                 {
@@ -1999,8 +2036,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                         occ_flat, nk_, nbands_);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
-                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
-                    << std::endl;
+                GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
+                    << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                    << "  N_e=" << n_electrons_ << std::endl;
                 const double pg_stop_norm = projected_gradient_map_norm(
                     occ_flat, new_grad_occ, *occ_constraint_, config_.line_search_alpha_init);
                 GlobalV::ofs_running << "      PG stop-check: pg_map_norm=" << std::scientific
@@ -2146,33 +2184,27 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         if (!as_info.is_free[idx]) dir[idx] = 0.0;
                 }
 
-                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1)
-                // then project (rescale) to restore the equality constraint.
+                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1).
                 const std::vector<double> occ_before_step(occ_flat);
-                double alpha = config_.line_search_alpha_init;
+                const double as_alpha0 = config_.line_search_alpha_init;
+                double alpha = as_alpha0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 double E_after = E;
-                // Tolerance for the electron-number constraint after projection.
-                const double proj_constraint_tol = 1e-6;
-
+                int as_ls_trial = 0;
+                double as_step_acc = 0.0;
+                double as_dd_proj_acc = 0.0;
+                double E_last_trial = E;
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
+                    as_ls_trial = ls + 1;
+                    const double alpha_try = alpha;
                     occ_trial = occ_flat;
                     for (size_t i = 0; i < occ_trial.size(); ++i)
                         occ_trial[i] += alpha * dir[i];
                     // Clip to [0,1].
                     for (auto& n : occ_trial)
                         n = std::max(0.0, std::min(1.0, n));
-                    // Rescale to preserve the electron number.
-                    occ_constraint_->project(occ_trial);
-
-                    // Reject if the projection failed to satisfy the constraint.
-                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                    {
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
 
                     double dd_proj = 0.0;
                     for (size_t i = 0; i < occ_flat.size(); ++i)
@@ -2186,13 +2218,31 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                    E_last_trial = E_trial;
                     if (E_trial <= E + config_.line_search_c1 * dd_proj)
                     {
                         E_after = E_trial;
+                        as_step_acc = alpha_try;
+                        as_dd_proj_acc = dd_proj;
                         ls_success = true;
                         break;
                     }
                     alpha *= config_.line_search_rho;
+                }
+
+                {
+                    std::ostringstream as_ls;
+                    as_ls << "      occ line search (AS Armijo): alpha_init=" << std::scientific << as_alpha0
+                          << " step=" << (ls_success ? as_step_acc : 0.0) << " n_trial=" << as_ls_trial
+                          << " E0=" << E << " E_trial=" << E_last_trial;
+                    if (ls_success)
+                    {
+                        as_ls << " dTw=" << as_dd_proj_acc
+                              << " E0+c1*dTw=" << E + config_.line_search_c1 * as_dd_proj_acc;
+                    }
+                    as_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
+                          << " rho=" << config_.line_search_rho << (ls_success ? "  ok" : "  fail");
+                    log_occ_inner_line(as_ls.str());
                 }
 
                 if (ls_success)
@@ -2207,7 +2257,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         occ_flat[i] -= config_.line_search_alpha_init * grad_mod[i];
                     for (auto& n : occ_flat)
                         n = std::max(0.0, std::min(1.0, n));
-                    occ_constraint_->project(occ_flat);
                     as_opt.init(static_cast<int>(occ_flat.size()));
                     prev_n_active = -1;
                     GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)
@@ -2238,8 +2287,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                         occ_flat, nk_, nbands_);
 
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
-                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
-                    << std::endl;
+                GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
+                    << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                    << "  N_e=" << n_electrons_ << std::endl;
 
                 // KKT-style stopping checks (as in derivation notes):
                 // primal feasibility + free-set stationarity + complementarity.

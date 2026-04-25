@@ -118,14 +118,21 @@ class OccupationConstraint
 
     ConstraintMethod method() const { return method_; }
 
-    /// Constraint violation: c(n) = sum_k w_k sum_i n_ik - N_e
-    double constraint_violation(const std::vector<double>& occ) const
+    /// Weighted occupation total: sum_k w_k sum_i n_ik (same sum as in the constraint).
+    double weighted_occupation_sum(const std::vector<double>& occ) const
     {
+        assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
         double sum = 0.0;
         for (int ik = 0; ik < nk_; ++ik)
             for (int i = 0; i < nbands_; ++i)
                 sum += kweights_[ik] * occ[ik * nbands_ + i];
-        return sum - n_electrons_;
+        return sum;
+    }
+
+    /// Constraint violation: c(n) = sum_k w_k sum_i n_ik - N_e
+    double constraint_violation(const std::vector<double>& occ) const
+    {
+        return weighted_occupation_sum(occ) - n_electrons_;
     }
 
     /// Augmented Lagrangian penalty: lambda*c + mu/2*c^2

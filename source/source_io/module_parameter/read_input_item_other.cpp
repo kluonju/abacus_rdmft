@@ -1300,6 +1300,20 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_line_search_polynomial");
+        item.annotation = "Use polynomial (quadratic/cubic) step in RDMFT Armijo line search";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, after a failed Armijo trial the next step is suggested by a "
+                           "quadratic model (first failure) and a cubic (later failures) along the "
+                           "line; if false, use geometric reduction (multiply by rdmft_line_search_rho).";
+        item.default_value = "true";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_line_search_polynomial);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_alm_bb_enabled");
         item.annotation = "Enable Barzilai-Borwein step seed for ALM occupations";
         item.category = "Reduced Density Matrix Functional Theory";
