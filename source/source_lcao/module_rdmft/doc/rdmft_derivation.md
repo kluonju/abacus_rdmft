@@ -386,31 +386,73 @@ Perform gradient descent on $n_{i\mathbf{k}}$ and project back onto the feasible
 
 Overview:
 
-- Take an (unconstrained) gradient step for the occupations and then project the
-   candidate back onto the convex feasible set defined by the box bounds $[0,1]$
-   and the electron-number simplex. This is simple, robust and easy to implement.
+- Take an (unconstrained) gradient step for the occupations and then apply the
+  **Euclidean** projection of the trial vector onto the closed convex set
+  $\mathcal{C}$ (box + one linear equality). This is the standard projected
+  gradient (PG) map $n \mapsto P_{\mathcal{C}}(n - \alpha \nabla E)$ and, for
+  smooth $E$ and convex $\mathcal{C}$, is supported by the usual PG
+  convergence theory.
 
 Basic iterate:
 
 $$
-y = n^{(t)} - \alpha_t \, \nabla_n E(n^{(t)}),\qquad
-n^{(t+1)} = P_{\mathcal{C}}(y)
+\mathbf{x} = \mathbf{n}^{(t)} - \alpha_t \, \nabla_{\mathbf{n}} E(\mathbf{n}^{(t)}),\qquad
+\mathbf{n}^{(t+1)} = P_{\mathcal{C}}(\mathbf{x})
 $$
 
-where $P_{\mathcal{C}}$ denotes projection onto the feasible set
-$$\mathcal{C} = \{n:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\}.$$ 
+where $P_{\mathcal{C}}$ denotes the **Euclidean** projection onto
+$$\mathcal{C} = \left\{\mathbf{n}:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\right\}.$$ 
 
-Projection strategies:
+**Closed form of $P_{\mathcal{C}}$.**  The projection is the unique minimizer
+$$
+P_{\mathcal{C}}(\mathbf{x})
+= \arg\min_{\mathbf{y}} \; \tfrac{1}{2} \lVert \mathbf{y} - \mathbf{x} \rVert_2^2
+\quad \text{s.t.} \quad
+\sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i y_{i\mathbf{k}} = N_e,\; 0 \le y_{i\mathbf{k}} \le 1.
+$$
+The equality is linear and the normal direction is the same for all bands at a
+given $\mathbf{k}$: $(\nabla_{\mathbf{n}} c)_i = w_{\mathbf{k}}$.  Writing KKT
+conditions (one scalar Lagrange multiplier $\lambda$ for the equality) yields the
+**shifted clipping** form
+$$
+y_{i\mathbf{k}}(\lambda)
+= \min\bigl(1, \max(0, x_{i\mathbf{k}} - \lambda  w_{\mathbf{k}}) \bigr),
+$$
+and the scalar $\lambda$ is fixed by the scalar equation
+$$
+\sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i y_{i\mathbf{k}}(\lambda) = N_e.
+$$
+The left-hand side is a **non-increasing, piecewise-linear** function of
+$\lambda$, so a bracket followed by **bisection** (or a monotone 1D root find)
+gives $\lambda$ efficiently.  (This is the correct PG projection; it is **not**
+the same as “clip then multiplicatively rescale” free components: that rescaling
+is a different feasible repair, not the Euclidean foot point.)  The feasible
+range of the weighted sum is
+$\bigl[0,\; \sum_{\mathbf{k}} w_{\mathbf{k}} N_b\bigr]$
+with $N_b$ the number of bands per $\mathbf{k}$; if $N_e$ lies outside, the
+constraint set is empty and no exact projection exists.
 
-- Box-only projection: clip each component into $[0,1]$.
-- Simplex projection (fixed sum): when enforcing the sum constraint together with
-   non-negativity, use the O(n log n) sort-and-shift algorithm: find $\theta$ such
-   that $\sum_i \max(y_i - \theta,0) = s$ (here $s = N_e$ after absorbing weights),
-   then set $n_i = \max(y_i - \theta,0)$.
-- Combined approach: project first to $[0,1]$ then project to the weighted simplex
-   (with k-point weights included). If rescaling to enforce the sum violates
-   bounds, re-project and iterate; in practice the sort-and-shift simplex projection
-   that respects bounds is preferred.
+*Remark (implementation).*  The exact map uses the **raw** trial
+$\mathbf{x}$ in
+$y_{i\mathbf{k}}=\min(1,\max(0, x_{i\mathbf{k}} - \lambda w_{\mathbf{k}}))$.
+The helper `project` in `rdmft_occupation.h` first clips `occ` to $[0,1]$ and
+then solves for $\lambda$ with that clipped vector as the “shifted”
+reference.  If all components of $\mathbf{x}$ are already in $[0,1]$, the two
+agree; if not, a fully faithful PG should apply the single $\lambda$ rule to
+the **un**clipped step output first (then the trial already lies in
+$\mathcal{C}$ when feasible after backtracking).
+
+**Optional approximations (not the Euclidean projector):**
+
+- **Box only:**  $y_{i\mathbf{k}} = \min(1,\max(0, x_{i\mathbf{k}}))$ — does not
+  enforce the electron sum.
+- **Sort-and-shift on a vector:**  standard $O(m\log m)$ simplex algorithms apply
+  to $\sum_i z_i = \text{const}$ with $z_i \ge 0$ (one multiplier per
+  *component*).  Here the constraint ties **all** $(i,\mathbf{k})$ through
+  $w_{\mathbf{k}}$ in the *same* way for every band at $\mathbf{k}$, so the
+  correct projector is the single-$\lambda$ clipping form above, not a
+  per-dimension water-filling sort unless the problem is reparameterized
+  accordingly.
 
 Step-size and line-search:
 
@@ -428,23 +470,28 @@ Stopping criteria (recommended):
 Numerical tips and implementation notes:
 
 - Use analytic gradients $\partial E/\partial n$; finite differences are costly.
-- For the weighted k-point sum include factors $w_{\mathbf{k}}$ inside the projection
-   (i.e. project onto the weighted simplex). Implement the simplex projection with
-   collapsed index $I=(i,\mathbf{k})$ if convenient.
+- Implement the $\lambda$ subproblem in the shift–clip form above (bisection
+  on a monotone function of $\lambda$); the inner routine is
+  `OccupationConstraint::rescale_to_nel` in
+  `source/source_lcao/module_rdmft/rdmft_occupation.h`, and `project` first
+  clips the vector to the box then calls that routine.  PG/AS line searches in
+  `rdmft_solver.cpp` use `project` on the trial occupation vector; see the
+  remark in §6.2 if the raw trial can leave the box.
 - If many occupations are interior (not at bounds), projected gradient is efficient.
 - If orthonormal orbitals are optimized concurrently, use separate step sizes for
    orbitals and occupations or alternate updates (block coordinate style).
 - For orbital constraints (Stiefel), prefer Riemannian retraction (QR or polar)
    rather than Euclidean clipping; see §5.4.
 
-Pseudocode (projected gradient on weighted simplex, neglecting spin labels):
+Pseudocode (projected gradient with Euclidean projection onto $\mathcal{C}$,
+neglecting spin labels):
 
 ```text
 initialize n with feasible guess
 for t = 0..maxiter:
    g = grad_n(E, n)
    y = n - alpha * g
-   n_next = project_weighted_simplex_and_bounds(y, w, N_e)
+   n_next = euclidean_project_box_and_weighted_sum(y, w, N_e)   // clip + λ bisection
    if ||n_next - n|| < tol: break
    n = n_next
 end

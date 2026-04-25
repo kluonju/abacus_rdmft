@@ -49,16 +49,12 @@ double projected_gradient_map_norm(const std::vector<double>& occ,
                                    const OccupationConstraint& constraint,
                                    const double tau)
 {
-    (void)constraint; // PG/AS use box-only projection in line-search steps.
     std::vector<double> trial(occ.size());
     for (size_t i = 0; i < occ.size(); ++i)
     {
         trial[i] = occ[i] - tau * grad[i];
     }
-    for (auto& n : trial)
-    {
-        n = std::max(0.0, std::min(1.0, n));
-    }
+    constraint.project(trial);
 
     double n2 = 0.0;
     for (size_t i = 0; i < occ.size(); ++i)
@@ -1959,7 +1955,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         dir[i] = -grad_occ[i];
                 }
 
-                // BB step with monotone backtracking and box clipping.
+                // BB step with monotone backtracking and projection.
                 const std::vector<double> occ_before_step(occ_flat);
                 const double alpha_pg0 = bb_step.suggest(occ_flat, grad_occ, config_.line_search_alpha_init);
                 double alpha = alpha_pg0;
@@ -1969,6 +1965,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 int pg_ls_trial = 0;
                 double pg_step_acc = 0.0;
                 double E_last_trial = E;
+                // Tolerance for the electron-number constraint after projection.
+                const double proj_constraint_tol = 1e-6;
+
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
                     pg_ls_trial = ls + 1;
@@ -1976,9 +1975,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     occ_trial = occ_flat;
                     for (size_t i = 0; i < occ_trial.size(); ++i)
                         occ_trial[i] += alpha * dir[i];
-                    for (auto& n : occ_trial)
+                    occ_constraint_->project(occ_trial);
+
+                    // Reject if the projection failed to satisfy the constraint
+                    // (occurs when too many occupations clip to 0 or 1).
+                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
                     {
-                        n = std::max(0.0, std::min(1.0, n));
+                        alpha *= config_.line_search_rho;
+                        continue;
                     }
 
                     const double E_trial = energy_grad_->compute_energy(
@@ -2184,7 +2188,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         if (!as_info.is_free[idx]) dir[idx] = 0.0;
                 }
 
-                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1).
+                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1)
+                // then project (rescale) to restore the equality constraint.
                 const std::vector<double> occ_before_step(occ_flat);
                 const double as_alpha0 = config_.line_search_alpha_init;
                 double alpha = as_alpha0;
@@ -2195,6 +2200,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double as_step_acc = 0.0;
                 double as_dd_proj_acc = 0.0;
                 double E_last_trial = E;
+                // Tolerance for the electron-number constraint after projection.
+                const double proj_constraint_tol = 1e-6;
+
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
                     as_ls_trial = ls + 1;
@@ -2205,6 +2213,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     // Clip to [0,1].
                     for (auto& n : occ_trial)
                         n = std::max(0.0, std::min(1.0, n));
+                    // Rescale to preserve the electron number.
+                    occ_constraint_->project(occ_trial);
+
+                    // Reject if the projection failed to satisfy the constraint.
+                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                    {
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
 
                     double dd_proj = 0.0;
                     for (size_t i = 0; i < occ_flat.size(); ++i)
@@ -2257,6 +2274,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         occ_flat[i] -= config_.line_search_alpha_init * grad_mod[i];
                     for (auto& n : occ_flat)
                         n = std::max(0.0, std::min(1.0, n));
+                    occ_constraint_->project(occ_flat);
                     as_opt.init(static_cast<int>(occ_flat.size()));
                     prev_n_active = -1;
                     GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)

@@ -252,70 +252,112 @@ class OccupationConstraint
     const std::vector<double>& kweights() const { return kweights_; }
 
   private:
-    // Project occupations onto the electron-number equality constraint
-    // sum_k w_k * sum_i n_ki = N_e while keeping each n_ki in [0, 1].
-    //
-    // Algorithm: iterative water-filling.  In each pass, identify the
-    // "free" occupations (not yet saturated at 0 or 1), compute the
-    // ratio needed to bring their weighted sum to the remaining target,
-    // scale them, and re-clip.  Repeat until convergence.  This handles
-    // the case where a naive single-pass rescale would push values above
-    // the upper bound.
+    // Project occupations onto
+    //   sum_k w_k * sum_i n_ki = N_e,  0 <= n_ki <= 1
+    // by solving the 1D dual variable lambda:
+    //   n_ki(lambda) = clip(n_ki^tmp - lambda * w_k, 0, 1).
+    // The weighted sum is monotone decreasing in lambda, so we bracket
+    // and solve by bisection.
     void rescale_to_nel(std::vector<double>& occ) const
     {
-        const int N = static_cast<int>(occ.size());
-        const double tol = 1e-13;
-        const int max_iter = N + 4;   // at most N bands can saturate
+        assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
+        for (auto& n : occ)
+            n = std::max(0.0, std::min(1.0, n));
 
-        for (int it = 0; it < max_iter; ++it)
+        const double target = n_electrons_;
+        const double tol_sum = 1e-12;
+        const std::vector<double> occ_tmp(occ);
+
+        auto weighted_sum_from_lambda = [&](double lambda)
         {
-            // Current weighted sum and the contribution of free values.
-            double current = 0.0;
-            double free_sum = 0.0;
-
+            double sum = 0.0;
             for (int ik = 0; ik < nk_; ++ik)
                 for (int i = 0; i < nbands_; ++i)
                 {
-                    double n = occ[ik * nbands_ + i];
-                    double w = kweights_[ik];
-                    current += w * n;
-                    if (n > tol && n < 1.0 - tol)
-                        free_sum += w * n;
+                    const double w = kweights_[ik];
+                    const double n = occ_tmp[ik * nbands_ + i];
+                    const double y = std::max(0.0, std::min(1.0, n - lambda * w));
+                    sum += w * y;
                 }
+            return sum;
+        };
 
-            if (std::abs(current - n_electrons_) < 1e-12)
-                return;   // already satisfied
+        const double sum0 = weighted_sum_from_lambda(0.0);
+        if (std::abs(sum0 - target) < tol_sum)
+            return;
 
-            if (free_sum < 1e-15)
+        double lam_lo = 0.0;
+        double lam_hi = 0.0;
+        double sum_lo = sum0;
+        double sum_hi = sum0;
+        const double expand_max = 1e12;
+
+        if (sum0 > target)
+        {
+            lam_hi = 1.0;
+            sum_hi = weighted_sum_from_lambda(lam_hi);
+            while (sum_hi > target && lam_hi < expand_max)
             {
-                GlobalV::ofs_running << "WARNING: RDMFT rescale_to_nel: all occupations are"
-                    " saturated at 0 or 1; electron-number constraint cannot be enforced."
-                    " current_sum=" << current << ", target=" << n_electrons_ << std::endl;
-                return;   // all bands pinned; constraint cannot be enforced
+                lam_hi *= 2.0;
+                sum_hi = weighted_sum_from_lambda(lam_hi);
             }
+        }
+        else
+        {
+            lam_lo = -1.0;
+            sum_lo = weighted_sum_from_lambda(lam_lo);
+            while (sum_lo < target && std::abs(lam_lo) < expand_max)
+            {
+                lam_lo *= 2.0;
+                sum_lo = weighted_sum_from_lambda(lam_lo);
+            }
+        }
 
-            // Target for the free values.
-            double target_free = n_electrons_ - (current - free_sum);
-            double ratio = target_free / free_sum;
-
-            bool any_clipped = false;
+        if (!(sum_lo >= target && sum_hi <= target))
+        {
+            const double infeas_hi = weighted_sum_from_lambda(-expand_max);
+            const double infeas_lo = weighted_sum_from_lambda(+expand_max);
+            GlobalV::ofs_running << "WARNING: RDMFT rescale_to_nel: cannot bracket lambda for projection."
+                                 << " target=" << target
+                                 << " reachable_range=[" << infeas_lo << ", " << infeas_hi << "]"
+                                 << std::endl;
+            const double lambda = (std::abs(target - infeas_lo) < std::abs(target - infeas_hi)) ? expand_max : -expand_max;
             for (int ik = 0; ik < nk_; ++ik)
                 for (int i = 0; i < nbands_; ++i)
                 {
-                    double& n = occ[ik * nbands_ + i];
-                    if (n > tol && n < 1.0 - tol)
-                    {
-                        n *= ratio;
-                        double n_clipped = std::max(0.0, std::min(1.0, n));
-                        if (std::abs(n_clipped - n) > 1e-14)
-                            any_clipped = true;
-                        n = n_clipped;
-                    }
+                    const double w = kweights_[ik];
+                    occ[ik * nbands_ + i] = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - lambda * w));
                 }
-
-            if (!any_clipped)
-                return;   // no saturation → done after one pass
+            return;
         }
+
+        for (int it = 0; it < 100; ++it)
+        {
+            const double lam_mid = 0.5 * (lam_lo + lam_hi);
+            const double sum_mid = weighted_sum_from_lambda(lam_mid);
+            if (std::abs(sum_mid - target) < tol_sum)
+            {
+                lam_lo = lam_mid;
+                lam_hi = lam_mid;
+                break;
+            }
+            if (sum_mid > target)
+            {
+                lam_lo = lam_mid;
+            }
+            else
+            {
+                lam_hi = lam_mid;
+            }
+        }
+
+        const double lambda = 0.5 * (lam_lo + lam_hi);
+        for (int ik = 0; ik < nk_; ++ik)
+            for (int i = 0; i < nbands_; ++i)
+            {
+                const double w = kweights_[ik];
+                occ[ik * nbands_ + i] = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - lambda * w));
+            }
     }
 
     ConstraintMethod method_;
