@@ -63,7 +63,9 @@ void RDMFT<TK, TR>::update_elec(UnitCell& ucell,
         for(int inb=0; inb < wg.nc; ++inb)
         {
             wg(ik, inb) *= kv->wk[ik];
-            wk_fun_occNum(ik, inb) = kv->wk[ik] * occNum_func(occ_number(ik, inb), 2, XC_func_rdmft, alpha_power);
+            wk_fun_occNum(ik, inb) = kv->wk[ik]
+                                     * occNum_func(occ_number(ik, inb), OccWeightMode::Coupling, XC_func_rdmft,
+                                                    alpha_power);
         }
     }
 
@@ -144,7 +146,9 @@ void RDMFT<TK, TR>::update_occNumber(const ModuleBase::matrix& occ_number_in)
         for(int inb=0; inb < wg.nc; ++inb)
         {
             wg(ik, inb) *= kv->wk[ik];
-            wk_fun_occNum(ik, inb) = kv->wk[ik] * occNum_func(occ_number(ik, inb), 2, XC_func_rdmft, alpha_power);
+            wk_fun_occNum(ik, inb) = kv->wk[ik]
+                                     * occNum_func(occ_number(ik, inb), OccWeightMode::Coupling, XC_func_rdmft,
+                                                    alpha_power);
         }
     }
 }
@@ -160,7 +164,9 @@ void RDMFT<TK, TR>::update_wg(const ModuleBase::matrix& wg_in)
         for(int inb=0; inb < wg.nc; ++inb)
         {
             occ_number(ik, inb) /= kv->wk[ik];
-            wk_fun_occNum(ik, inb) = kv->wk[ik] * occNum_func(occ_number(ik, inb), 2, XC_func_rdmft, alpha_power);
+            wk_fun_occNum(ik, inb) = kv->wk[ik]
+                                     * occNum_func(occ_number(ik, inb), OccWeightMode::Coupling, XC_func_rdmft,
+                                                    alpha_power);
         }
     }
 }

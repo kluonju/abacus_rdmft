@@ -28,7 +28,7 @@ void RDMFT<TK, TR>::get_DM_XC(std::vector< std::vector<TK> >& DM_XC)
     // get wk_funEta_wfc = wk*g(eta)*conj(wfc)
     psi::Psi<TK> wk_funEta_wfc(wfc);
     conj_psi(wk_funEta_wfc);
-    occNum_MulPsi(ParaV, wk_fun_occNum, wk_funEta_wfc, 0);
+    occNum_MulPsi(ParaV, wk_fun_occNum, wk_funEta_wfc, OccWeightMode::Occupation);
 
     // get the special DM_XC used in constructing V_exx_XC
     for(int ik=0; ik<wfc.get_nk(); ++ik)
