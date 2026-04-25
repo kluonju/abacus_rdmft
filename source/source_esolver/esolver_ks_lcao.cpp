@@ -595,6 +595,12 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
+        if (inp.rdmft_occ_ls_init_step == "fixed")
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::FixedOne;
+        else if (inp.rdmft_occ_ls_init_step == "quad")
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::Quadratic;
+        else
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::BarzilaiBorwein;
         rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")

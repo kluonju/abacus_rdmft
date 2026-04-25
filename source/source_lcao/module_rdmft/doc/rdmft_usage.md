@@ -98,8 +98,10 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
   (`rdmft_occ_param` = `cosine_sq` or `logistic`), Armijo backtracking, and
   automatic updates of λ and μ.
 - **`projected_gradient`** — Projected occupation updates in occupation space.
-  Trial steps use Barzilai-Borwein step lengths with backtracking, then clip to
-  [0,1] and re-project to satisfy the electron-number constraint.
+  Trial steps use a configurable initial line-search step (`rdmft_occ_ls_init_step`:
+  fixed 1.0, Barzilai–Borwein seed, or quadratic interpolation from the previous
+  inner trial) with backtracking, then clip to [0,1] and re-project to satisfy
+  the electron-number constraint.
 - **`active_set`** — Legacy reduced equality-constrained solver on the free
   occupations. It remains available, but it is not one of the main recommended
   paths above.
@@ -163,14 +165,15 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Initial trial step length for line search. The orbital sub-problem uses Armijo only; augmented Lagrangian occupations use Armijo; `projected_gradient` uses this value as the fallback BB seed. |
+| `rdmft_alpha_step` | real | `1.0` | Default / fallback trial step for RDMFT line searches. Orbitals (Armijo) use it for non–quasi-Newton optimisers. Occupation sub-problems use it as fallback when `rdmft_occ_ls_init_step` does not apply (e.g. quadratic init before the first trial is available). |
+| `rdmft_occ_ls_init_step` | string | `bb` | Occupation line-search **first trial** step: `fixed` (always 1.0), `bb` (Barzilai–Borwein estimate; uses `rdmft_alm_bb_*` clamps), or `quad` (quadratic interpolation from the previous inner iteration’s first energy trial). Used for `projected_gradient` and `active_set`. |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by L-BFGS. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control occupation-space BB step seeding. They affect the augmented-Lagrangian path when BB seeding is enabled and the projected-gradient path, but do not affect orbital optimisation, which always uses Armijo backtracking.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true) and bound the BB branch of `rdmft_occ_ls_init_step = bb`. Orbital optimisation always uses Armijo backtracking and does not read `rdmft_occ_ls_init_step`.
 
 ### Debugging
 

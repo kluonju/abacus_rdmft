@@ -68,6 +68,14 @@ enum class BBStepMode
     Alternate
 };
 
+/// Initial trial-step policy for occupation Armijo line search.
+enum class LineSearchInitStep
+{
+    FixedOne,          // always alpha0 = 1.0
+    BarzilaiBorwein,   // alpha0 from BB estimate (fallback to line_search_alpha_init)
+    Quadratic          // alpha0 from previous-step quadratic model (fallback when unavailable)
+};
+
 /// Selects which occupation-number weighting is applied by occNum_func /
 /// occNum_MulPsi / occNum_Mul_wfcHwfc.
 ///
@@ -164,6 +172,7 @@ struct RDMFTConfig
     /// suggestions are safeguarded inside the line search (fixed 0.1--0.5 of
     /// the last failed step; see `armijo_line_search` in `rdmft_optimizer.h`).
     bool line_search_polynomial = true;
+    LineSearchInitStep occ_line_search_init_step = LineSearchInitStep::BarzilaiBorwein;
 
     /// ALM occupation line-search seed policy.
     /// When enabled, Armijo starts from a Barzilai-Borwein step estimate

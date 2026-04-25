@@ -1300,6 +1300,31 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_ls_init_step");
+        item.annotation = "Occupation Armijo initial-step policy: fixed, bb, quad";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Initial trial alpha for occupation line search: "
+                           "fixed (always 1.0), bb (Barzilai-Borwein estimate), "
+                           "quad (quadratic estimate from previous accepted step).";
+        item.default_value = "bb";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_occ_ls_init_step);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_occ_ls_init_step;
+                if (s != "fixed" && s != "bb" && s != "quad")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_occ_ls_init_step must be one of: fixed, bb, quad");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_line_search_polynomial");
         item.annotation = "Use polynomial (quadratic/cubic) step in RDMFT Armijo line search";
         item.category = "Reduced Density Matrix Functional Theory";

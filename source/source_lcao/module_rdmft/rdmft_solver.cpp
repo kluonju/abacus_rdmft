@@ -91,6 +91,50 @@ double active_set_dual_complementarity_violation(const std::vector<double>& grad
     return max_violation;
 }
 
+struct QuadInitHistory
+{
+    bool valid = false;
+    double alpha = 0.0;
+    double f0 = 0.0;
+    double f1 = 0.0;
+    double dd0 = 0.0;
+};
+
+double choose_occ_ls_alpha0(const RDMFTConfig& cfg,
+                            const std::vector<double>& x,
+                            const std::vector<double>& g,
+                            const BarzilaiBorweinStep* bb_step,
+                            const QuadInitHistory& qhist)
+{
+    switch (cfg.occ_line_search_init_step)
+    {
+        case LineSearchInitStep::FixedOne:
+            return 1.0;
+        case LineSearchInitStep::BarzilaiBorwein:
+            if (bb_step != nullptr)
+                return bb_step->suggest(x, g, cfg.line_search_alpha_init);
+            return cfg.line_search_alpha_init;
+        case LineSearchInitStep::Quadratic:
+        {
+            if (qhist.valid && qhist.alpha > 0.0 && qhist.dd0 < 0.0)
+            {
+                const double denom = 2.0 * (qhist.f1 - qhist.f0 - qhist.dd0 * qhist.alpha);
+                if (std::abs(denom) > 1e-16 * (1.0 + std::abs(qhist.dd0 * qhist.alpha)))
+                {
+                    double a = -qhist.dd0 * qhist.alpha * qhist.alpha / denom;
+                    if (std::isfinite(a) && a > 0.0)
+                    {
+                        a = std::max(cfg.alm_bb_alpha_min, std::min(cfg.alm_bb_alpha_max, a));
+                        return a;
+                    }
+                }
+            }
+            return cfg.line_search_alpha_init;
+        }
+    }
+    return cfg.line_search_alpha_init;
+}
+
 int find_fermi_boundary_index(const std::vector<double>& occ_flat,
                               const int ik,
                               const int nbands)
@@ -423,6 +467,17 @@ std::string bb_mode_to_string(const BBStepMode m)
     return "unknown";
 }
 
+std::string occ_ls_init_to_string(const LineSearchInitStep m)
+{
+    switch (m)
+    {
+        case LineSearchInitStep::FixedOne: return "fixed";
+        case LineSearchInitStep::BarzilaiBorwein: return "bb";
+        case LineSearchInitStep::Quadratic: return "quad";
+    }
+    return "unknown";
+}
+
 void print_rdmft_run_config(const RDMFTConfig& cfg,
                             const int nk,
                             const int nbands,
@@ -477,6 +532,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
     add_kv("rdmft_occ_init_perturb", as_sci(cfg.occ_init_perturb));
     add_kv("rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
+    add_kv("rdmft_occ_ls_init_step", occ_ls_init_to_string(cfg.occ_line_search_init_step));
     add_kv("alm_bb_enabled", cfg.alm_bb_enabled ? "true" : "false");
     add_kv("alm_bb_mode", bb_mode_to_string(cfg.alm_bb_mode));
     add_kv("alm_bb_alpha_min", as_sci(cfg.alm_bb_alpha_min));
@@ -1875,15 +1931,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
         case ConstraintMethod::ProjectedGradient:
         {
             // Projected gradient method for box-constrained optimization with
-            // electron-number equality constraint using BB step lengths with a
-            // monotone backtracking safeguard.
+            // electron-number equality constraint: initial line-search step from
+            // rdmft_occ_ls_init_step (fixed 1 / BB / quad) with monotone
+            // backtracking.
             //
             // At each iteration:
             //   1. Compute energy E and gradient dE/dn at current n.
             //   2. Use the configured optimizer (SD/CG/LBFGS/Adam) to compute
             //      a search direction d in the occupation space.
-            //   3. Set alpha from the Barzilai-Borwein update in occupation
-            //      space and backtrack until the projected step lowers E.
+            //   3. Set initial alpha from rdmft_occ_ls_init_step and backtrack
+            //      until the projected step lowers E.
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
@@ -1894,6 +1951,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             bb_step.set_mode(config_.alm_bb_mode);
             bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
             bb_step.reset();
+
+            QuadInitHistory pg_ls_qhist;
 
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
@@ -1955,9 +2014,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         dir[i] = -grad_occ[i];
                 }
 
-                // BB step with monotone backtracking and projection.
+                double dd_line = 0.0;
+                for (size_t i = 0; i < dir.size(); ++i)
+                {
+                    dd_line += dir[i] * grad_occ[i];
+                }
+
+                // Line-search initial step: fixed 1, BB seed, or quadratic
+                // interpolation from the previous inner iteration.
                 const std::vector<double> occ_before_step(occ_flat);
-                const double alpha_pg0 = bb_step.suggest(occ_flat, grad_occ, config_.line_search_alpha_init);
+                const double alpha_pg0 = choose_occ_ls_alpha0(
+                    config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
                 double alpha = alpha_pg0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
@@ -1967,6 +2034,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double E_last_trial = E;
                 // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
+                bool pg_first_ls_recorded = false;
 
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
@@ -1988,6 +2056,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     E_last_trial = E_trial;
+                    if (!pg_first_ls_recorded)
+                    {
+                        pg_ls_qhist
+                            = {true, alpha_try, E, E_trial, dd_line};
+                        pg_first_ls_recorded = true;
+                    }
                     if (E_trial < E)
                     {
                         E_after = E_trial;
@@ -2016,6 +2090,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     occ_flat = occ_before_step;
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
+                    pg_ls_qhist = {};
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
                                          << ", rejected step and reset optimizer" << std::endl;
                 }
@@ -2078,6 +2153,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //      to avoid using stale curvature information.
             EuclideanOptimizer as_opt(config_.occ_optimizer, config_);
             as_opt.init(static_cast<int>(occ_flat.size()));
+            BarzilaiBorweinStep as_bb_step;
+            as_bb_step.set_mode(config_.alm_bb_mode);
+            as_bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
+            as_bb_step.reset();
+
+            QuadInitHistory as_ls_qhist;
 
             // Track the active set pattern from the previous iteration so we can
             // detect changes and restart the optimizer when needed.
@@ -2110,6 +2191,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 if (n_active != prev_n_active && inner > 0)
                 {
                     as_opt.init(static_cast<int>(occ_flat.size()));
+                    as_bb_step.reset();
+                    as_ls_qhist = {};
                     GlobalV::ofs_running << "      AS active set changed (n_active "
                                          << prev_n_active << " -> " << n_active
                                          << "), reset optimizer" << std::endl;
@@ -2188,10 +2271,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         if (!as_info.is_free[idx]) dir[idx] = 0.0;
                 }
 
+                double dd_line = 0.0;
+                for (size_t i = 0; i < dir.size(); ++i)
+                {
+                    dd_line += dir[i] * grad_mod[i];
+                }
+
                 // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1)
                 // then project (rescale) to restore the equality constraint.
                 const std::vector<double> occ_before_step(occ_flat);
-                const double as_alpha0 = config_.line_search_alpha_init;
+                const double as_alpha0 = choose_occ_ls_alpha0(
+                    config_, occ_flat, grad_mod, &as_bb_step, as_ls_qhist);
                 double alpha = as_alpha0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
@@ -2202,6 +2292,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double E_last_trial = E;
                 // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
+                bool as_first_ls_recorded = false;
 
                 for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                 {
@@ -2236,6 +2327,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     E_last_trial = E_trial;
+                    if (!as_first_ls_recorded)
+                    {
+                        as_ls_qhist
+                            = {true, alpha_try, E, E_trial, dd_line};
+                        as_first_ls_recorded = true;
+                    }
                     if (E_trial <= E + config_.line_search_c1 * dd_proj)
                     {
                         E_after = E_trial;
@@ -2276,6 +2373,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         n = std::max(0.0, std::min(1.0, n));
                     occ_constraint_->project(occ_flat);
                     as_opt.init(static_cast<int>(occ_flat.size()));
+                    as_bb_step.reset();
+                    as_ls_qhist = {};
                     prev_n_active = -1;
                     GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)
                                          << ", reset optimizer" << std::endl;
@@ -2298,6 +2397,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     if (!new_as_info.is_free[idx]) new_grad_mod[idx] = 0.0;
 
                 as_opt.update(new_grad_mod, step_vec);
+                if (ls_success)
+                {
+                    as_bb_step.record_state(occ_flat, new_grad_mod);
+                }
 
                 result.iterations = inner + 1;
                 result.final_energy = E_after;
