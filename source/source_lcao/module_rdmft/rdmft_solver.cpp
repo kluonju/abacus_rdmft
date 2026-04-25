@@ -669,6 +669,21 @@ void RDMFTSolver<TK, TR>::init(
     int nbands,
     double n_electrons)
 {
+    if (kv == nullptr)
+    {
+        throw std::invalid_argument("RDMFTSolver::init: kv pointer is null");
+    }
+    if (nbands <= 0)
+    {
+        throw std::invalid_argument("RDMFTSolver::init: nbands must be positive, got "
+                                    + std::to_string(nbands));
+    }
+    if (n_electrons <= 0.0)
+    {
+        throw std::invalid_argument("RDMFTSolver::init: n_electrons must be positive, got "
+                                    + std::to_string(n_electrons));
+    }
+
     config_ = config;
     energy_grad_ = &energy_grad;
     kv_ = kv;
@@ -676,19 +691,25 @@ void RDMFTSolver<TK, TR>::init(
     n_electrons_ = n_electrons;
     nk_ = energy_grad.nk();
 
+    if (nk_ <= 0)
+    {
+        throw std::invalid_argument("RDMFTSolver::init: energy_grad.nk() must be positive, got "
+                                    + std::to_string(nk_));
+    }
+
     // Initialize occupation parameterization
-    occ_param_.reset(new OccupationParam(config_.occ_param));
+    occ_param_ = std::make_unique<OccupationParam>(config_.occ_param);
 
     // Build k-point weight vector
     std::vector<double> kweights(nk_);
     for (int ik = 0; ik < nk_; ++ik)
         kweights[ik] = kv_->wk[ik];
 
-    occ_constraint_.reset(new OccupationConstraint(
-        config_.constraint_method, n_electrons_, kweights, nbands_));
+    occ_constraint_ = std::make_unique<OccupationConstraint>(
+        config_.constraint_method, n_electrons_, kweights, nbands_);
 
-    occ_optimizer_.reset(new EuclideanOptimizer(config_.occ_optimizer, config_));
-    orb_optimizer_.reset(new EuclideanOptimizer(config_.orb_optimizer, config_));
+    occ_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.occ_optimizer, config_);
+    orb_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.orb_optimizer, config_);
 
     occ_constraint_->set_lambda(config_.aug_lag_lambda_init);
     occ_constraint_->set_mu(config_.aug_lag_mu_init);
@@ -1779,6 +1800,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 {
                     step_vec[i] = ls.step * dir[i];
                     params[i] += step_vec[i];
+                }
+
+                if (!ls.success)
+                {
+                    GlobalV::ofs_running << "      ALM occ inner: Armijo line search failed at inner="
+                                         << (inner + 1) << "; accepting best-effort step (step="
+                                         << std::scientific << ls.step << ")" << std::endl;
                 }
 
                 occ_param_->params_to_occ(params, occ_flat);

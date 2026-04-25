@@ -68,6 +68,26 @@ enum class BBStepMode
     Alternate
 };
 
+/// Selects which occupation-number weighting is applied by occNum_func /
+/// occNum_MulPsi / occNum_Mul_wfcHwfc.
+///
+///  For a given occupation η and XC coupling function g(η):
+///   Occupation        → η
+///   HalfOccupation    → 0.5 η
+///   Coupling          → g(η)
+///   HalfCoupling      → 0.5 g(η)
+///   CouplingDerivative→ g'(η) = d g(η)/d η
+///   Unity             → 1.0
+enum class OccWeightMode
+{
+    Occupation = 0,
+    HalfOccupation = 1,
+    Coupling = 2,
+    HalfCoupling = 3,
+    CouplingDerivative = 4,
+    Unity = 5
+};
+
 inline XCFunctionalType parse_xc_type(const std::string& name)
 {
     if (name == "hf") return XCFunctionalType::HF;

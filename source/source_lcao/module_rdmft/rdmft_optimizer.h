@@ -60,11 +60,11 @@ class BarzilaiBorweinStep
         prev_g_.clear();
     }
 
-    void record_state(const std::vector<double>& x,
-                      const std::vector<double>& grad)
+    void record_state(std::vector<double> x,
+                      std::vector<double> grad)
     {
-        prev_x_ = x;
-        prev_g_ = grad;
+        prev_x_ = std::move(x);
+        prev_g_ = std::move(grad);
         have_prev_ = true;
     }
 

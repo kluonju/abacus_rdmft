@@ -418,27 +418,7 @@ void Veff_rdmft_local<std::complex<double>, std::complex<double>>::contributeHR(
 // ---- EnergyGradient implementation ----
 
 template <typename TK, typename TR>
-EnergyGradient<TK, TR>::~EnergyGradient()
-{
-    delete HR_one_;
-    delete HR_hartree_;
-    delete HR_exx_;
-    delete SR_;
-    delete hsk_one_;
-    delete hsk_hartree_;
-    delete hsk_exx_;
-    delete hsk_overlap_;
-    delete op_ekinetic_;
-    delete op_nonlocal_;
-    delete op_local_;
-    delete op_hartree_;
-    delete op_exx_;
-    delete op_overlap_;
-#ifdef __EXX
-    delete exx_lri_d_;
-    delete exx_lri_c_;
-#endif
-}
+EnergyGradient<TK, TR>::~EnergyGradient() = default;
 
 template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::init(
@@ -474,17 +454,17 @@ void EnergyGradient<TK, TR>::init(
 #endif
 
     // Allocate Hamiltonian containers
-    HR_one_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
-    HR_hartree_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
-    HR_exx_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
-    SR_ = new hamilt::HContainer<TR>(*ucell_, ParaV_);
+    HR_one_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
+    HR_hartree_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
+    HR_exx_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
+    SR_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
 
-    hsk_one_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
-    hsk_hartree_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
-    hsk_exx_ = new hamilt::HS_Matrix_K<TK>(ParaV_, true);
+    hsk_one_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
+    hsk_hartree_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
+    hsk_exx_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     // The overlap operator writes S(k) into hsk->sk via hsk->get_sk(),
     // so we must allocate sk (second arg false -> no_s==false)
-    hsk_overlap_ = new hamilt::HS_Matrix_K<TK>(ParaV_, false);
+    hsk_overlap_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, false);
 
     if (PARAM.inp.gamma_only)
     {
@@ -544,12 +524,12 @@ void EnergyGradient<TK, TR>::init(
 
         if (GlobalC::exx_info.info_ri.real_number)
         {
-            exx_lri_d_ = new Exx_LRI<double>(GlobalC::exx_info.info_ri);
+            exx_lri_d_ = std::make_unique<Exx_LRI<double>>(GlobalC::exx_info.info_ri);
             exx_lri_d_->init(MPI_COMM_WORLD, const_cast<UnitCell&>(*ucell_), *kv_, *orb_);
         }
         else
         {
-            exx_lri_c_ = new Exx_LRI<std::complex<double>>(GlobalC::exx_info.info_ri);
+            exx_lri_c_ = std::make_unique<Exx_LRI<std::complex<double>>>(GlobalC::exx_info.info_ri);
             exx_lri_c_->init(MPI_COMM_WORLD, const_cast<UnitCell&>(*ucell_), *kv_, *orb_);
         }
         exx_enabled_ = true;
@@ -572,25 +552,21 @@ void EnergyGradient<TK, TR>::update_ion(
     HR_one_->set_zero();
 
     // Build one-body operators (kinetic + nonlocal + local pseudopotential)
-    delete op_ekinetic_;
-    op_ekinetic_ = new hamilt::EKinetic<hamilt::OperatorLCAO<TK, TR>>(
-        hsk_one_, kv_->kvec_d, HR_one_, ucell_,
+    op_ekinetic_ = std::make_unique<hamilt::EKinetic<hamilt::OperatorLCAO<TK, TR>>>(
+        hsk_one_.get(), kv_->kvec_d, HR_one_.get(), ucell_,
         orb_->cutoffs(), gd_, two_center_bundle_->kinetic_orb.get());
 
-    delete op_nonlocal_;
-    op_nonlocal_ = new hamilt::Nonlocal<hamilt::OperatorLCAO<TK, TR>>(
-        hsk_one_, kv_->kvec_d, HR_one_, ucell_,
+    op_nonlocal_ = std::make_unique<hamilt::Nonlocal<hamilt::OperatorLCAO<TK, TR>>>(
+        hsk_one_.get(), kv_->kvec_d, HR_one_.get(), ucell_,
         orb_->cutoffs(), gd_, two_center_bundle_->overlap_orb_beta.get());
 
-    delete op_local_;
-    op_local_ = new Veff_rdmft_local<TK, TR>(
-        hsk_one_, kv_->kvec_d, pelec_->pot, HR_one_, ucell_,
+    op_local_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
+        hsk_one_.get(), kv_->kvec_d, pelec_->pot, HR_one_.get(), ucell_,
         orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "local");
 
     // Overlap operator (builds SR internally)
-    delete op_overlap_;
-    op_overlap_ = new hamilt::Overlap<hamilt::OperatorLCAO<TK, TR>>(
-        hsk_overlap_, kv_->kvec_d, SR_, SR_, ucell_,
+    op_overlap_ = std::make_unique<hamilt::Overlap<hamilt::OperatorLCAO<TK, TR>>>(
+        hsk_overlap_.get(), kv_->kvec_d, SR_.get(), SR_.get(), ucell_,
         orb_->cutoffs(), gd_, two_center_bundle_->overlap_orb.get());
     op_overlap_->contributeHR();
 
@@ -755,7 +731,7 @@ void EnergyGradient<TK, TR>::compute_diagonal(
 template <typename TK, typename TR>
 const TK* EnergyGradient<TK, TR>::get_SK(int ik)
 {
-    if (op_overlap_ == nullptr || hsk_overlap_ == nullptr) return nullptr;
+    if (!op_overlap_ || !hsk_overlap_) return nullptr;
     // NOTE: do NOT call hsk_overlap_->set_zero_sk() here.
     // contributeHk() internally calls set_zero_sk() before recomputing, so the
     // external zero is redundant. More importantly, for the gamma-only real case
@@ -1230,10 +1206,10 @@ double EnergyGradient<TK, TR>::compute(
 
     // 2. Build Hartree potential
     HR_hartree_->set_zero();
-    if (op_hartree_ == nullptr)
+    if (!op_hartree_)
     {
-        op_hartree_ = new Veff_rdmft_local<TK, TR>(
-            hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
+        op_hartree_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
+            hsk_hartree_.get(), kv_->kvec_d, pelec_->pot, HR_hartree_.get(), ucell_,
             orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     }
     op_hartree_->contributeHR();
@@ -1466,10 +1442,10 @@ double EnergyGradient<TK, TR>::compute_energy(
     build_charge(occ_flat, wfc_eval);
 
     HR_hartree_->set_zero();
-    if (op_hartree_ == nullptr)
+    if (!op_hartree_)
     {
-        op_hartree_ = new Veff_rdmft_local<TK, TR>(
-            hsk_hartree_, kv_->kvec_d, pelec_->pot, HR_hartree_, ucell_,
+        op_hartree_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
+            hsk_hartree_.get(), kv_->kvec_d, pelec_->pot, HR_hartree_.get(), ucell_,
             orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     }
     op_hartree_->contributeHR();
@@ -1642,7 +1618,7 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
 {
     ModuleBase::timer::start("RDMFT_EG", "precompute_cholesky_S");
 
-    if (op_overlap_ == nullptr || hsk_overlap_ == nullptr)
+    if (!op_overlap_ || !hsk_overlap_)
     {
         ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
         throw std::runtime_error("RDMFT requires overlap matrix S_k to build X-space variables.");

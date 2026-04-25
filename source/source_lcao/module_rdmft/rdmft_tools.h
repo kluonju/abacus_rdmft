@@ -5,6 +5,7 @@
 #ifndef RDMFT_TOOLS_H
 #define RDMFT_TOOLS_H
 
+#include "rdmft_type.h"
 #include "source_cell/klist.h"
 #include "source_io/module_parameter/parameter.h" // use PARAM
 #include "source_psi/psi.h"
@@ -42,9 +43,10 @@
 namespace rdmft
 {
 
-//! now support XC_func_rdmft = "hf", "muller", "power", "pbe", "pbe0". "wp22" and "cwp22" is realizing.
+//! now support XC_func_rdmft = "hf", "muller", "power". See OccWeightMode for meaning of weight_mode.
 // for the dft-xc-functional part of xc-functional, just use the default is right! Or don't use the function
-double occNum_func(double eta, int symbol = 0, const std::string XC_func_rdmft = "hf", const double alpha_power = 1.0);
+double occNum_func(double eta, OccWeightMode weight_mode = OccWeightMode::Occupation,
+                   const std::string XC_func_rdmft = "hf", const double alpha_power = 1.0);
 
 
 template <typename TK>
@@ -118,7 +120,7 @@ void cal_bra_op_ket<double>(const Parallel_Orbitals* ParaV, const Parallel_2D& p
 
 //! for Dmn that conforms to the 2d-block rule, get its diagonal elements
 template <typename TK>
-void _diagonal_in_serial(const Parallel_2D& para_Eij_in, const std::vector<TK>& Dmn, double* wfcHwfc)
+void get_diagonal_serial(const Parallel_2D& para_Eij_in, const std::vector<TK>& Dmn, double* wfcHwfc)
 {
     const int nrow_bands = para_Eij_in.get_row_size();
     const int ncol_bands = para_Eij_in.get_col_size();
@@ -141,7 +143,8 @@ void _diagonal_in_serial(const Parallel_2D& para_Eij_in, const std::vector<TK>& 
 
 //! realize occNum_wfc = occNum * wfc. Calling this function and we can get wfc = occNum*wfc.
 template <typename TK>
-void occNum_MulPsi(const Parallel_Orbitals* ParaV, const ModuleBase::matrix& occ_number, psi::Psi<TK>& wfc, int symbol = 0,
+void occNum_MulPsi(const Parallel_Orbitals* ParaV, const ModuleBase::matrix& occ_number, psi::Psi<TK>& wfc,
+                OccWeightMode weight_mode = OccWeightMode::Occupation,
                 const std::string XC_func_rdmft = "hf", const double alpha = 1.0)
 {
     const int nk_local = wfc.get_nk();
@@ -155,7 +158,7 @@ void occNum_MulPsi(const Parallel_Orbitals* ParaV, const ModuleBase::matrix& occ
     {
         for (int ib_local = 0; ib_local < nbands_local; ++ib_local)  // ib_local < nbands_local , some problem, ParaV->ncol_bands
         {
-            const double occNum_local = occNum_func( occ_number(ik, ParaV->local2global_col(ib_local)), symbol, XC_func_rdmft, alpha);
+            const double occNum_local = occNum_func( occ_number(ik, ParaV->local2global_col(ib_local)), weight_mode, XC_func_rdmft, alpha);
             TK* wfc_pointer = &(wfc(ik, ib_local, 0));
             BlasConnector::scal(nbasis_local, occNum_local, wfc_pointer, 1);
         }
@@ -182,7 +185,7 @@ void add_psi(const Parallel_Orbitals* ParaV,
     occNum_MulPsi(ParaV, occ_number, psi_TV);
     occNum_MulPsi(ParaV, occ_number, psi_hartree);
     occNum_MulPsi(ParaV, occ_number, psi_dft_XC);
-    occNum_MulPsi(ParaV, occ_number, psi_exx_XC, 2, XC_func_rdmft, alpha);
+    occNum_MulPsi(ParaV, occ_number, psi_exx_XC, OccWeightMode::Coupling, XC_func_rdmft, alpha);
 
     // const int nbasis = ParaV->desc[2];
     // const int nbands = ParaV->desc_wfc[3];
@@ -206,13 +209,13 @@ void add_psi(const Parallel_Orbitals* ParaV,
 
 /**
  * @brief occNum_wfcHwfc = occNum*wfcHwfc + occNum_wfcHwfc
- * @param symbol: When symbol = 0, 1, 2, 3, 4, occNum = occNum, 0.5*occNum, g(occNum), 0.5*g(occNum), d_g(occNum)/d_occNum respectively.
- *                Default symbol=0.
+ * @param weight_mode: Controls the occupation weighting applied (see OccWeightMode).
+ *                     Default OccWeightMode::Occupation uses the raw occupation number η.
 */
 void occNum_Mul_wfcHwfc(const ModuleBase::matrix& occ_number, 
                             const ModuleBase::matrix& wfcHwfc, 
                             ModuleBase::matrix& occNum_wfcHwfc,
-                            int symbol = 0, 
+                            OccWeightMode weight_mode = OccWeightMode::Occupation, 
                             const std::string XC_func_rdmft = "hf", 
                             const double alpha = 1.0);
 

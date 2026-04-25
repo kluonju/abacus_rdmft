@@ -26,6 +26,7 @@
 
 #include <vector>
 #include <complex>
+#include <memory>
 
 namespace rdmft
 {
@@ -198,6 +199,7 @@ class EnergyGradient
     elecstate::ElecState* pelec_ = nullptr;
     const LCAO_Orbitals* orb_ = nullptr;
     const TwoCenterBundle* two_center_bundle_ = nullptr;
+    /// Non-owning alias into pelec_->charge. Lifetime is governed by pelec_.
     Charge* charge_ = nullptr;
     const ModulePW::PW_Basis* rho_basis_ = nullptr;
     const ModuleBase::matrix* vloc_ = nullptr;
@@ -213,26 +215,26 @@ class EnergyGradient
     int nspin_ = 1;
 
     // Owned Hamiltonian containers
-    hamilt::HContainer<TR>* HR_one_ = nullptr;
-    hamilt::HContainer<TR>* HR_hartree_ = nullptr;
-    hamilt::HContainer<TR>* HR_exx_ = nullptr;
-    hamilt::HContainer<TR>* SR_ = nullptr;
+    std::unique_ptr<hamilt::HContainer<TR>> HR_one_;
+    std::unique_ptr<hamilt::HContainer<TR>> HR_hartree_;
+    std::unique_ptr<hamilt::HContainer<TR>> HR_exx_;
+    std::unique_ptr<hamilt::HContainer<TR>> SR_;
 
-    hamilt::HS_Matrix_K<TK>* hsk_one_ = nullptr;
-    hamilt::HS_Matrix_K<TK>* hsk_hartree_ = nullptr;
-    hamilt::HS_Matrix_K<TK>* hsk_exx_ = nullptr;
-    hamilt::HS_Matrix_K<TK>* hsk_overlap_ = nullptr;
+    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_one_;
+    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_hartree_;
+    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_exx_;
+    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_overlap_;
 
-    hamilt::OperatorLCAO<TK, TR>* op_ekinetic_ = nullptr;
-    hamilt::OperatorLCAO<TK, TR>* op_nonlocal_ = nullptr;
-    hamilt::OperatorLCAO<TK, TR>* op_local_ = nullptr;
-    hamilt::OperatorLCAO<TK, TR>* op_hartree_ = nullptr;
-    hamilt::OperatorLCAO<TK, TR>* op_exx_ = nullptr;
-    hamilt::OperatorLCAO<TK, TR>* op_overlap_ = nullptr;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_ekinetic_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_nonlocal_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_local_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_hartree_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_exx_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_overlap_;
 
 #ifdef __EXX
-    Exx_LRI<double>* exx_lri_d_ = nullptr;
-    Exx_LRI<std::complex<double>>* exx_lri_c_ = nullptr;
+    std::unique_ptr<Exx_LRI<double>> exx_lri_d_;
+    std::unique_ptr<Exx_LRI<std::complex<double>>> exx_lri_c_;
     ModuleSymmetry::Symmetry_rotation symrot_exx_;
     bool exx_spacegroup_symmetry_ = false;
 #endif

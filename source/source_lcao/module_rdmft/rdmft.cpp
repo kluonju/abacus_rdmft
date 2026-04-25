@@ -188,7 +188,7 @@ void RDMFT<TK, TR>::cal_Hk_Hpsi()
         op->contributeHk(ik);
         HkPsi(ParaV, hsk->get_hk()[0], wfc(ik, 0, 0), H_wfc(ik, 0, 0));
         cal_bra_op_ket(ParaV, para_Eij, wfc(ik, 0, 0), H_wfc(ik, 0, 0), Eij_buf);
-        _diagonal_in_serial(para_Eij, Eij_buf, &(wfcHwfc(ik, 0)));
+        get_diagonal_serial(para_Eij, Eij_buf, &(wfcHwfc(ik, 0)));
     };
 
     for (int ik = 0; ik < nk_total; ++ik)
@@ -241,12 +241,12 @@ void RDMFT<TK, TR>::cal_Energy(const int cal_type)
     {
         // for E_TV
         ModuleBase::matrix ETV_n_k(wg.nr, wg.nc, true);
-        occNum_Mul_wfcHwfc(wg, wfcHwfc_TV, ETV_n_k, 0);
+        occNum_Mul_wfcHwfc(wg, wfcHwfc_TV, ETV_n_k, OccWeightMode::Occupation);
         E_RDMFT[0] = getEnergy(ETV_n_k);
 
         // for Ehartree
         ModuleBase::matrix Ehartree_n_k(wg.nr, wg.nc, true);
-        occNum_Mul_wfcHwfc(wg, wfcHwfc_hartree, Ehartree_n_k, 1);
+        occNum_Mul_wfcHwfc(wg, wfcHwfc_hartree, Ehartree_n_k, OccWeightMode::HalfOccupation);
         E_RDMFT[1] = getEnergy(Ehartree_n_k);
 
         // for Exc
@@ -255,8 +255,8 @@ void RDMFT<TK, TR>::cal_Energy(const int cal_type)
         if( GlobalC::exx_info.info_global.cal_exx )
         {
             ModuleBase::matrix Exc_n_k(wg.nr, wg.nc, true);
-            // because we have got wk_fun_occNum, we can use symbol=1 realize it
-            occNum_Mul_wfcHwfc(wk_fun_occNum, wfcHwfc_exx_XC, Exc_n_k, 1);
+            // wk_fun_occNum already carries wk*g(n), so HalfOccupation gives wk*g(n)*0.5 == correct 0.5 factor
+            occNum_Mul_wfcHwfc(wk_fun_occNum, wfcHwfc_exx_XC, Exc_n_k, OccWeightMode::HalfOccupation);
             E_RDMFT[2] = getEnergy(Exc_n_k);
             Parallel_Reduce::reduce_all(E_RDMFT[2]);
             E_exxType_rdmft = E_RDMFT[2];

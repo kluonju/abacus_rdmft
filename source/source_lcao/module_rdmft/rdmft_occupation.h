@@ -2,6 +2,7 @@
 #define RDMFT_OCCUPATION_H
 
 #include "rdmft_type.h"
+#include "source_base/global_variable.h"
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -279,7 +280,12 @@ class OccupationConstraint
                 return;   // already satisfied
 
             if (free_sum < 1e-15)
+            {
+                GlobalV::ofs_running << "WARNING: RDMFT rescale_to_nel: all occupations are"
+                    " saturated at 0 or 1; electron-number constraint cannot be enforced."
+                    " current_sum=" << current << ", target=" << n_electrons_ << std::endl;
                 return;   // all bands pinned; constraint cannot be enforced
+            }
 
             // Target for the free values.
             double target_free = n_electrons_ - (current - free_sum);

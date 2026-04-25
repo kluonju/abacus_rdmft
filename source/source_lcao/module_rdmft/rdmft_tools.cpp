@@ -77,11 +77,11 @@ void cal_bra_op_ket<double>(const Parallel_Orbitals* ParaV,
 
 
 // occNum_wfcHwfc = occNum*wfcHwfc + occNum_wfcHwfc
-// When symbol = 0, 1, 2, 3, 4, occNum = occNum, 0.5*occNum, g(occNum), 0.5*g(occNum), d_g(occNum)/d_occNum respectively. Default symbol=0.
+// See OccWeightMode for meaning of weight_mode. Default OccWeightMode::Occupation.
 void occNum_Mul_wfcHwfc(const ModuleBase::matrix& occ_number, 
                             const ModuleBase::matrix& wfcHwfc, 
                             ModuleBase::matrix& occNum_wfcHwfc,
-                            int symbol, 
+                            OccWeightMode weight_mode, 
                             const std::string XC_func_rdmft, 
                             const double alpha)
 {
@@ -89,7 +89,7 @@ void occNum_Mul_wfcHwfc(const ModuleBase::matrix& occ_number,
     {
         for(int ic=0; ic<occ_number.nc; ++ic) 
         { 
-            occNum_wfcHwfc(ir, ic) += occNum_func(occ_number(ir, ic), symbol, XC_func_rdmft, alpha) * wfcHwfc(ir, ic);
+            occNum_wfcHwfc(ir, ic) += occNum_func(occ_number(ir, ic), weight_mode, XC_func_rdmft, alpha) * wfcHwfc(ir, ic);
         }
     } 
 }
@@ -107,7 +107,7 @@ void add_occNum(const K_Vectors& kv,
                     const double alpha)
 { 
     occNum_wfcHwfc.zero_out();
-    occNum_Mul_wfcHwfc(occ_number, wfcHwfc_exx_XC_in, occNum_wfcHwfc, 4, XC_func_rdmft, alpha);
+    occNum_Mul_wfcHwfc(occ_number, wfcHwfc_exx_XC_in, occNum_wfcHwfc, OccWeightMode::CouplingDerivative, XC_func_rdmft, alpha);
     occNum_wfcHwfc+=(wfcHwfc_TV_in);
     occNum_wfcHwfc+=(wfcHwfc_hartree_in);
     occNum_wfcHwfc+=(wfcHwfc_dft_XC_in);
@@ -139,30 +139,31 @@ double getEnergy(const ModuleBase::matrix& occNum_wfcHwfc)
 
 
 //! for HF, Muller and power functional, g(eta) = eta, eta^0.5, eta^alpha respectively.
-//! when symbol = 0, 1, 2, 3, 4, 5, return eta, 0.5*eta, g(eta), 0.5*g(eta), d_g(eta)/d_eta, 1.0 respectively.
-//! Default symbol=0, XC_func_rdmft="HF", alpha=0.656
-double occNum_func(const double eta, const int symbol, const std::string XC_func_rdmft, double alpha)
+//! weight_mode controls the return value:
+//!   Occupation        → eta
+//!   HalfOccupation    → 0.5*eta
+//!   Coupling          → g(eta) = eta^alpha
+//!   HalfCoupling      → 0.5*g(eta)
+//!   CouplingDerivative→ d_g(eta)/d_eta = alpha*eta^(alpha-1)
+//!   Unity             → 1.0
+//! Default weight_mode=OccWeightMode::Occupation, XC_func_rdmft="hf", alpha=0.656
+double occNum_func(const double eta, const OccWeightMode weight_mode, const std::string XC_func_rdmft, double alpha)
 {
-    // if( XC_func_rdmft == "hf" || XC_func_rdmft == "default" || XC_func_rdmft == "pbe0" ) alpha = 1.0;
-    // else if( XC_func_rdmft == "muller" ) alpha = 0.5;
-    // else if( XC_func_rdmft == "power" || XC_func_rdmft == "wp22" || XC_func_rdmft == "cwp22" ) ;
-    // else alpha = 1.0;
-    
     if( XC_func_rdmft == "power" || XC_func_rdmft == "wp22" || XC_func_rdmft == "cwp22" ) { ; }
     else if( XC_func_rdmft == "muller" ) { alpha = 0.5; }
     else { alpha = 1.0; }
 
-    assert(symbol <= 5);
-
-    if( symbol==0 ) { return eta;
-    } else if ( symbol==1 ) { return 0.5*eta;
-    } else if ( symbol==2 ) { return std::pow(eta, alpha);
-    } else if ( symbol==3 ) { return 0.5*std::pow(eta, alpha);
-    } else if ( symbol==4 ) { return alpha*std::pow(eta, alpha-1.0);
-    } else if ( symbol==5 ) { return 1.0;
+    switch (weight_mode)
+    {
+        case OccWeightMode::Occupation:          return eta;
+        case OccWeightMode::HalfOccupation:      return 0.5 * eta;
+        case OccWeightMode::Coupling:            return std::pow(eta, alpha);
+        case OccWeightMode::HalfCoupling:        return 0.5 * std::pow(eta, alpha);
+        case OccWeightMode::CouplingDerivative:  return alpha * std::pow(eta, alpha - 1.0);
+        case OccWeightMode::Unity:               return 1.0;
     }
 
-    // default symbol = 0
+    // unreachable — default to raw occupation
     return eta;
     
 }
