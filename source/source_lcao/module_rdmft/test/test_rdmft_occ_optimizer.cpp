@@ -433,7 +433,7 @@ TEST_F(PGOptimizerTest, CG_converges_4band)
 }
 
 // ---------------------------------------------------------------------------
-// PG: convergence with L-BFGS
+// PG: convergence with lbfgs
 // ---------------------------------------------------------------------------
 TEST_F(PGOptimizerTest, LBFGS_converges_4band)
 {
@@ -572,7 +572,7 @@ TEST_F(ASOptimizerTest, CG_converges_4band)
 }
 
 // ---------------------------------------------------------------------------
-// AS: convergence with L-BFGS
+// AS: convergence with lbfgs
 // ---------------------------------------------------------------------------
 TEST_F(ASOptimizerTest, LBFGS_converges_4band)
 {

@@ -562,7 +562,7 @@ Numerical tips:
 
 - Warm-start linear solves: cache factorizations of the reduced Hessian and update
    incrementally when the active set changes.
-- Use limited-memory quasi-Newton (L-BFGS) on the free set if exact Hessians are
+- Use limited-memory quasi-Newton (lbfgs) on the free set if exact Hessians are
    expensive; form a small KKT system for the equality constraint.
 - Add trust-region safeguards or fallback to projected-gradient when the
    reduced-step increases the objective (nonconvexity caution).
@@ -632,7 +632,7 @@ In the implementation (`rdmft_solver.cpp::solve_joint`), the occupation
 parameters and orbital coefficients are packed into **one** vector
 $z = (\,p\,,\,\mathrm{flat}(C^1), \ldots, \mathrm{flat}(C^{N_k})\,)$ and a
 **single** Euclidean optimiser, selected via the `rdmft_joint_optimizer`
-keyword (default L-BFGS), drives its evolution. Each outer iteration:
+keyword (default lbfgs), drives its evolution. Each outer iteration:
 
 1. evaluates the energy $E$ and Euclidean gradients $(\nabla_n E, \nabla_C E)$;
 2. chain-rules $\nabla_n E \to \nabla_p E$ through the occupation
@@ -643,7 +643,7 @@ keyword (default L-BFGS), drives its evolution. Each outer iteration:
    $d = (d_p, \mathrm{flat}(d_{C^1}), \ldots)$;
 4. re-projects each orbital block $d_{C^{\mathbf{k}}}$ onto the tangent space
    at the current $C^{\mathbf{k}}$ (necessary because Euclidean preconditioners
-   used by L-BFGS / Adam generally leave the tangent space) and falls back to
+   used by lbfgs / Adam generally leave the tangent space) and falls back to
    the packed steepest-descent direction $d = -g$ if the joint directional
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
@@ -655,7 +655,7 @@ keyword (default L-BFGS), drives its evolution. Each outer iteration:
    $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_{C^{\mathbf{k}}})$;
 6. builds the new packed gradient at the step's end-point and feeds
    $(g_\text{new}, \alpha\, d)$ to the unified optimiser's `update()`, so its
-   history (L-BFGS $(s,y)$ pairs, Adam moments, CG previous gradient) is
+   history (lbfgs $(s,y)$ pairs, Adam moments, CG previous gradient) is
    updated once with a coherent product-manifold view; then refreshes the
    augmented-Lagrangian multiplier.
 
@@ -688,9 +688,9 @@ $$
 
 with Fletcher-Reeves or Polak-Ribière $\beta_t$.
 
-### 8.3 L-BFGS
+### 8.3 lbfgs
 
-Limited-memory BFGS adapted to Riemannian setting using vector transport
+limited-memory lbfgs adapted to Riemannian setting using vector transport
 to move previous gradients and steps to the current tangent space.
 
 ### 8.4 Adam

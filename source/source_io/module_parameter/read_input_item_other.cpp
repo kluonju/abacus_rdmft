@@ -934,7 +934,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the occupation sub-problem. "
-                           "sd: steepest descent, cg: conjugate gradient, lbfgs: L-BFGS, adam: Adam.";
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -947,7 +947,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the orbital (Stiefel manifold) sub-problem. "
-                           "sd: steepest descent, cg: conjugate gradient, lbfgs: L-BFGS, adam: Adam.";
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -963,7 +963,7 @@ void ReadInput::item_others()
                            "orbital coefficients are packed into one point on the product manifold "
                            "and stepped simultaneously by a single optimiser of this type. "
                            "Allowed values: sd (steepest descent), cg (conjugate gradient), "
-                           "lbfgs (L-BFGS), adam.";
+                           "lbfgs, adam.";
         item.default_value = "lbfgs";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1168,7 +1168,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "When rdmft_functional is hf and this is > 0, adds γ·Σ_k w_k Σ_i (n ln n + (1-n)ln(1-n)) "
-                           "to the objective and matching ∂E/∂n so CG/L-BFGS has curvature (typical 1e-6). "
+                           "to the objective and matching ∂E/∂n so CG/lbfgs has curvature (typical 1e-6). "
                            "Ignored for non-HF functionals. Use 0 for muller (default).";
         item.default_value = "0";
         item.unit = "";
@@ -1339,6 +1339,49 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_line_search_c2");
+        item.annotation = "Strong Wolfe curvature parameter c2 for RDMFT (lbfgs line search)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Used with strong Wolfe when rdmft_occ_optimizer = lbfgs (ALM) or "
+                           "joint + lbfgs: require |g · d| <= c2 |g0 · d| at the trial point.";
+        item.default_value = "0.9";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_line_search_c2);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_line_search_c2 < 0.0 || para.input.rdmft_line_search_c2 > 1.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_c2 must be in [0, 1]");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_line_search_max_zoom");
+        item.annotation = "Maximum zoom iterations in RDMFT Strong Wolfe line search";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Int";
+        item.description = "Zoom sub-iteration cap (Nocedal & Wright) for the strong Wolfe search.";
+        item.default_value = "20";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_int(input.rdmft_line_search_max_zoom);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_line_search_max_zoom < 1)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_max_zoom must be >= 1");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_alm_bb_enabled");
         item.annotation = "Enable Barzilai-Borwein step seed for ALM occupations";
         item.category = "Reduced Density Matrix Functional Theory";
@@ -1427,10 +1470,10 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_lbfgs_memory");
-        item.annotation = "L-BFGS history vectors for RDMFT";
+        item.annotation = "lbfgs history vectors for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Number of past gradient/step pairs stored by L-BFGS optimiser.";
+        item.description = "Number of past gradient/step pairs stored by lbfgs optimiser.";
         item.default_value = "10";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

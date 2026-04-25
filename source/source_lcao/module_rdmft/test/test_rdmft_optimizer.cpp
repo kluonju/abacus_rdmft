@@ -192,7 +192,7 @@ TEST_F(OptimizerTest, armijo_line_search_works)
 // is the Rayleigh-quotient minimisation
 //     min_{C^T C = I}  Tr(C^T A C)
 // whose minimum is attained when C spans the invariant subspace associated
-// with the p smallest eigenvalues of A.  We verify that L-BFGS and Adam
+// with the p smallest eigenvalues of A.  We verify that lbfgs and Adam
 // both converge to this minimum, matching the SD / CG baseline.
 // ============================================================================
 
@@ -420,17 +420,17 @@ TEST_F(OptimizerTest, Adam_converges_on_Stiefel_Rayleigh)
     std::vector<double> C;
     double E = run_stiefel_optimizer(problem, opt, 2000, 1.0, C0, C, true);
     // Adam is a first-order stochastic-style optimiser; accept a looser
-    // tolerance than L-BFGS.
+    // tolerance than lbfgs.
     EXPECT_NEAR(E, E_ref, 1e-2);
 }
 
 TEST_F(OptimizerTest, LBFGS_and_SD_both_reach_Stiefel_minimum)
 {
-    // Both SD and L-BFGS should converge to the invariant-subspace minimum
+    // Both SD and lbfgs should converge to the invariant-subspace minimum
     // of the Rayleigh quotient on the Stiefel manifold.  At the reported
-    // iteration budget L-BFGS typically reaches the minimum in far fewer
+    // iteration budget lbfgs typically reaches the minimum in far fewer
     // evaluations, but the Riemannian retraction introduces O(alpha^2)
-    // noise that makes a strict "L-BFGS <= SD" comparison unreliable for
+    // noise that makes a strict "lbfgs <= SD" comparison unreliable for
     // small problems.  We test instead that both converge to within the
     // same tolerance.
     const int n = 10, p = 3;

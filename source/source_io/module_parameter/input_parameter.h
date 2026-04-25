@@ -699,11 +699,15 @@ struct Input_para
     std::string rdmft_occ_ls_init_step = "bb";     // occupation line-search alpha0 policy: fixed, bb, quad
     /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
     bool rdmft_line_search_polynomial = true;
+    /// Strong Wolfe curvature parameter c2 (used with lbfgs + Strong Wolfe line search)
+    double rdmft_line_search_c2 = 0.9;
+    /// Strong Wolfe zoom iteration cap
+    int rdmft_line_search_max_zoom = 20;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates
     double rdmft_alm_bb_alpha_max = 10.0;          // BB seed upper bound for occupation-space updates
-    int rdmft_lbfgs_memory = 10;                   // L-BFGS history vectors
+    int rdmft_lbfgs_memory = 10;                   // lbfgs history vectors
     double rdmft_adam_lr = 0.001;                  // Adam learning rate
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
     /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).

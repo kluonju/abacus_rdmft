@@ -485,12 +485,12 @@ void make_init(int n, int nb, double Ne,
 // -----------------------------------------------------------------------------
 // A single unified optimiser on the packed vector (p, C_flat) converges to
 // the analytic minimum of the toy product-manifold problem for SD, CG,
-// L-BFGS and Adam.
+// lbfgs and Adam.
 //
 // SD / CG / Adam use a small entropic regulariser (beta > 0) so the exact
 // optimum is strictly interior in [0, 1]. Otherwise the cosine^2
 // parameterisation's Jacobian dn/dp = -sin(2p) vanishes at n in {0, 1}, which
-// stalls any first-order method in the integer-filling limit. L-BFGS bootstraps a Hessian
+// stalls any first-order method in the integer-filling limit. lbfgs bootstraps a Hessian
 // approximation that escapes the stall, so its test uses the integer-filling
 // limit (beta = 0) and verifies fast convergence.
 // -----------------------------------------------------------------------------
@@ -682,7 +682,7 @@ TEST(RdmftJointStrategy, alternating_still_works_with_lbfgs_adam)
     // Simple alternating loop (fixed iteration count, no adaptive line search).
     for (int outer = 0; outer < 200; ++outer)
     {
-        // Occupation sub-problem (L-BFGS on cosine^2 parameters).
+        // Occupation sub-problem (lbfgs on cosine^2 parameters).
         for (int inner = 0; inner < 20; ++inner)
         {
             op.params_to_occ(params, occ);

@@ -166,6 +166,11 @@ struct RDMFTConfig
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 20;
+    /// Curvature coefficient for Strong Wolfe: |g(alpha)| <= c2 * |g0|.
+    /// Typical: 0.9 (lbfgs), smaller for nonlinear CG (e.g. 0.1).
+    double line_search_c2 = 0.9;
+    /// Zoom iteration cap in `strong_wolfe_line_search` (Nocedal & Wright zoom).
+    int line_search_max_zoom = 20;
     /// If true, backtracking after a failed Armijo trial uses a quadratic
     /// model on the first failure and a cubic on later failures; if false, use
     /// geometric reduction (multiply by `line_search_rho` only). Polynomial

@@ -602,6 +602,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::BarzilaiBorwein;
         rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
+        rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
+        rdmft_config.line_search_max_zoom = inp.rdmft_line_search_max_zoom;
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;
