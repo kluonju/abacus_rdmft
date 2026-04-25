@@ -4,6 +4,7 @@
 #include "read_input_tool.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 
@@ -972,7 +973,16 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_joint_optimizer;
-                if (s != "sd" && s != "cg" && s != "lbfgs" && s != "adam")
+                if (s.empty())
+                {
+                    return;
+                }
+                std::string t = s;
+                for (char& c : t)
+                {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                if (t != "sd" && t != "cg" && t != "lbfgs" && t != "adam")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
                         "rdmft_joint_optimizer must be one of: sd, cg, lbfgs, adam");

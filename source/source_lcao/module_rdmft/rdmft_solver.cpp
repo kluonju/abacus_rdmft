@@ -2084,6 +2084,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             // Project() clips to [0,1] and rescales to conserve N_e.
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
+            GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
+                                 << "  rdmft_occ_maxiter=" << config_.occ_maxiter << std::endl;
 
             BarzilaiBorweinStep bb_step;
             bb_step.set_mode(config_.alm_bb_mode);

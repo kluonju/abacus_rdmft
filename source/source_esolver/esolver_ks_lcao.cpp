@@ -26,6 +26,10 @@
 #include "source_lcao/rho_tau_lcao.h" // mohan add 20251024
 #include "source_lcao/LCAO_set.h" // mohan add 20251111
 #include "source_psi/setup_psi.h" // use Setup_Psi for deallocate_psi
+#ifdef __RDMFT
+#include <algorithm>
+#include <cctype>
+#endif
 
 namespace ModuleESolver
 {
@@ -575,7 +579,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
-        rdmft_config.occ_maxiter = inp.rdmft_occ_maxiter;
+        // Non-positive occ_maxiter would run zero PG/ALM/AS inner iterations; clamp to 1.
+        rdmft_config.occ_maxiter = std::max(1, inp.rdmft_occ_maxiter);
         if (inp.rdmft_occ_init_mode == "perturbed")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
         else if (inp.rdmft_occ_init_mode == "binary")
@@ -643,11 +648,38 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
 
-        // Parse optimisers
-        auto parse_opt = [](const std::string& s) {
-            if (s == "sd")    return rdmft::OptimizerType::SteepestDescent;
-            if (s == "lbfgs") return rdmft::OptimizerType::LBFGS;
-            if (s == "adam")  return rdmft::OptimizerType::Adam;
+        // Parse optimisers: trim, ASCII-lowercase, accept common spellings. Previously only
+        // exact lowercase (e.g. "lbfgs") matched, so e.g. "LBFGS" fell through to default CG.
+        auto parse_opt = [](const std::string& s_in) {
+            const char* const ws = " \t\n\r\f\v";
+            const auto first = s_in.find_first_not_of(ws);
+            if (first == std::string::npos)
+            {
+                return rdmft::OptimizerType::ConjugateGradient;
+            }
+            const auto last = s_in.find_last_not_of(ws);
+            std::string s = s_in.substr(first, last - first + 1);
+            for (char& c : s)
+            {
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            }
+            if (s == "sd" || s == "steepest" || s == "steepest_descent" || s == "gd")
+            {
+                return rdmft::OptimizerType::SteepestDescent;
+            }
+            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs")
+            {
+                return rdmft::OptimizerType::LBFGS;
+            }
+            if (s == "adam")
+            {
+                return rdmft::OptimizerType::Adam;
+            }
+            if (s == "cg" || s == "conjugate_gradient" || s == "conjugate" || s == "pr"
+                || s == "fr" || s == "polak" || s == "fletcher_reeves")
+            {
+                return rdmft::OptimizerType::ConjugateGradient;
+            }
             return rdmft::OptimizerType::ConjugateGradient; // default
         };
         rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
