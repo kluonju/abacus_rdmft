@@ -39,7 +39,6 @@ enum class OccInitMode
 enum class ConstraintMethod
 {
     AugmentedLagrangian,
-    DirectMinimization,
     ProjectedGradient,
     ActiveSet
 };
@@ -118,10 +117,13 @@ struct RDMFTConfig
     double energy_tol = 1e-8;
     /// Inner orbital step: stop when Riemannian gradient norm ||G_R|| falls below this.
     double orb_grad_tol = 1e-6;
+    /// Alternating orbital inner loop: also stop when |E_k - E_{k-1}| or post-step |E_new-E| < this (Ry).
+    /// Set <= 0 to disable and require only orb_grad_tol.
+    double orb_energy_tol = 1e-8;
     /// Inner occupation step (e.g. augmented Lagrangian): stop when sum_i |Δn_i| in one iteration
     /// falls below this.
     double rdmft_occ_tol = 1e-8;
-    /// Direct minimization / joint (non-ALM): stop occupation inner loop when the Euclidean norm of
+    /// Joint (non-ALM) / projected gradient: stop occupation inner loop when the Euclidean norm of
     /// the occupation-parameter gradient ||dE/dp|| is below this (after projected-gradient map for PG).
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
@@ -132,7 +134,7 @@ struct RDMFTConfig
     double aug_lag_mu_max = 1e6;
     double aug_lag_lambda_init = 0.0;
 
-    double line_search_alpha_init = 0.1;
+    double line_search_alpha_init = 1.0;
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 30;

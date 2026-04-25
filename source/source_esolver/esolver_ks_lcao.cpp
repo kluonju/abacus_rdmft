@@ -588,6 +588,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
+        rdmft_config.orb_energy_tol = inp.rdmft_orb_energy_tol;
         rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
         rdmft_config.occ_grad_tol = inp.rdmft_occ_grad_tol;
         rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
@@ -621,28 +622,17 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.strategy = rdmft::SolverStrategy::Joint;
 
-        // Parse constraint
-        if (inp.rdmft_constraint == "direct_minimization")
-            rdmft_config.constraint_method = rdmft::ConstraintMethod::DirectMinimization;
-        else if (inp.rdmft_constraint == "projected_gradient")
+        if (inp.rdmft_constraint == "projected_gradient")
             rdmft_config.constraint_method = rdmft::ConstraintMethod::ProjectedGradient;
         else if (inp.rdmft_constraint == "active_set")
             rdmft_config.constraint_method = rdmft::ConstraintMethod::ActiveSet;
         else
             rdmft_config.constraint_method = rdmft::ConstraintMethod::AugmentedLagrangian;
 
-        // Parse occupation parameterisation. The main occupation paths are
-        // normalized to the intended parameterization to avoid mixing the
-        // cosine-squared ALM path with the logistic direct-minimization path.
         if (inp.rdmft_occ_param == "logistic")
             rdmft_config.occ_param = rdmft::OccParamType::Logistic;
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
-
-        if (rdmft_config.constraint_method == rdmft::ConstraintMethod::AugmentedLagrangian)
-            rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
-        else if (rdmft_config.constraint_method == rdmft::ConstraintMethod::DirectMinimization)
-            rdmft_config.occ_param = rdmft::OccParamType::Logistic;
 
         // Parse optimisers
         auto parse_opt = [](const std::string& s) {

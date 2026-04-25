@@ -14,6 +14,7 @@
 #include <type_traits>
 #include <complex>
 #include <chrono>
+#include <limits>
 
 namespace rdmft
 {
@@ -121,8 +122,8 @@ void log_occ_inner_line(const std::string& line)
     GlobalV::ofs_running << line << std::endl;
 }
 
-/// One summary line, then per-ik lines listing each n(ik,ib) and step change dn from the
-/// previous inner-iteration start (occ_prev_for_dn empty => first step, dn = 0).
+/// One summary line, then per-ik lines listing each n(ik,ib) and dn vs the *previous*
+/// inner iteration's start (occ_prev_for_dn empty on first inner => table dn = 0 by convention).
 void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
                                    const std::vector<double>& occ_flat,
                                    const std::vector<double>& occ_prev_for_dn,
@@ -134,7 +135,9 @@ void log_occ_inner_summary_and_nik(const std::string& summary_first_line,
     const bool have_prev = (occ_prev_for_dn.size() == occ_flat.size());
     if (!have_prev)
     {
-        log_occ_inner_line("      note: dn is relative to the previous inner iteration; first inner step has dn=0.");
+        log_occ_inner_line("      note: table dn compares n to the start of the *previous* inner iteration; "
+                           "the first inner lists dn=0 by convention (not the step change). "
+                           "See sum|dn| in the log after each step for |Δn| vs step start.");
     }
     const size_t nrows = static_cast<size_t>(nk) * static_cast<size_t>(nbands);
     if (nrows == 0)
@@ -249,18 +252,23 @@ void print_occ_table_running(const std::vector<double>& occ_flat, int nk, int nb
 }
 
 /// Inner occ/orb iterations: log to running file only (no stdout).
+/// Orbital inner iterations pass print_occupations=false to avoid repeating n(ik,ib).
 void print_inner_loop_stdout(const std::string& label,
                              int inner_iter,
                              double end_energy,
                              const std::vector<double>& occ_flat,
                              int nk,
-                             int nbands)
+                             int nbands,
+                             const bool print_occupations = true)
 {
     GlobalV::ofs_running << std::fixed << std::setprecision(10)
                          << "  " << label << " " << inner_iter << " end: E = " << end_energy
                          << std::defaultfloat << std::endl;
-    print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk, nbands,
-                              "  Occupations n(ik, ib):", 2);
+    if (print_occupations)
+    {
+        print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk, nbands,
+                                  "  Occupations n(ik, ib):", 2);
+    }
 }
 
 void print_nonconverged_report_running_alternating(double E,
@@ -375,7 +383,6 @@ std::string constraint_method_to_string(const ConstraintMethod m)
     switch (m)
     {
         case ConstraintMethod::AugmentedLagrangian: return "augmented_lagrangian";
-        case ConstraintMethod::DirectMinimization: return "direct_minimization";
         case ConstraintMethod::ProjectedGradient: return "projected_gradient";
         case ConstraintMethod::ActiveSet: return "active_set";
     }
@@ -460,6 +467,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
     add_kv("rdmft_energy_tol", as_sci(cfg.energy_tol));
     add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
+    add_kv("rdmft_orb_energy_tol", as_sci(cfg.orb_energy_tol));
     add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
     add_kv("rdmft_occ_grad_tol", as_sci(cfg.occ_grad_tol));
     add_kv("rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
@@ -1086,8 +1094,25 @@ double RDMFTSolver<TK, TR>::solve_alternating(
                                              {E_one, E_hartree, E_xc, E_ewald, E_total});
         }
 
-        // stdout: occupation table once per outer iteration only (inner loops stay off stdout).
-        std::cout << "  RDMFT outer iter " << (iter + 1) << std::endl;
+        // stdout: one block per outer iteration (inner loops stay off stdout).
+        std::cout << std::fixed << std::setprecision(10)
+                  << "  RDMFT outer iter " << (iter + 1) << "  E_total=" << E << "  (Ry)"
+                  << "  E_one=" << E_one << "  E_Hartree=" << E_hartree << "  E_xc=" << E_xc;
+        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+        {
+            std::cout << "  E_entropy=" << E_entropy;
+        }
+        std::cout << "  E_Ewald=" << E_ewald << std::endl;
+        if (iter == 0)
+        {
+            std::cout << "  dE: first outer (no previous total energy for comparison)" << std::endl;
+        }
+        else
+        {
+            const double dE_signed = E - E_prev;
+            std::cout << std::scientific << "  dE_signed=E-E_prev_outer=" << dE_signed << "  |dE|=" << dE
+                      << std::fixed << std::endl;
+        }
         print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
 
         last_dE = dE;
@@ -1236,7 +1261,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     {
         // Refresh occupations from params so downstream code always sees a
         // consistent (p, n) pair.
-        occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
+        occ_param_->params_to_occ(params, occ_flat);
         const std::vector<double> occ_before_joint_step(occ_flat);
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
@@ -1258,7 +1283,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // Transform occupation gradient dE/dn -> dE/dp (chain rule through the
         // cosine^2 / logistic parameterisation).
         std::vector<double> grad_params;
-        occ_param_->transform_gradient_batch_solver(grad_occ, params, *occ_constraint_, grad_params);
+        occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
 
         // Project orbital gradient onto the Stiefel tangent space at C.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
@@ -1425,7 +1450,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
             for (int i = 0; i < n_occ_params; ++i)
                 params_new[i] = params[i] + alpha * occ_dir[i];
-            occ_param_->params_to_occ_batch(params_new, *occ_constraint_, occ_flat_new);
+            occ_param_->params_to_occ(params_new, occ_flat_new);
 
             E_new = total_energy(occ_flat_new, wfc);
             if (E_new <= E + c1 * alpha * dd_total)
@@ -1464,7 +1489,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             packed_step[i] = alpha * occ_dir[i];
             params[i] += packed_step[i];
         }
-        occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
+        occ_param_->params_to_occ(params, occ_flat);
 
         // Build the packed step for the orbital block. Store the step in
         // the *internal* (scaled) units that match packed_dir:
@@ -1493,7 +1518,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
                     new_grad_occ[i] += pen_grad[i];
             }
             std::vector<double> new_grad_params;
-            occ_param_->transform_gradient_batch_solver(new_grad_occ, params, *occ_constraint_, new_grad_params);
+            occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
             energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
 
             std::vector<double> new_grad_orb_flat;
@@ -1564,8 +1589,30 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 {E_one, E_hartree, E_xc, E_ewald, E_total, E_penalty, E_total + E_penalty});
         }
 
-        // stdout: occupation table once per joint outer iteration only.
-        std::cout << "  RDMFT joint iter " << (iter + 1) << std::endl;
+        // stdout: one block per joint outer iteration (inner line search stays off stdout).
+        std::cout << std::fixed << std::setprecision(10)
+                  << "  RDMFT joint iter " << (iter + 1) << "  E_total=" << E_total << "  (Ry)"
+                  << "  E_one=" << E_one << "  E_Hartree=" << E_hartree << "  E_xc=" << E_xc;
+        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+        {
+            std::cout << "  E_entropy=" << E_entropy;
+        }
+        std::cout << "  E_Ewald=" << E_ewald;
+        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+        {
+            std::cout << "  E_penalty=" << E_penalty << "  E_aug=" << (E_total + E_penalty);
+        }
+        std::cout << std::endl;
+        if (iter == 0)
+        {
+            std::cout << "  dE: first joint iter (no previous total for comparison)" << std::endl;
+        }
+        else
+        {
+            const double dE_signed = E_new - E_prev;
+            std::cout << std::scientific << "  dE_signed=E-E_prev_outer=" << dE_signed << "  |dE|=" << dE
+                      << "  alpha=" << alpha << std::fixed << std::endl;
+        }
         print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
@@ -1593,7 +1640,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         E = E_new;
     }
 
-    occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
+    occ_param_->params_to_occ(params, occ_flat);
     last_result_.final_energy = E;
     if (!last_result_.converged)
     {
@@ -1689,6 +1736,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
+                if (inner == 0 && result.grad_norm < config_.occ_grad_tol)
+                {
+                    result.converged = true;
+                    result.iterations = 1;
+                    result.final_energy = L;
+                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      occ inner ALM: converged at first inner (||dL/dp|| < occ_grad_tol); "
+                                             "skipping line search."
+                                         << std::endl;
+                    break;
+                }
+
                 std::vector<double> dir;
                 opt.compute_direction(grad_params, dir);
 
@@ -1758,122 +1817,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             break;
         }
 
-        case ConstraintMethod::DirectMinimization:
-        {
-            // Direct minimization in the logistic parameter space. The batch
-            // map solves for the global mu shift so the equality constraint is
-            // satisfied without an augmented-Lagrangian penalty.
-            std::vector<double> params;
-            occ_param_->occ_to_params(occ_flat, params);
-
-            EuclideanOptimizer opt(config_.occ_optimizer, config_);
-            opt.init(params.size());
-
-            double E_prev = 0.0;
-            bool have_E_prev = false;
-            std::vector<double> occ_snap_start;
-
-            for (int inner = 0; inner < config_.occ_maxiter; ++inner)
-            {
-                occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
-
-                const std::vector<double> occ_prev_for_dn = occ_snap_start;
-                occ_snap_start = occ_flat;
-                const std::vector<double> occ_at_step_start(occ_flat);
-
-                std::vector<double> grad_occ;
-                psi::Psi<TK> grad_wfc_dummy;
-                const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                                       grad_occ, grad_wfc_dummy);
-                const double c = occ_constraint_->constraint_violation(occ_flat);
-                const double dE = have_E_prev ? (E - E_prev) : 0.0;
-                E_prev = E;
-                have_E_prev = true;
-
-                std::vector<double> grad_params;
-                occ_param_->transform_gradient_batch_solver(grad_occ, params, *occ_constraint_, grad_params);
-
-                result.grad_norm = euclidean_norm(grad_params);
-
-                {
-                    std::ostringstream os;
-                    os << "      occ inner DM " << (inner + 1) << "  E=" << std::fixed
-                       << std::setprecision(10) << E << "  dE=" << std::scientific << dE
-                       << "  |c|=" << std::abs(c) << "  gnorm=" << result.grad_norm;
-                    log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
-                }
-
-                if (result.grad_norm < config_.occ_grad_tol)
-                {
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
-                    result.converged = true;
-                    print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
-                                            occ_flat, nk_, nbands_);
-                    GlobalV::ofs_running << "      occ DM: ||dE/dp||=" << std::scientific << result.grad_norm
-                                         << " < occ_grad_tol=" << config_.occ_grad_tol << std::endl;
-                    break;
-                }
-
-                std::vector<double> dir;
-                opt.compute_direction(grad_params, dir);
-
-                double dd = 0.0;
-                for (size_t i = 0; i < dir.size(); ++i)
-                    dd += dir[i] * grad_params[i];
-
-                auto f_at_step = [&](double step) -> double {
-                    std::vector<double> p_trial(params);
-                    for (size_t i = 0; i < p_trial.size(); ++i)
-                        p_trial[i] += step * dir[i];
-                    std::vector<double> occ_trial;
-                    occ_param_->params_to_occ_batch(p_trial, *occ_constraint_, occ_trial);
-                    return energy_grad_->compute_energy(occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                };
-
-                auto ls = armijo_line_search(f_at_step,
-                                             E,
-                                             dd,
-                                             config_.line_search_alpha_init,
-                                             config_.line_search_c1,
-                                             config_.line_search_rho,
-                                             config_.line_search_max_iter);
-
-                std::vector<double> step_vec(params.size());
-                for (size_t i = 0; i < params.size(); ++i)
-                {
-                    step_vec[i] = ls.step * dir[i];
-                    params[i] += step_vec[i];
-                }
-
-                occ_param_->params_to_occ_batch(params, *occ_constraint_, occ_flat);
-                std::vector<double> new_grad_occ;
-                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                      new_grad_occ, grad_wfc_dummy);
-                std::vector<double> new_grad_params;
-                occ_param_->transform_gradient_batch_solver(new_grad_occ, params, *occ_constraint_, new_grad_params);
-                opt.update(new_grad_params, step_vec);
-
-                result.iterations = inner + 1;
-                result.final_energy = ls.f_new;
-                print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
-                                        occ_flat, nk_, nbands_);
-
-                const double sum_abs_dn = sum_abs_diff(occ_flat, occ_at_step_start);
-                const double gnorm_post = euclidean_norm(new_grad_params);
-                result.grad_norm = gnorm_post;
-                GlobalV::ofs_running << "      sum|dn|=" << std::scientific << sum_abs_dn
-                                     << "  ||dE/dp||_post=" << gnorm_post
-                                     << "  occ_grad_tol=" << config_.occ_grad_tol << std::endl;
-                if (gnorm_post < config_.occ_grad_tol)
-                {
-                    result.converged = true;
-                    break;
-                }
-            }
-            break;
-        }
-
         case ConstraintMethod::ProjectedGradient:
         {
             // Projected gradient method for box-constrained optimization with
@@ -1929,6 +1872,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                        << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm
                        << "  pg_map_norm=" << pg_map_norm;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (inner == 0 && pg_map_norm < config_.occ_grad_tol)
+                {
+                    result.converged = true;
+                    result.iterations = 1;
+                    result.final_energy = E;
+                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (pg_map_norm < occ_grad_tol); "
+                                             "skipping line search."
+                                         << std::endl;
+                    break;
                 }
 
                 // Compute search direction from the configured optimizer.
@@ -2125,6 +2080,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                        << "  free_stationarity=" << free_stationarity
                        << "  comp_violation=" << comp_violation;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (inner == 0 && c_abs < config_.rdmft_occ_tol && free_stationarity < config_.rdmft_occ_tol
+                    && comp_violation < config_.rdmft_occ_tol)
+                {
+                    result.converged = true;
+                    result.iterations = 1;
+                    result.final_energy = E;
+                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      occ inner AS: converged at first inner (primal / stationarity / "
+                                             "complementarity); skipping line search."
+                                         << std::endl;
+                    break;
                 }
 
                 // Compute search direction from the configured optimizer on the
@@ -2369,6 +2337,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
+        const bool orb_e_enabled = (config_.orb_energy_tol > 0.0);
+        const double orb_inner_dE_abs = (inner > 0 && orb_e_enabled)
+                                              ? std::abs(E - prev_orb_E)
+                                              : std::numeric_limits<double>::infinity();
+
         // Log gradient norm with ratio to previous iteration for monitoring
         // monotonic decrease (expected for steepest descent, approximate for CG).
         {
@@ -2391,14 +2364,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         prev_orb_gnorm = result.grad_norm;
         prev_orb_E = E;
 
-        // Orbital sub-problem: exit when Riemannian gradient norm is below threshold.
-        if (result.grad_norm < config_.orb_grad_tol)
+        // Orbital sub-problem: converged when ||G_R|| is small, or (if enabled)
+        // when successive inner energies barely change (flat objective in Ry).
+        const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
+        const bool energy_conv = orb_e_enabled && (orb_inner_dE_abs < config_.orb_energy_tol);
+        if (grad_conv || energy_conv)
         {
             result.converged = true;
             result.iterations = inner + 1;
             result.final_energy = E;
+            if (energy_conv && !grad_conv)
+            {
+                GlobalV::ofs_running << "      orb inner: converged on |dE|=" << std::scientific << orb_inner_dE_abs
+                                      << " < rdmft_orb_energy_tol=" << config_.orb_energy_tol
+                                      << "  (||G_R||=" << result.grad_norm << " >= orb_grad_tol)" << std::defaultfloat
+                                      << std::endl;
+            }
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                    occ_flat, nk_, nbands_);
+                                    occ_flat, nk_, nbands_, false);
             break;
         }
 
@@ -2573,11 +2556,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
             energy_grad_->invalidate_hone_cache();
 
-            if (use_cg && !restart)
+            if (use_cg)
             {
-                // Retry with a fresh steepest-descent step before giving up:
-                // the CG direction may simply be poorly-conditioned. We force
-                // a restart by zeroing prev_dir and continuing.
+                // Any CG line-search failure: drop CG memory and retry next inner
+                // iteration along pure steepest descent (-G_R), including the
+                // first inner (restart==true) where we previously exited early.
+                GlobalV::ofs_running << "      orb inner: Armijo line search failed for CG; "
+                                        "falling back to steepest descent next inner."
+                                     << std::endl;
                 prev_gnorm2 = 0.0;
                 for (int ik = 0; ik < nk; ++ik)
                     for (int ib = 0; ib < nb_local; ++ib)
@@ -2586,7 +2572,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 result.iterations = inner + 1;
                 result.final_energy = E;
                 print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                        occ_flat, nk_, nbands_);
+                                        occ_flat, nk_, nbands_, false);
                 continue;
             }
 
@@ -2599,14 +2585,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 result.iterations = inner + 1;
                 result.final_energy = E;
                 print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                        occ_flat, nk_, nbands_);
+                                        occ_flat, nk_, nbands_, false);
                 continue;
             }
 
             result.iterations = inner + 1;
             result.final_energy = E;
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                    occ_flat, nk_, nbands_);
+                                    occ_flat, nk_, nbands_, false);
             break;
         }
 
@@ -2623,26 +2609,34 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             prev_gnorm2 = gnorm2;
         }
 
-        // Update the L-BFGS history.  For L-BFGS we need the Riemannian
-        // gradient at the retracted point; that costs one extra
-        // energy+gradient evaluation per step but is essential for the
-        // (s, y) curvature pair.  Adam does not need this call because its
-        // internal moments are fully updated inside compute_direction() and
-        // the pre-existing EuclideanOptimizer::update() increments step_
-        // a second time, which would corrupt Adam's bias correction.
+        // Energy + Riemannian gradient at the new iterate (after accepted line search).
+        std::vector<double> grad_occ_new;
+        psi::Psi<TK> grad_wfc_new;
+        energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat), wfc, grad_occ_new, grad_wfc_new);
+        energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
+
+        double post_gnorm2 = 0.0;
+        {
+            const int nk_pg = grad_wfc_new.get_nk();
+            const int nb_pg = grad_wfc_new.get_nbands();
+            const int nbs_pg = grad_wfc_new.get_nbasis();
+            for (int ik = 0; ik < nk_pg; ++ik)
+            {
+                const int nelem = nb_pg * nbs_pg;
+                if (nelem == 0)
+                {
+                    continue;
+                }
+                const TK* gk = &grad_wfc_new(ik, 0, 0);
+                for (int i = 0; i < nelem; ++i)
+                    post_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
+            }
+            Parallel_Reduce::reduce_all(post_gnorm2);
+        }
+        result.grad_norm = std::sqrt(std::max(0.0, post_gnorm2));
+
         if (use_lbfgs)
         {
-            std::vector<double> grad_occ_new;
-            psi::Psi<TK> grad_wfc_new;
-            energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
-                                   wfc, grad_occ_new, grad_wfc_new);
-            energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
-
-            // step_vec = alpha * dir in the flattened real-vector space.
-            // (For the retraction the effective tangent step is also
-            // alpha * dir; the curvature introduced by reorthonormalisation
-            // is O(alpha^2) and can safely be absorbed into the L-BFGS
-            // approximation error.)
             std::vector<double> new_grad_flat, step_flat, dir_flat_step;
             psi_to_flat(grad_wfc_new, new_grad_flat);
             psi_to_flat(dir, dir_flat_step);
@@ -2653,11 +2647,33 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             eucl_opt.update(new_grad_flat, step_flat);
         }
 
+        const double dE_step_abs = std::abs(E_new - E);
+        const bool orb_e_post = (config_.orb_energy_tol > 0.0);
+        const bool post_energy_conv = orb_e_post && (dE_step_abs < config_.orb_energy_tol);
+        const bool post_grad_conv = (result.grad_norm < config_.orb_grad_tol);
+        if (post_grad_conv || post_energy_conv)
+        {
+            result.converged = true;
+            result.iterations = inner + 1;
+            result.final_energy = E_new;
+            if (post_energy_conv && !post_grad_conv)
+            {
+                GlobalV::ofs_running << "      orb inner: converged after step |E_new-E|=" << std::scientific
+                                      << dE_step_abs << " < rdmft_orb_energy_tol=" << config_.orb_energy_tol
+                                      << "  (||G_R||_post=" << result.grad_norm << " >= orb_grad_tol)"
+                                      << std::defaultfloat << std::endl;
+            }
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_, false);
+            energy_grad_->invalidate_hone_cache();
+            break;
+        }
+
         energy_grad_->invalidate_hone_cache();
         result.iterations = inner + 1;
         result.final_energy = E_new;
         print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                occ_flat, nk_, nbands_);
+                                occ_flat, nk_, nbands_, false);
     }
 
     // Final summary of orbital sub-problem

@@ -1120,6 +1120,21 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_orb_energy_tol");
+        item.annotation = "RDMFT orbital inner: |dE| convergence (Ry)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Alternating strategy, orbital inner loop: declare converged when "
+                           "||G_R|| < rdmft_orb_grad_tol, or when |E_k - E_{k-1}| < this (Ry) between "
+                           "inner iterations, or when |E_new - E| < this after an accepted line-search step. "
+                           "Use <= 0 to disable the energy-based criteria (gradient-only).";
+        item.default_value = "1e-8";
+        item.unit = "Ry";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_orb_energy_tol);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_tol");
         item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
         item.category = "Reduced Density Matrix Functional Theory";
@@ -1134,14 +1149,13 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_grad_tol");
-        item.annotation = "RDMFT occupation inner: gradient norm threshold (direct / joint non-ALM)";
+        item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "For direct_minimization, projected_gradient, active_set, and joint strategy "
-                           "without augmented Lagrangian: declare the occupation sub-problem converged "
-                           "when ||dE/dp|| (after the step for DM; PG also uses projected-gradient map norm) "
-                           "is below this. Augmented Lagrangian occupation inner loop still uses rdmft_occ_tol "
-                           "on sum|Δn|.";
+        item.description = "For projected_gradient, active_set, and joint strategy without augmented "
+                           "Lagrangian: declare the occupation sub-problem converged when ||dE/dp|| "
+                           "(PG also uses projected-gradient map norm) is below this. Augmented Lagrangian "
+                           "occupation inner loop still uses rdmft_occ_tol on sum|Δn|.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1167,9 +1181,10 @@ void ReadInput::item_others()
         item.annotation = "Occupation parameterisation for RDMFT: cosine_sq, logistic";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
-        item.description = "Occupation map used in the solver. "
-                           "cosine_sq: n = cos^2(theta), used by the augmented_lagrangian path. "
-                           "logistic: n = 1/(1+exp(-(x+mu*w_k))) with a single global mu solved by bisection to satisfy the electron-number constraint, used by the direct_minimization path.";
+        item.description = "Occupation map n in [0,1] from unconstrained parameters. "
+                           "cosine_sq: n = cos^2(theta). "
+                           "logistic: n = sigma(x) = 1/(1+exp(-x)) per state; with augmented_lagrangian, "
+                           "the electron-number constraint is enforced by the ALM term (not a global mu solve).";
         item.default_value = "cosine_sq";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1193,8 +1208,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Method to enforce the electron-number constraint sum_k w_k sum_i n_ik = N_e. "
-                           "augmented_lagrangian: cosine-square parameterisation with Armijo line search and ALM penalty updates. "
-                           "direct_minimization: logistic parameterisation with global-mu bisection and line search, without penalty term. "
+                           "augmented_lagrangian: ALM on the occupation parameters (rdmft_occ_param cosine_sq or logistic) with Armijo line search. "
                            "projected_gradient: occupation-space projected gradient with Barzilai-Borwein step lengths. "
                            "active_set: legacy reduced-space method that tracks pinned occupations.";
         item.default_value = "augmented_lagrangian";
@@ -1205,11 +1219,10 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_constraint;
-                if (s != "augmented_lagrangian" && s != "direct_minimization"
-                    && s != "projected_gradient" && s != "active_set")
+                if (s != "augmented_lagrangian" && s != "projected_gradient" && s != "active_set")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_constraint must be 'augmented_lagrangian', 'direct_minimization', 'projected_gradient', or 'active_set'");
+                        "rdmft_constraint must be 'augmented_lagrangian', 'projected_gradient', or 'active_set'");
                 }
             }
         };
@@ -1280,7 +1293,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT.";
-        item.default_value = "0.1";
+        item.default_value = "1.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_alpha_step);

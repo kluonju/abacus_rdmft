@@ -80,28 +80,23 @@ Both options map an unconstrained real parameter to the interval [0, 1]:
 
 - **`cosine_sq`** — n = cos²(θ).  The gradient transforms as
   dE/dθ = −sin(2θ) · dE/dn.
-- **`logistic`** — for fixed per-state logits x, the solver determines a single
-  global shift μ from the equality constraint and sets
-  n_{ik} = σ(x_{ik} + μ w_k). The root μ is found by bisection so that
-  Σ_k w_k Σ_i n_{ik}(μ) = N_e exactly up to numerical tolerance. The gradient
-  transform is coupled across all occupations because μ depends on the full
-  parameter vector. This parameterisation is intended for
-  `rdmft_constraint = direct_minimization`.
+- **`logistic`** — per-state sigmoid n = σ(x) = 1/(1+e^{−x}) with independent
+  parameters x. With `rdmft_constraint = augmented_lagrangian`, the
+  electron-number constraint is handled by the augmented Lagrangian (not a
+  global μ solve). Projected gradient and active set work in occupation space
+  and do not use this map.
 
 ### Electron-number constraint
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_constraint` | string | `augmented_lagrangian` | `augmented_lagrangian`, `direct_minimization`, `projected_gradient`, `active_set` |
+| `rdmft_constraint` | string | `augmented_lagrangian` | `augmented_lagrangian`, `projected_gradient`, `active_set` |
 
 The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
 
-- **`augmented_lagrangian`** — The main ALM path. Uses the cosine-square
-  parameterisation, Armijo backtracking, and updates the multiplier λ and
-  penalty μ automatically.
-- **`direct_minimization`** — Direct line-search minimisation in the logistic
-  parameter space. The global shift μ is solved by bisection at each batch map,
-  so the electron-number constraint is enforced without an ALM penalty term.
+- **`augmented_lagrangian`** — Augmented Lagrangian on occupation parameters
+  (`rdmft_occ_param` = `cosine_sq` or `logistic`), Armijo backtracking, and
+  automatic updates of λ and μ.
 - **`projected_gradient`** — Projected occupation updates in occupation space.
   Trial steps use Barzilai-Borwein step lengths with backtracking, then clip to
   [0,1] and re-project to satisfy the electron-number constraint.
@@ -129,7 +124,7 @@ sub-problems:
 | Value | Algorithm | Notes |
 |-------|-----------|-------|
 | `sd` | Steepest descent | Most robust, slowest convergence |
-| `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability |
+| `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability. For **orbitals**, if an Armijo line search fails, the next inner iteration restarts along steepest descent (-G_R). |
 | `lbfgs` | Limited-memory BFGS | Fast for smooth landscapes, uses `rdmft_lbfgs_memory` history vectors. For the orbital sub-problem, the quasi-Newton direction is projected back onto the Stiefel tangent space (Riemannian L-BFGS by projection). |
 | `adam` | Adam | Adaptive learning rate, useful for noisy or ill-conditioned problems. For the orbital sub-problem Adam's Euclidean update is projected onto the tangent space and retracted onto the Stiefel manifold at each step. |
 
@@ -145,7 +140,8 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
-| `rdmft_orb_grad_tol` | real | `1e-6` | Convergence threshold on the norm of the gradient. |
+| `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
+| `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: **also** stop when `|E_k - E_{k-1}|` or post-step `|E_{\mathrm{new}} - E|` (Ry) is below this. Set `<= 0` to disable energy-based stopping (gradient-only). |
 
 ### Initial occupation setup
 
@@ -167,7 +163,7 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `0.1` | Initial trial step length for line search. The orbital sub-problem uses Armijo only; `direct_minimization` also uses Armijo, while `projected_gradient` uses this value as the fallback BB seed. |
+| `rdmft_alpha_step` | real | `1.0` | Initial trial step length for line search. The orbital sub-problem uses Armijo only; augmented Lagrangian occupations use Armijo; `projected_gradient` uses this value as the fallback BB seed. |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by L-BFGS. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
@@ -246,6 +242,9 @@ rdmft_joint_optimizer   lbfgs
 rdmft_alpha_step         0.01
 rdmft_outer_maxiter        300
 ```
+
+The explicit `rdmft_alpha_step 0.01` is smaller than the default `1.0` and
+can stabilise joint HF steps; omit it to use the default.
 
 Here occupations and orbitals are optimised simultaneously on the product
 manifold (new `joint` keyword; `product_manifold` is still accepted as a

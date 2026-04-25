@@ -683,12 +683,14 @@ struct Input_para
     int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
     double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
+    /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
+    double rdmft_orb_energy_tol = 1e-8;
     double rdmft_occ_tol = 1e-7;                 // occupation inner: sum_i |Δn_i| per iteration (e.g. augmented Lagrangian)
     /// Direct / projected / active-set occupation paths: stop when ||dE/dp|| (or mapped PG residual) < this
     double rdmft_occ_grad_tol = 1e-6;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;
-    std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic (direct minimization with global-mu constrained sigmoid)
+    std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
     std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint / occupation update path
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu

@@ -84,17 +84,13 @@ TEST_F(OccupationParamTest, gradient_transform_chain_rule)
     EXPECT_NEAR(param.transform_gradient(dE_dn, p), expected, 1e-12);
 }
 
-TEST_F(OccupationParamTest, Logistic_batch_enforces_electron_number)
+TEST_F(OccupationParamTest, Logistic_vector_maps_to_unit_interval)
 {
     OccupationParam param(OccParamType::Logistic);
-    std::vector<double> wk = {0.4, 0.6};
-    OccupationConstraint constraint(ConstraintMethod::AugmentedLagrangian, 1.3, wk, 2);
-
     std::vector<double> params = {-1.2, 0.1, 0.7, -0.4};
     std::vector<double> occ;
-    param.params_to_occ_batch(params, constraint, occ);
-
-    EXPECT_NEAR(constraint.constraint_violation(occ), 0.0, 1e-11);
+    param.params_to_occ(params, occ);
+    ASSERT_EQ(occ.size(), params.size());
     for (double n : occ)
     {
         EXPECT_GE(n, 0.0);
@@ -102,21 +98,18 @@ TEST_F(OccupationParamTest, Logistic_batch_enforces_electron_number)
     }
 }
 
-TEST_F(OccupationParamTest, Logistic_batch_gradient_matches_finite_difference)
+TEST_F(OccupationParamTest, Logistic_transform_gradient_batch_matches_finite_difference)
 {
     OccupationParam param(OccParamType::Logistic);
-    std::vector<double> wk = {0.4, 0.6};
-    OccupationConstraint constraint(ConstraintMethod::AugmentedLagrangian, 1.1, wk, 2);
-
     const std::vector<double> params = {-0.8, 0.2, 0.5, -0.3};
     const std::vector<double> dE_dn = {0.7, -1.1, 0.4, 1.3};
 
     std::vector<double> analytic;
-    param.transform_gradient_batch_solver(dE_dn, params, constraint, analytic);
+    param.transform_gradient_batch(dE_dn, params, analytic);
 
     auto objective = [&](const std::vector<double>& p) {
         std::vector<double> occ;
-        param.params_to_occ_batch(p, constraint, occ);
+        param.params_to_occ(p, occ);
         double value = 0.0;
         for (size_t i = 0; i < occ.size(); ++i)
             value += dE_dn[i] * occ[i];
