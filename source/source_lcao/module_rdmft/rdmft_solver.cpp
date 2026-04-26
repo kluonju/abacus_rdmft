@@ -1059,13 +1059,6 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double occ_time_sec = 0.0;
     double orb_time_sec = 0.0;
 
-    // After two consecutive converged inner solves for occ (resp. orb), skip that
-    // subproblem on later outer iterations until the alternating loop ends.
-    int occ_consec_converged = 0;
-    int orb_consec_converged = 0;
-    bool skip_occ = false;
-    bool skip_orb = false;
-
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
@@ -1083,91 +1076,33 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             }
         }
 
-        // 1. Optimize occupations with orbitals fixed (skipped after two consecutive converged inners).
+        // 1. Optimize occupations with orbitals fixed (every outer iteration).
         OptResult occ_result;
-        if (!skip_occ)
-        {
-            const auto t_occ0 = std::chrono::steady_clock::now();
-            occ_result = optimize_occupations(occ_flat, wfc);
-            const auto t_occ1 = std::chrono::steady_clock::now();
-            occ_time_sec += std::chrono::duration<double>(t_occ1 - t_occ0).count();
-            ++occ_calls;
-            occ_inner_total += occ_result.iterations;
-            const char* occ_skip_armed = "";
-            if (occ_result.converged)
-            {
-                ++occ_consec_converged;
-                if (occ_consec_converged >= 2)
-                {
-                    skip_occ = true;
-                    occ_skip_armed = "  [subsequent outers: skip occupation optimization]";
-                }
-            }
-            else
-            {
-                occ_consec_converged = 0;
-            }
-            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
-            GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
-                << std::scientific << occ_result.grad_norm
-                << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
-                << (occ_result.converged ? "  (converged)" : "")
-                << "  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
-                << occ_skip_armed << std::defaultfloat << std::endl;
-        }
-        else
-        {
-            occ_result.converged = true;
-            occ_result.iterations = 0;
-            occ_result.grad_norm = 0.0;
-            occ_result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
-            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
-            GlobalV::ofs_running << "    occ inner: skipped (two consecutive converged occupation solves)  "
-                << "0 iters, gnorm=0  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
-                << "  (converged)  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
-                << std::defaultfloat << std::endl;
-        }
+        const auto t_occ0 = std::chrono::steady_clock::now();
+        occ_result = optimize_occupations(occ_flat, wfc);
+        const auto t_occ1 = std::chrono::steady_clock::now();
+        occ_time_sec += std::chrono::duration<double>(t_occ1 - t_occ0).count();
+        ++occ_calls;
+        occ_inner_total += occ_result.iterations;
+        const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
+        GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
+            << std::scientific << occ_result.grad_norm
+            << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
+            << (occ_result.converged ? "  (converged)" : "")
+            << "  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
+            << std::defaultfloat << std::endl;
 
-        // 2. Optimize orbitals with occupations fixed (skipped after two consecutive converged inners).
-        OptResult orb_result;
-        if (!skip_orb)
-        {
-            const auto t_orb0 = std::chrono::steady_clock::now();
-            orb_result = optimize_orbitals(occ_flat, wfc);
-            const auto t_orb1 = std::chrono::steady_clock::now();
-            orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
-            ++orb_calls;
-            orb_inner_total += orb_result.iterations;
-            const char* orb_skip_armed = "";
-            if (orb_result.converged)
-            {
-                ++orb_consec_converged;
-                if (orb_consec_converged >= 2)
-                {
-                    skip_orb = true;
-                    orb_skip_armed = "  [subsequent outers: skip orbital optimization]";
-                }
-            }
-            else
-            {
-                orb_consec_converged = 0;
-            }
-            GlobalV::ofs_running << "    orb inner: " << orb_result.iterations << " iters, gnorm="
-                << std::scientific << orb_result.grad_norm
-                << "  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
-                << (orb_result.converged ? "  (converged)" : "")
-                << orb_skip_armed << std::defaultfloat << std::endl;
-        }
-        else
-        {
-            orb_result.converged = true;
-            orb_result.iterations = 0;
-            orb_result.grad_norm = 0.0;
-            orb_result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
-            GlobalV::ofs_running << "    orb inner: skipped (two consecutive converged orbital solves)  "
-                << "0 iters, gnorm=0  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
-                << "  (converged)" << std::defaultfloat << std::endl;
-        }
+        // 2. Optimize orbitals with occupations fixed (every outer iteration).
+        const auto t_orb0 = std::chrono::steady_clock::now();
+        OptResult orb_result = optimize_orbitals(occ_flat, wfc);
+        const auto t_orb1 = std::chrono::steady_clock::now();
+        orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
+        ++orb_calls;
+        orb_inner_total += orb_result.iterations;
+        GlobalV::ofs_running << "    orb inner: " << orb_result.iterations << " iters, gnorm="
+            << std::scientific << orb_result.grad_norm
+            << "  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
+            << (orb_result.converged ? "  (converged)" : "") << std::endl;
 
         // 3. Evaluate full energy
         std::vector<double> grad_occ;
