@@ -1183,15 +1183,24 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        const bool outer_converged = occ_result.converged
-                                     && orb_result.converged
-                                     && (dE < config_.energy_tol);
+        // Outer stop: |E - E_prev| < rdmft_energy_tol (after first outer), or if energy_tol <= 0 require
+        // both occupation and orbital inner loops to report converged.
+        const bool energy_stop = (config_.energy_tol > 0.0) && (iter > 0) && (dE < config_.energy_tol);
+        const bool inner_both = occ_result.converged && orb_result.converged;
+        const bool outer_converged = energy_stop
+                                     || (inner_both && (config_.energy_tol <= 0.0
+                                                        || ((iter > 0) && (dE < config_.energy_tol))));
         if (outer_converged)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
             last_result_.final_energy = E;
             last_result_.grad_norm = std::max(occ_result.grad_norm, orb_result.grad_norm);
+            if (energy_stop)
+            {
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol)"
+                                     << std::endl;
+            }
             break;
         }
 
@@ -1788,9 +1797,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;
 
-        const bool outer_converged_joint = occ_conv_joint
-                                           && orb_conv_joint
-                                           && (dE < config_.energy_tol);
+        const bool energy_stop_joint = (config_.energy_tol > 0.0) && (iter > 0) && (dE < config_.energy_tol);
+        const bool inner_both_joint = occ_conv_joint && orb_conv_joint;
+        const bool outer_converged_joint = energy_stop_joint
+                                           || (inner_both_joint && (config_.energy_tol <= 0.0
+                                                                    || ((iter > 0) && (dE < config_.energy_tol))));
         if (outer_converged_joint)
         {
             last_result_.converged = true;
@@ -1798,6 +1809,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
             last_result_.final_energy = E_new;
             last_result_.grad_norm = gnorm_total;
             E = E_new;
+            if (energy_stop_joint)
+            {
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol)"
+                                     << std::endl;
+            }
             break;
         }
         E_prev = E_new;
