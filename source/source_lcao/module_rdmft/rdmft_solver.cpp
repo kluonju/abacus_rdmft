@@ -1052,14 +1052,19 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double last_occ_gnorm = 0.0;
     double last_orb_gnorm = 0.0;
     int outer_iters_done = 0;
-    int occ_small_dn_streak = 0;
-    bool skip_all_occ_optimization = false;
     int occ_calls = 0;
     int orb_calls = 0;
     int occ_inner_total = 0;
     int orb_inner_total = 0;
     double occ_time_sec = 0.0;
     double orb_time_sec = 0.0;
+
+    // After two consecutive converged inner solves for occ (resp. orb), skip that
+    // subproblem on later outer iterations until the alternating loop ends.
+    int occ_consec_converged = 0;
+    int orb_consec_converged = 0;
+    bool skip_occ = false;
+    bool skip_orb = false;
 
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
@@ -1078,11 +1083,9 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             }
         }
 
-        // 1. Optimize occupations with orbitals fixed. If the outer-cycle
-        // occupation change sum|dn| is tiny for two consecutive cycles,
-        // skip all subsequent occupation optimizations.
+        // 1. Optimize occupations with orbitals fixed (skipped after two consecutive converged inners).
         OptResult occ_result;
-        if (!skip_all_occ_optimization)
+        if (!skip_occ)
         {
             const auto t_occ0 = std::chrono::steady_clock::now();
             occ_result = optimize_occupations(occ_flat, wfc);
@@ -1090,31 +1093,27 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             occ_time_sec += std::chrono::duration<double>(t_occ1 - t_occ0).count();
             ++occ_calls;
             occ_inner_total += occ_result.iterations;
-            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
-            if (occ_outer_dn_sum < config_.rdmft_occ_tol)
+            const char* occ_skip_armed = "";
+            if (occ_result.converged)
             {
-                ++occ_small_dn_streak;
-                if (occ_small_dn_streak >= 2)
+                ++occ_consec_converged;
+                if (occ_consec_converged >= 2)
                 {
-                    skip_all_occ_optimization = true;
-                    GlobalV::ofs_running
-                        << "    occ inner: two consecutive outer sum|dn| below threshold ("
-                        << std::scientific << config_.rdmft_occ_tol
-                        << "), skip all later occupation optimizations" << std::endl;
+                    skip_occ = true;
+                    occ_skip_armed = "  [subsequent outers: skip occupation optimization]";
                 }
             }
             else
             {
-                occ_small_dn_streak = 0;
+                occ_consec_converged = 0;
             }
-
+            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
             GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
                 << std::scientific << occ_result.grad_norm
                 << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
                 << (occ_result.converged ? "  (converged)" : "")
                 << "  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
-                << "  tiny_streak=" << occ_small_dn_streak
-                << std::endl;
+                << occ_skip_armed << std::defaultfloat << std::endl;
         }
         else
         {
@@ -1122,22 +1121,53 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             occ_result.iterations = 0;
             occ_result.grad_norm = 0.0;
             occ_result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
-            GlobalV::ofs_running
-                << "    occ inner: skipped (two consecutive outer sum|dn| below threshold)"
-                << std::endl;
+            const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
+            GlobalV::ofs_running << "    occ inner: skipped (two consecutive converged occupation solves)  "
+                << "0 iters, gnorm=0  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
+                << "  (converged)  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
+                << std::defaultfloat << std::endl;
         }
 
-        // 2. Optimize orbitals with occupations fixed
-        const auto t_orb0 = std::chrono::steady_clock::now();
-        auto orb_result = optimize_orbitals(occ_flat, wfc);
-        const auto t_orb1 = std::chrono::steady_clock::now();
-        orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
-        ++orb_calls;
-        orb_inner_total += orb_result.iterations;
-        GlobalV::ofs_running << "    orb inner: " << orb_result.iterations << " iters, gnorm="
-            << std::scientific << orb_result.grad_norm
-            << "  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
-            << (orb_result.converged ? "  (converged)" : "") << std::endl;
+        // 2. Optimize orbitals with occupations fixed (skipped after two consecutive converged inners).
+        OptResult orb_result;
+        if (!skip_orb)
+        {
+            const auto t_orb0 = std::chrono::steady_clock::now();
+            orb_result = optimize_orbitals(occ_flat, wfc);
+            const auto t_orb1 = std::chrono::steady_clock::now();
+            orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
+            ++orb_calls;
+            orb_inner_total += orb_result.iterations;
+            const char* orb_skip_armed = "";
+            if (orb_result.converged)
+            {
+                ++orb_consec_converged;
+                if (orb_consec_converged >= 2)
+                {
+                    skip_orb = true;
+                    orb_skip_armed = "  [subsequent outers: skip orbital optimization]";
+                }
+            }
+            else
+            {
+                orb_consec_converged = 0;
+            }
+            GlobalV::ofs_running << "    orb inner: " << orb_result.iterations << " iters, gnorm="
+                << std::scientific << orb_result.grad_norm
+                << "  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
+                << (orb_result.converged ? "  (converged)" : "")
+                << orb_skip_armed << std::defaultfloat << std::endl;
+        }
+        else
+        {
+            orb_result.converged = true;
+            orb_result.iterations = 0;
+            orb_result.grad_norm = 0.0;
+            orb_result.final_energy = energy_grad_->compute_energy(occ_flat, wfc);
+            GlobalV::ofs_running << "    orb inner: skipped (two consecutive converged orbital solves)  "
+                << "0 iters, gnorm=0  E=" << std::fixed << std::setprecision(10) << orb_result.final_energy
+                << "  (converged)" << std::defaultfloat << std::endl;
+        }
 
         // 3. Evaluate full energy
         std::vector<double> grad_occ;
@@ -2128,18 +2158,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (inner == 0 && pg_map_norm < config_.occ_grad_tol)
-                {
-                    result.converged = true;
-                    result.iterations = 1;
-                    result.final_energy = E;
-                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
-                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (pg_map_norm < occ_grad_tol); "
-                                             "skipping line search."
-                                         << std::endl;
-                    break;
-                }
-
                 // Compute search direction from the configured optimizer.
                 std::vector<double> dir;
                 pg_opt.compute_direction(grad_occ, dir);
@@ -2260,10 +2278,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     << "  N_e=" << n_electrons_ << std::endl;
                 const double pg_stop_norm = projected_gradient_map_norm(
                     occ_flat, new_grad_occ, *occ_constraint_, config_.line_search_alpha_init);
-                GlobalV::ofs_running << "      PG stop-check: pg_map_norm=" << std::scientific
-                                     << pg_stop_norm << "  tol=" << config_.occ_grad_tol << std::endl;
-                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol)
-                    || pg_stop_norm < config_.occ_grad_tol)
+                GlobalV::ofs_running << "      PG stop-check: sum|dn|=" << std::scientific << sum_abs_dn
+                                     << "  rdmft_occ_tol=" << config_.rdmft_occ_tol
+                                     << "  (converged when sum|dn| < rdmft_occ_tol); pg_map_norm="
+                                     << pg_stop_norm << " (diagnostic)" << std::defaultfloat << std::endl;
+                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol))
                 {
                     result.converged = true;
                     break;

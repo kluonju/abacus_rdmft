@@ -1149,8 +1149,8 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Stop the occupation sub-iteration when sum_i |n_i^{new}-n_i^{old}| "
-                           "in one inner step is below this.";
+        item.description = "Projected gradient and augmented Lagrangian: declare the occupation inner "
+                           "loop converged when sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this.";
         item.default_value = "1e-8";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1162,10 +1162,9 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "For projected_gradient, active_set, and joint strategy without augmented "
-                           "Lagrangian: declare the occupation sub-problem converged when ||dE/dp|| "
-                           "(PG also uses projected-gradient map norm) is below this. Augmented Lagrangian "
-                           "occupation inner loop still uses rdmft_occ_tol on sum|Δn|.";
+        item.description = "Active set, joint (non-ALM), augmented Lagrangian first-inner, etc.: gradient "
+                           "norm thresholds as implemented in the solver. Projected gradient occupation "
+                           "convergence uses rdmft_occ_tol on sum|Δn|, not this parameter.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

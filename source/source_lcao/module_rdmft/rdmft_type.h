@@ -148,11 +148,10 @@ struct RDMFTConfig
     /// Alternating orbital inner loop: also stop when |E_k - E_{k-1}| or post-step |E_new-E| < this (Ry).
     /// Set <= 0 to disable and require only orb_grad_tol.
     double orb_energy_tol = 1e-8;
-    /// Inner occupation step (e.g. augmented Lagrangian): stop when sum_i |Δn_i| in one iteration
-    /// falls below this.
+    /// Inner occupation step (augmented Lagrangian, projected gradient, etc.): stop when
+    /// sum_i |n_i^{new}-n_i^{old}| in one inner iteration falls below this.
     double rdmft_occ_tol = 1e-8;
-    /// Joint (non-ALM) / projected gradient: stop occupation inner loop when the Euclidean norm of
-    /// the occupation-parameter gradient ||dE/dp|| is below this (after projected-gradient map for PG).
+    /// Augmented Lagrangian / active set / joint: gradient-based thresholds as in solver (not PG sum|dn|).
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
