@@ -1189,13 +1189,15 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_param");
-        item.annotation = "Occupation parameterisation for RDMFT: cosine_sq, logistic";
+        item.annotation = "Occupation parameterisation for RDMFT: cosine_sq, logistic, sigma_shift";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Occupation map n in [0,1] from unconstrained parameters. "
                            "cosine_sq: n = cos^2(theta). "
                            "logistic: n = sigma(x) = 1/(1+exp(-x)) per state; with augmented_lagrangian, "
-                           "the electron-number constraint is enforced by the ALM term (not a global mu solve).";
+                           "the electron-number constraint is enforced by the ALM term (not a global mu solve). "
+                           "sigma_shift: n_{ik} = sigma(z_{ik}+lambda) where lambda is solved each step by "
+                           "bisection to satisfy sum_k w_k sum_i n_{ik} = N_e exactly; no ALM penalty needed.";
         item.default_value = "cosine_sq";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1204,10 +1206,10 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& s = para.input.rdmft_occ_param;
-                if (s != "cosine_sq" && s != "logistic")
+                if (s != "cosine_sq" && s != "logistic" && s != "sigma_shift")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_occ_param must be 'cosine_sq' or 'logistic'");
+                        "rdmft_occ_param must be 'cosine_sq', 'logistic', or 'sigma_shift'");
                 }
             }
         };

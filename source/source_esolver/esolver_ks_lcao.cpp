@@ -645,6 +645,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         if (inp.rdmft_occ_param == "logistic")
             rdmft_config.occ_param = rdmft::OccParamType::Logistic;
+        else if (inp.rdmft_occ_param == "sigma_shift")
+            rdmft_config.occ_param = rdmft::OccParamType::SigmaShift;
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
 

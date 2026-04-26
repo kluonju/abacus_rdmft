@@ -690,7 +690,7 @@ struct Input_para
     double rdmft_occ_grad_tol = 1e-6;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;
-    std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic
+    std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic, sigma_shift
     std::string rdmft_constraint = "augmented_lagrangian"; // electron-number constraint / occupation update path
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu

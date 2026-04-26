@@ -21,7 +21,12 @@ enum class XCFunctionalType
 enum class OccParamType
 {
     CosineSq,
-    Logistic
+    Logistic,
+    /// Unconstrained parameterization: n_{ik} = σ(z_{ik} + λ) where λ is
+    /// solved each step by bisection so that Σ_k w_k Σ_i n_{ik} = N_e.
+    /// The electron-count constraint is satisfied exactly at every iteration;
+    /// no augmented-Lagrangian penalty is needed in the joint strategy.
+    SigmaShift
 };
 
 enum class OccInitMode

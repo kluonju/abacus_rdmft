@@ -423,6 +423,7 @@ std::string occ_param_to_string(const OccParamType t)
     {
         case OccParamType::CosineSq: return "cosine_sq";
         case OccParamType::Logistic: return "logistic";
+        case OccParamType::SigmaShift: return "sigma_shift";
     }
     return "unknown";
 }
@@ -789,6 +790,14 @@ void RDMFTSolver<TK, TR>::init(
 
     occ_constraint_->set_lambda(config_.aug_lag_lambda_init);
     occ_constraint_->set_mu(config_.aug_lag_mu_init);
+
+    // Sigma-shift parameterization: electron constraint is satisfied exactly
+    // each step via bisection; no augmented-Lagrangian penalty needed.
+    if (config_.occ_param == OccParamType::SigmaShift)
+    {
+        sigma_shift_param_ = std::make_unique<SigmaShiftOccParam>(
+            n_electrons_, kweights, nbands_);
+    }
 }
 
 template <typename TK, typename TR>
@@ -1274,9 +1283,18 @@ double RDMFTSolver<TK, TR>::solve_joint(
                          << std::endl;
     const auto t_joint_start = std::chrono::steady_clock::now();
 
+    // Sigma-shift active flag and mutable shift λ (updated each outer iteration).
+    // If the enum is SigmaShift, sigma_shift_param_ must have been created in init().
+    assert(config_.occ_param != OccParamType::SigmaShift || sigma_shift_param_ != nullptr);
+    const bool use_sigma_shift = (config_.occ_param == OccParamType::SigmaShift);
+    double sigma_lambda = 0.0;
+
     // Convert occupations to unconstrained parameters.
     std::vector<double> params(occ_flat.size());
-    occ_param_->occ_to_params(occ_flat, params);
+    if (use_sigma_shift)
+        sigma_shift_param_->occ_to_params(occ_flat, params);
+    else
+        occ_param_->occ_to_params(occ_flat, params);
 
     const int n_occ_params = static_cast<int>(params.size());
     const int nk = wfc.get_nk();
@@ -1318,7 +1336,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
                             const psi::Psi<TK>& wfc_in) -> double {
         double E_val = energy_grad_->compute_energy(occ_in,
                                 const_cast<psi::Psi<TK>&>(wfc_in));
-        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+        if (!use_sigma_shift && config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
             E_val += occ_constraint_->augmented_lagrangian_penalty(occ_in);
         return E_val;
     };
@@ -1332,7 +1350,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
     {
         // Refresh occupations from params so downstream code always sees a
         // consistent (p, n) pair.
-        occ_param_->params_to_occ(params, occ_flat);
+        if (use_sigma_shift)
+        {
+            // Sigma-shift: determine λ by bisection, then n = σ(z+λ).
+            sigma_lambda = sigma_shift_param_->compute_lambda(params);
+            sigma_shift_param_->params_to_occ(params, sigma_lambda, occ_flat);
+        }
+        else
+        {
+            occ_param_->params_to_occ(params, occ_flat);
+        }
         const std::vector<double> occ_before_joint_step(occ_flat);
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
 
@@ -1341,8 +1368,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
         psi::Psi<TK> grad_wfc;
         E = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc);
 
-        // Add augmented Lagrangian penalty.
-        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+        // Add augmented Lagrangian penalty (skipped for sigma-shift).
+        if (!use_sigma_shift && config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
             E += occ_constraint_->augmented_lagrangian_penalty(occ_flat);
             std::vector<double> penalty_grad;
@@ -1352,9 +1379,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
 
         // Transform occupation gradient dE/dn -> dE/dp (chain rule through the
-        // cosine^2 / logistic parameterisation).
+        // parameterisation: cosine^2, logistic, or sigma-shift).
         std::vector<double> grad_params;
-        occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
+        if (use_sigma_shift)
+            sigma_shift_param_->transform_gradient_batch(grad_occ, params, sigma_lambda, grad_params);
+        else
+            occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
 
         // Project orbital gradient onto the Stiefel tangent space at C.
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
@@ -1525,22 +1555,42 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
             for (int i = 0; i < n_occ_params; ++i)
                 params_new[i] = params[i] + step * occ_dir[i];
-            occ_param_->params_to_occ(params_new, occ_flat_new);
+
+            // Compute occupations at trial point.
+            double lambda_trial = 0.0;
+            if (use_sigma_shift)
+            {
+                lambda_trial = sigma_shift_param_->compute_lambda(params_new);
+                sigma_shift_param_->params_to_occ(params_new, lambda_trial, occ_flat_new);
+            }
+            else
+            {
+                occ_param_->params_to_occ(params_new, occ_flat_new);
+            }
 
             if (grad_params_out && grad_wfc_out && dd_out)
             {
                 std::vector<double> g_occ_trial;
                 psi::Psi<TK> g_wfc_trial;
                 double E_val = energy_grad_->compute(occ_flat_new, wfc, g_occ_trial, g_wfc_trial);
-                if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+                if (use_sigma_shift)
+                {
+                    sigma_shift_param_->transform_gradient_batch(
+                        g_occ_trial, params_new, lambda_trial, *grad_params_out);
+                }
+                else if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
                 {
                     E_val += occ_constraint_->augmented_lagrangian_penalty(occ_flat_new);
                     std::vector<double> pen_g;
                     occ_constraint_->augmented_lagrangian_gradient(occ_flat_new, pen_g);
                     for (size_t i = 0; i < g_occ_trial.size(); ++i)
                         g_occ_trial[i] += pen_g[i];
+                    occ_param_->transform_gradient_batch(g_occ_trial, params_new, *grad_params_out);
                 }
-                occ_param_->transform_gradient_batch(g_occ_trial, params_new, *grad_params_out);
+                else
+                {
+                    occ_param_->transform_gradient_batch(g_occ_trial, params_new, *grad_params_out);
+                }
                 energy_grad_->project_orbital_gradient(wfc, g_wfc_trial);
                 *grad_wfc_out = g_wfc_trial;
 
@@ -1583,7 +1633,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
             }
             for (int i = 0; i < n_occ_params; ++i)
                 params_new[i] = params[i] + alpha * occ_dir[i];
-            occ_param_->params_to_occ(params_new, occ_flat_new);
+            if (use_sigma_shift)
+            {
+                const double lam_sw = sigma_shift_param_->compute_lambda(params_new);
+                sigma_shift_param_->params_to_occ(params_new, lam_sw, occ_flat_new);
+            }
+            else
+            {
+                occ_param_->params_to_occ(params_new, occ_flat_new);
+            }
         }
         else
         {
@@ -1660,7 +1718,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
             packed_step[i] = alpha * occ_dir[i];
             params[i] += packed_step[i];
         }
-        occ_param_->params_to_occ(params, occ_flat);
+        if (use_sigma_shift)
+        {
+            // Recompute λ for the new params, then update occupations.
+            sigma_lambda = sigma_shift_param_->compute_lambda(params);
+            sigma_shift_param_->params_to_occ(params, sigma_lambda, occ_flat);
+        }
+        else
+        {
+            occ_param_->params_to_occ(params, occ_flat);
+        }
 
         // Build the packed step for the orbital block. Store the step in
         // the *internal* (scaled) units that match packed_dir:
@@ -1681,15 +1748,25 @@ double RDMFTSolver<TK, TR>::solve_joint(
             std::vector<double> new_grad_occ;
             psi::Psi<TK> new_grad_wfc;
             energy_grad_->compute(occ_flat, wfc, new_grad_occ, new_grad_wfc);
-            if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
-            {
-                std::vector<double> pen_grad;
-                occ_constraint_->augmented_lagrangian_gradient(occ_flat, pen_grad);
-                for (size_t i = 0; i < new_grad_occ.size(); ++i)
-                    new_grad_occ[i] += pen_grad[i];
-            }
+
             std::vector<double> new_grad_params;
-            occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
+            if (use_sigma_shift)
+            {
+                // sigma_lambda was already updated when committing the step above.
+                sigma_shift_param_->transform_gradient_batch(
+                    new_grad_occ, params, sigma_lambda, new_grad_params);
+            }
+            else
+            {
+                if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+                {
+                    std::vector<double> pen_grad;
+                    occ_constraint_->augmented_lagrangian_gradient(occ_flat, pen_grad);
+                    for (size_t i = 0; i < new_grad_occ.size(); ++i)
+                        new_grad_occ[i] += pen_grad[i];
+                }
+                occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
+            }
             energy_grad_->project_orbital_gradient(wfc, new_grad_wfc);
 
             std::vector<double> new_grad_orb_flat;
@@ -1704,8 +1781,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
             joint_opt.update(new_packed_grad, packed_step);
         }
 
-        // Augmented-Lagrangian multiplier refresh.
-        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
+        // Augmented-Lagrangian multiplier refresh (not needed for sigma-shift).
+        if (!use_sigma_shift && config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
             occ_constraint_->update_multiplier(occ_flat);
             if (std::abs(occ_constraint_->constraint_violation(occ_flat)) > 1e-6)
@@ -1820,7 +1897,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
         E = E_new;
     }
 
-    occ_param_->params_to_occ(params, occ_flat);
+    if (use_sigma_shift)
+    {
+        sigma_lambda = sigma_shift_param_->compute_lambda(params);
+        sigma_shift_param_->params_to_occ(params, sigma_lambda, occ_flat);
+    }
+    else
+    {
+        occ_param_->params_to_occ(params, occ_flat);
+    }
     last_result_.final_energy = E;
     if (!last_result_.converged)
     {

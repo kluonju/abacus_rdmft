@@ -32,7 +32,7 @@ class OccupationParam
             double c = std::cos(p);
             return c * c;
         }
-        else
+        else // Logistic or SigmaShift (SigmaShift uses logistic formula; shift handled separately)
         {
             return 1.0 / (1.0 + std::exp(-p));
         }
@@ -46,7 +46,7 @@ class OccupationParam
         {
             return std::acos(std::sqrt(n));
         }
-        else
+        else // Logistic or SigmaShift
         {
             return std::log(n / (1.0 - n));
         }
@@ -59,7 +59,7 @@ class OccupationParam
         {
             return -std::sin(2.0 * p);
         }
-        else
+        else // Logistic or SigmaShift
         {
             double n = to_occ(p);
             return n * (1.0 - n);
@@ -367,6 +367,143 @@ class OccupationConstraint
     int nk_;
     double lambda_;
     double mu_;
+};
+
+
+/// Unconstrained occupation parameterization via sigmoid with adaptive shift.
+///
+/// Given unconstrained z ∈ R^{Nk×Nb}, the shift λ ∈ R is determined each
+/// step by bisection from:
+///   Σ_k w_k Σ_i σ(z_{ik} + λ) = N_e,   σ(x) = 1 / (1 + e^{-x})
+/// then n_{ik} = σ(z_{ik} + λ) automatically satisfies 0 < n < 1 and the
+/// electron-count constraint.  No augmented-Lagrangian penalty is needed in
+/// the joint (product-manifold) strategy.
+///
+/// The gradient chain rule gives:
+///   dE/dz_{ik} = dE/dn_{ik} · σ'(z_{ik} + λ) = dE/dn_{ik} · n_{ik}(1−n_{ik})
+/// (treating λ as a Lagrange multiplier determined externally at each step).
+class SigmaShiftOccParam
+{
+  public:
+    SigmaShiftOccParam(double n_electrons,
+                       const std::vector<double>& kweights,
+                       int nbands)
+        : n_electrons_(n_electrons), kweights_(kweights),
+          nbands_(nbands), nk_(static_cast<int>(kweights.size())),
+          lambda_(0.0)
+    {}
+
+    /// Find λ by bisection such that Σ_k w_k Σ_i σ(z_{ik}+λ) = N_e.
+    /// Stores and returns the computed λ.
+    double compute_lambda(const std::vector<double>& z_params)
+    {
+        assert(static_cast<int>(z_params.size()) == nk_ * nbands_);
+        // Convergence tolerance: electron-count error smaller than ~1e-12 electrons.
+        const double tol = 1e-12;
+        // Safety cap: |λ| > 1e6 would push all σ(z+λ) to 0 or 1, so the
+        // weighted sum is bounded and the bisection must have converged by then.
+        const double lambda_bound = 1e6;
+        // 100 bisection steps give 2^{-100} ≈ 1e-30 accuracy in the bracket,
+        // which is far better than the tolerance above.
+        const int max_bisect_iter = 100;
+
+        auto weighted_sum = [&](double lam) -> double {
+            double s = 0.0;
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int ib = 0; ib < nbands_; ++ib)
+                    s += kweights_[ik] / (1.0 + std::exp(-(z_params[ik * nbands_ + ib] + lam)));
+            return s;
+        };
+
+        const double s0 = weighted_sum(0.0);
+        if (std::abs(s0 - n_electrons_) < tol)
+        {
+            lambda_ = 0.0;
+            return lambda_;
+        }
+
+        double lam_lo, lam_hi;
+        if (s0 < n_electrons_)
+        {
+            // Need to shift sigmoid right (increase all occupations).
+            lam_lo = 0.0;
+            lam_hi = 1.0;
+            while (weighted_sum(lam_hi) < n_electrons_ && lam_hi < lambda_bound)
+                lam_hi *= 2.0;
+        }
+        else
+        {
+            // Need to shift sigmoid left (decrease all occupations).
+            lam_lo = -1.0;
+            lam_hi = 0.0;
+            while (weighted_sum(lam_lo) > n_electrons_ && lam_lo > -lambda_bound)
+                lam_lo *= 2.0;
+        }
+
+        for (int it = 0; it < max_bisect_iter; ++it)
+        {
+            const double lam_mid = 0.5 * (lam_lo + lam_hi);
+            const double s_mid = weighted_sum(lam_mid);
+            if (std::abs(s_mid - n_electrons_) < tol)
+            {
+                lam_lo = lam_hi = lam_mid;
+                break;
+            }
+            if (s_mid < n_electrons_)
+                lam_lo = lam_mid;
+            else
+                lam_hi = lam_mid;
+        }
+
+        lambda_ = 0.5 * (lam_lo + lam_hi);
+        return lambda_;
+    }
+
+    /// Map z → n using given lambda: n_i = σ(z_i + lambda).
+    void params_to_occ(const std::vector<double>& z,
+                       double lambda,
+                       std::vector<double>& occ) const
+    {
+        occ.resize(z.size());
+        for (size_t i = 0; i < z.size(); ++i)
+            occ[i] = 1.0 / (1.0 + std::exp(-(z[i] + lambda)));
+    }
+
+    /// Map n → z (initial parameterization): z_i = logit(n_i) = log(n/(1-n)).
+    void occ_to_params(const std::vector<double>& occ,
+                       std::vector<double>& z) const
+    {
+        z.resize(occ.size());
+        for (size_t i = 0; i < occ.size(); ++i)
+        {
+            // Clamp strictly away from {0,1} to keep logit finite.
+            const double n = std::max(1e-12, std::min(1.0 - 1e-12, occ[i]));
+            z[i] = std::log(n / (1.0 - n));
+        }
+    }
+
+    /// Chain rule: dE/dz_i = dE/dn_i · σ'(z_i + λ) = dE/dn_i · n_i(1−n_i).
+    void transform_gradient_batch(const std::vector<double>& dE_dn,
+                                  const std::vector<double>& z,
+                                  double lambda,
+                                  std::vector<double>& dE_dz) const
+    {
+        dE_dz.resize(dE_dn.size());
+        for (size_t i = 0; i < dE_dn.size(); ++i)
+        {
+            const double n = 1.0 / (1.0 + std::exp(-(z[i] + lambda)));
+            dE_dz[i] = dE_dn[i] * n * (1.0 - n);
+        }
+    }
+
+    double lambda() const { return lambda_; }
+
+  private:
+    double n_electrons_;
+    std::vector<double> kweights_;
+    int nbands_;
+    int nk_;
+    double lambda_;
 };
 
 } // namespace rdmft

@@ -94,6 +94,8 @@ class RDMFTSolver
     std::unique_ptr<OccupationParam> occ_param_;
     std::unique_ptr<OccupationConstraint> occ_constraint_;
     std::unique_ptr<EuclideanOptimizer> occ_optimizer_;
+    /// Sigma-shift parameterization (active when config_.occ_param == SigmaShift).
+    std::unique_ptr<SigmaShiftOccParam> sigma_shift_param_;
 
     // Orbital sub-components
     std::unique_ptr<EuclideanOptimizer> orb_optimizer_;
