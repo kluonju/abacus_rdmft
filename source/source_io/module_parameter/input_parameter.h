@@ -685,8 +685,8 @@ struct Input_para
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
     double rdmft_orb_energy_tol = 1e-8;
-    double rdmft_occ_tol = 1e-7;                 // PG & ALM: sum_i |Δn_i| per inner iter vs this for convergence
-    /// Non-PG occupation paths: gradient norms vs this (see solver). PG uses rdmft_occ_tol on sum|dn|.
+    double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
+    /// PG: ||n-P(n-τ∇E)||_inf < this (τ=rdmft_alpha_step); other constraints use this where documented.
     double rdmft_occ_grad_tol = 1e-6;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;

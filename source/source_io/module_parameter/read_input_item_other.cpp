@@ -1149,8 +1149,9 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Projected gradient and augmented Lagrangian: declare the occupation inner "
-                           "loop converged when sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this.";
+        item.description = "Augmented Lagrangian occupation inner: stop a step when "
+                           "sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this. "
+                           "Projected gradient uses rdmft_occ_grad_tol on ||grad_n E|| instead.";
         item.default_value = "1e-8";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1162,9 +1163,10 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Active set, joint (non-ALM), augmented Lagrangian first-inner, etc.: gradient "
-                           "norm thresholds as implemented in the solver. Projected gradient occupation "
-                           "convergence uses rdmft_occ_tol on sum|Δn|, not this parameter.";
+        item.description = "Projected gradient: occupation inner loop converges when the infinity norm of the "
+                           "projected-gradient map residual ||n - P(n - τ∇E)||_inf is below this (τ = "
+                           "rdmft_alpha_step; checked after each inner step). Also used for ALM first-inner, "
+                           "active set, joint, and other gradient checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

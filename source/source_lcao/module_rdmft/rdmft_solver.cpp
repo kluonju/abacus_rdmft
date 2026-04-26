@@ -44,10 +44,13 @@ inline double euclidean_norm(const std::vector<double>& v)
     return std::sqrt(s);
 }
 
-double projected_gradient_map_norm(const std::vector<double>& occ,
-                                   const std::vector<double>& grad,
-                                   const OccupationConstraint& constraint,
-                                   const double tau)
+/// Bertsekas projected-gradient map residual r = n - P(n - τ g); one projection.
+void projected_gradient_map_l2_linf(const std::vector<double>& occ,
+                                  const std::vector<double>& grad,
+                                  const OccupationConstraint& constraint,
+                                  const double tau,
+                                  double& l2,
+                                  double& linf)
 {
     std::vector<double> trial(occ.size());
     for (size_t i = 0; i < occ.size(); ++i)
@@ -57,12 +60,25 @@ double projected_gradient_map_norm(const std::vector<double>& occ,
     constraint.project(trial);
 
     double n2 = 0.0;
+    linf = 0.0;
     for (size_t i = 0; i < occ.size(); ++i)
     {
         const double d = occ[i] - trial[i];
         n2 += d * d;
+        linf = std::max(linf, std::abs(d));
     }
-    return std::sqrt(std::max(0.0, n2));
+    l2 = std::sqrt(std::max(0.0, n2));
+}
+
+double projected_gradient_map_norm(const std::vector<double>& occ,
+                                   const std::vector<double>& grad,
+                                   const OccupationConstraint& constraint,
+                                   const double tau)
+{
+    double l2 = 0.0;
+    double linf = 0.0;
+    projected_gradient_map_l2_linf(occ, grad, constraint, tau, l2, linf);
+    return l2;
 }
 
 double active_set_dual_complementarity_violation(const std::vector<double>& grad,
@@ -2077,20 +2093,48 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double dE = have_E_prev ? (E - E_prev) : 0.0;
                 E_prev = E;
                 have_E_prev = true;
-                const double pg_map_norm = projected_gradient_map_norm(
-                    occ_flat, grad_occ, *occ_constraint_, config_.line_search_alpha_init);
+                double pg_map_l2_pre = 0.0;
+                double pg_map_inf_pre = 0.0;
+                projected_gradient_map_l2_linf(occ_flat,
+                    grad_occ,
+                    *occ_constraint_,
+                    config_.line_search_alpha_init,
+                    pg_map_l2_pre,
+                    pg_map_inf_pre);
 
-                result.grad_norm = 0.0;
-                for (auto g : grad_occ) result.grad_norm += g * g;
-                result.grad_norm = std::sqrt(result.grad_norm);
+                double grad_l2_pre = 0.0;
+                for (auto g : grad_occ)
+                {
+                    grad_l2_pre += g * g;
+                }
+                grad_l2_pre = std::sqrt(grad_l2_pre);
 
                 {
                     std::ostringstream os;
                     os << "      occ inner PG " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
-                       << "  |c|=" << c_abs << "  gnorm=" << result.grad_norm
-                       << "  pg_map_norm=" << pg_map_norm;
+                       << "  |c|=" << c_abs
+                       << "  PG map ||n-P(n-τ∇E)||_inf (pre-step)=" << pg_map_inf_pre
+                       << "  ||n-P||_2=" << pg_map_l2_pre
+                       << "  ||grad_n E||_2 (diag)=" << grad_l2_pre;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
+                }
+
+                if (inner == 0 && pg_map_inf_pre < config_.occ_grad_tol)
+                {
+                    result.converged = true;
+                    result.iterations = 1;
+                    result.final_energy = E;
+                    result.grad_norm = pg_map_inf_pre;
+                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      PG projected-gradient map infinity norm ||n-P(n-τ∇E)||_inf "
+                                            "(pre-step) = "
+                                         << std::scientific << pg_map_inf_pre << "  rdmft_occ_grad_tol="
+                                         << config_.occ_grad_tol << std::defaultfloat << std::endl;
+                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (PG map inf-norm < "
+                                             "rdmft_occ_grad_tol); skipping line search."
+                                         << std::endl;
+                    break;
                 }
 
                 // Compute search direction from the configured optimizer.
@@ -2196,6 +2240,21 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> new_grad_occ;
                 energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                        new_grad_occ, grad_wfc_dummy);
+                double grad_l2_post = 0.0;
+                for (double g : new_grad_occ)
+                {
+                    grad_l2_post += g * g;
+                }
+                grad_l2_post = std::sqrt(grad_l2_post);
+                double pg_map_l2_post = 0.0;
+                double pg_map_inf_post = 0.0;
+                projected_gradient_map_l2_linf(occ_flat,
+                    new_grad_occ,
+                    *occ_constraint_,
+                    config_.line_search_alpha_init,
+                    pg_map_l2_post,
+                    pg_map_inf_post);
+                result.grad_norm = pg_map_inf_post;
                 pg_opt.update(new_grad_occ, step_vec);
                 if (ls_success)
                 {
@@ -2211,13 +2270,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
                     << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
                     << "  N_e=" << n_electrons_ << std::endl;
-                const double pg_stop_norm = projected_gradient_map_norm(
-                    occ_flat, new_grad_occ, *occ_constraint_, config_.line_search_alpha_init);
-                GlobalV::ofs_running << "      PG stop-check: sum|dn|=" << std::scientific << sum_abs_dn
-                                     << "  rdmft_occ_tol=" << config_.rdmft_occ_tol
-                                     << "  (converged when sum|dn| < rdmft_occ_tol); pg_map_norm="
-                                     << pg_stop_norm << " (diagnostic)" << std::defaultfloat << std::endl;
-                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol))
+                GlobalV::ofs_running << "      PG projected-gradient map infinity norm ||n-P(n-τ∇E)||_inf "
+                                        "(post-step) = "
+                                     << std::scientific << pg_map_inf_post << "  rdmft_occ_grad_tol="
+                                     << config_.occ_grad_tol
+                                     << "  (converged when inf-norm < tol)" << std::defaultfloat << std::endl;
+                GlobalV::ofs_running << "      PG diagnostics: sum|dn|=" << std::scientific << sum_abs_dn
+                                     << "  ||n-P||_2=" << pg_map_l2_post
+                                     << "  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
+                if (pg_map_inf_post < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     break;
