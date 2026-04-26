@@ -1134,10 +1134,11 @@ void ReadInput::item_others()
         item.annotation = "RDMFT orbital inner: |dE| convergence (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Alternating strategy, orbital inner loop: declare converged when "
-                           "||G_R|| < rdmft_orb_grad_tol, or when |E_k - E_{k-1}| < this (Ry) between "
-                           "inner iterations, or when |E_new - E| < this after an accepted line-search step. "
-                           "Use <= 0 to disable the energy-based criteria (gradient-only).";
+        item.description = "Alternating strategy, orbital inner loop: when this value is > 0, "
+                           "convergence requires both ||G_R|| < rdmft_orb_grad_tol and energy stability: "
+                           "|E_k - E_{k-1}| before the step and |E_new - E| after an accepted line-search "
+                           "step must be below this (Ry). Use <= 0 to disable the energy criterion "
+                           "(gradient-only stopping).";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

@@ -143,7 +143,7 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
 | `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
-| `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: **also** stop when `|E_k - E_{k-1}|` or post-step `|E_{\mathrm{new}} - E|` (Ry) is below this. Set `<= 0` to disable energy-based stopping (gradient-only). |
+| `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: when `> 0`, stopping requires **both** `||G_R|| <` `rdmft_orb_grad_tol` **and** small energy moves: `|E_k - E_{k-1}|` before the step and `|E_{\mathrm{new}} - E|` after an accepted line search must stay below this (Ry). Set `<= 0` for gradient-only stopping. |
 
 ### Initial occupation setup
 

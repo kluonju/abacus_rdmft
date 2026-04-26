@@ -2266,9 +2266,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double alpha = alpha_pg0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
-                double E_after = E;
                 int pg_ls_trial = 0;
                 double pg_step_acc = 0.0;
+                double pg_dd_proj_acc = 0.0;
                 double E_last_trial = E;
                 // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
@@ -2291,6 +2291,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         continue;
                     }
 
+                    // First-order descent along the projected segment (same as active_set).
+                    double dd_proj = 0.0;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                    {
+                        dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+                    }
+                    if (dd_proj >= 0.0)
+                    {
+                        alpha *= config_.line_search_rho;
+                        continue;
+                    }
+
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     E_last_trial = E_trial;
@@ -2300,21 +2312,30 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                             = {true, alpha_try, E, E_trial, dd_line};
                         pg_first_ls_recorded = true;
                     }
-                    if (E_trial < E)
+                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
                     {
-                        E_after = E_trial;
                         pg_step_acc = alpha_try;
+                        pg_dd_proj_acc = dd_proj;
                         ls_success = true;
                         break;
                     }
                     alpha *= config_.line_search_rho;
                 }
 
-                GlobalV::ofs_running << "      occ line search (PG backtrack): alpha_init=" << std::scientific
-                    << alpha_pg0 << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
-                    << " E0=" << E << " E_trial=" << E_last_trial << "  rho=" << std::defaultfloat
-                    << config_.line_search_rho
-                    << (ls_success ? "  ok" : "  fail") << std::endl;
+                {
+                    std::ostringstream pg_ls;
+                    pg_ls << "      occ line search (PG Armijo): alpha_init=" << std::scientific << alpha_pg0
+                          << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
+                          << " E0=" << E << " E_trial=" << E_last_trial;
+                    if (ls_success)
+                    {
+                        pg_ls << " dTw=" << pg_dd_proj_acc
+                              << " E0+c1*dTw=" << E + config_.line_search_c1 * pg_dd_proj_acc;
+                    }
+                    pg_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
+                          << "  rho=" << config_.line_search_rho << (ls_success ? "  ok" : "  fail");
+                    log_occ_inner_line(pg_ls.str());
+                }
 
                 if (ls_success)
                 {
@@ -2322,15 +2343,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 else
                 {
-                    // If Armijo backtracking cannot find an acceptable projected
-                    // step, keep the current occupations unchanged so the energy
-                    // cannot jump upward due to an unchecked fallback move.
+                    // Same recovery as active_set: one projected steepest step, then
+                    // reset curvature state (CG/L-BFGS history is unreliable here).
                     occ_flat = occ_before_step;
+                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                    {
+                        occ_flat[i] -= config_.line_search_alpha_init * grad_occ[i];
+                    }
+                    occ_constraint_->project(occ_flat);
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
                     pg_ls_qhist = {};
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << ", rejected step and reset optimizer" << std::endl;
+                                         << ", applied SD fallback and reset optimizer" << std::endl;
                 }
 
                 // Update the optimizer with the actual step taken.
@@ -2339,8 +2364,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     step_vec[i] = occ_flat[i] - occ_before_step[i];
 
                 std::vector<double> new_grad_occ;
-                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
-                                       new_grad_occ, grad_wfc_dummy);
+                const double E_post = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                                                             new_grad_occ, grad_wfc_dummy);
                 double grad_l2_post = 0.0;
                 for (double g : new_grad_occ)
                 {
@@ -2363,7 +2388,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
 
                 result.iterations = inner + 1;
-                result.final_energy = E_after;
+                result.final_energy = E_post;
                 print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
                                         occ_flat, nk_, nbands_);
 
@@ -2819,22 +2844,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         prev_orb_gnorm = result.grad_norm;
         prev_orb_E = E;
 
-        // Orbital sub-problem: converged when ||G_R|| is small, or (if enabled)
-        // when successive inner energies barely change (flat objective in Ry).
+        // Orbital sub-problem: converged when ||G_R|| is small and (if
+        // rdmft_orb_energy_tol > 0) successive inner energies change by less
+        // than that threshold — both must hold when energy tolerance is enabled.
         const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
         const bool energy_conv = orb_e_enabled && (orb_inner_dE_abs < config_.orb_energy_tol);
-        if (grad_conv || energy_conv)
+        const bool inner_energy_ok = !orb_e_enabled || energy_conv;
+        if (grad_conv && inner_energy_ok)
         {
             result.converged = true;
             result.iterations = inner + 1;
             result.final_energy = E;
-            if (energy_conv && !grad_conv)
-            {
-                GlobalV::ofs_running << "      orb inner: converged on |dE|=" << std::scientific << orb_inner_dE_abs
-                                      << " < rdmft_orb_energy_tol=" << config_.orb_energy_tol
-                                      << "  (||G_R||=" << result.grad_norm << " >= orb_grad_tol)" << std::defaultfloat
-                                      << std::endl;
-            }
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
                                     occ_flat, nk_, nbands_, false);
             break;
@@ -3104,20 +3124,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         const double dE_step_abs = std::abs(E_new - E);
         const bool orb_e_post = (config_.orb_energy_tol > 0.0);
-        const bool post_energy_conv = orb_e_post && (dE_step_abs < config_.orb_energy_tol);
+        const bool post_energy_ok = !orb_e_post || (dE_step_abs < config_.orb_energy_tol);
         const bool post_grad_conv = (result.grad_norm < config_.orb_grad_tol);
-        if (post_grad_conv || post_energy_conv)
+        if (post_grad_conv && post_energy_ok)
         {
             result.converged = true;
             result.iterations = inner + 1;
             result.final_energy = E_new;
-            if (post_energy_conv && !post_grad_conv)
-            {
-                GlobalV::ofs_running << "      orb inner: converged after step |E_new-E|=" << std::scientific
-                                      << dE_step_abs << " < rdmft_orb_energy_tol=" << config_.orb_energy_tol
-                                      << "  (||G_R||_post=" << result.grad_norm << " >= orb_grad_tol)"
-                                      << std::defaultfloat << std::endl;
-            }
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
                                     occ_flat, nk_, nbands_, false);
             energy_grad_->invalidate_hone_cache();

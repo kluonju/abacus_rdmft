@@ -148,10 +148,13 @@ struct RDMFTConfig
     /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
     double energy_tol = 1e-8;
-    /// Inner orbital step: stop when Riemannian gradient norm ||G_R|| falls below this.
+    /// Inner orbital step: Riemannian gradient norm ||G_R|| must fall below this
+    /// for convergence (and, when orb_energy_tol > 0, the energy change criterion
+    /// must also be satisfied).
     double orb_grad_tol = 1e-6;
-    /// Alternating orbital inner loop: also stop when |E_k - E_{k-1}| or post-step |E_new-E| < this (Ry).
-    /// Set <= 0 to disable and require only orb_grad_tol.
+    /// Alternating orbital inner loop: when > 0, convergence additionally requires
+    /// |E_k - E_{k-1}| before the step and |E_new - E| after an accepted line search
+    /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
     double orb_energy_tol = 1e-8;
     /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
     double rdmft_occ_tol = 1e-8;
