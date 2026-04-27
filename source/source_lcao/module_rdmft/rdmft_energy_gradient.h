@@ -67,7 +67,7 @@ class EnergyGradient
     /// occ_flat: occupation numbers [nk * nbands], flattened
     /// wfc: natural orbital coefficients
     /// grad_occ: [out] dE/dn for each (ik, ib)
-    /// grad_wfc: [out] Euclidean dE/dC* for each (ik, ib, mu)
+    /// grad_wfc: [out] Wirtinger dE/dC* (complex) or ordinary dE/dC (real TK, ×2 vs band formula)
     /// Returns total energy
     double compute(const std::vector<double>& occ_flat,
                    const psi::Psi<TK>& wfc,

@@ -2789,6 +2789,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     double prev_gnorm2 = 0.0;
     double prev_orb_gnorm = 0.0;
     double prev_orb_E = 0.0;
+    // After a line-search failure, CG retries with pure SD and lbfgs/Adam
+    // reset to SD; if Armijo fails again on that recovery inner, stop.
+    bool orb_after_ls_retry = false;
 
     for (int inner = 0; inner < config_.orb_maxiter; ++inner)
     {
@@ -3002,6 +3005,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double alpha = armijo_alpha_init;
         double E_new = E;
         bool ls_success = false;
+        int orb_ls_ntrial = 0;
+        double orb_ls_alpha_last = 0.0;
+        double orb_ls_E_last = E;
 
         // Save current wfc for line-search rollback
         for (int ik = 0; ik < nk; ++ik)
@@ -3022,6 +3028,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             energy_grad_->invalidate_hone_cache();
 
             E_new = energy_grad_->compute_energy(occ_flat, wfc);
+            orb_ls_ntrial = ls + 1;
+            orb_ls_alpha_last = alpha;
+            orb_ls_E_last = E_new;
             if (E_new <= E + c1 * alpha * dd)
             {
                 ls_success = true;
@@ -3032,6 +3041,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         if (!ls_success)
         {
+            {
+                const char* orb_opt = use_lbfgs ? "lbfgs" : (use_adam ? "adam" : (use_cg ? "cg" : "sd"));
+                const double armijo_rhs = E + c1 * orb_ls_alpha_last * dd;
+                std::ostringstream orb_ls;
+                orb_ls << "      orb line search (Armijo) failed: inner=" << (inner + 1) << "  optim=" << orb_opt
+                       << "  n_trial=" << orb_ls_ntrial;
+                orb_ls << std::scientific << "  E0=" << E << "  E_last_trial=" << orb_ls_E_last
+                       << "  dd=<G_R,dir>=" << dd << "  alpha_init=" << armijo_alpha_init
+                       << "  last_alpha=" << orb_ls_alpha_last << "  armijo_rhs=E0+c1*alpha*dd=" << armijo_rhs
+                       << "  margin(E_trial-rhs)=" << (orb_ls_E_last - armijo_rhs);
+                orb_ls << std::defaultfloat << "  c1=" << c1 << "  rho=" << rho
+                       << "  max_iter=" << config_.line_search_max_iter << "  gnorm=" << result.grad_norm;
+                if (dd >= 0.0)
+                {
+                    orb_ls << "  [dd>=0: not a descent direction along dir]";
+                }
+                GlobalV::ofs_running << orb_ls.str() << std::endl;
+            }
             // Line search failed; revert to previous orbitals.
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
@@ -3041,6 +3068,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
             if (use_cg)
             {
+                if (orb_after_ls_retry)
+                {
+                    GlobalV::ofs_running << "      orb inner: Armijo failed again after SD recovery; "
+                                            "stopping orbital inner loop."
+                                         << std::endl;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                            occ_flat, nk_, nbands_, false);
+                    break;
+                }
+                orb_after_ls_retry = true;
                 // Any CG line-search failure: drop CG memory and retry next inner
                 // iteration along pure steepest descent (-G_R), including the
                 // first inner (restart==true) where we previously exited early.
@@ -3061,6 +3100,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
             if (use_lbfgs || use_adam)
             {
+                if (orb_after_ls_retry)
+                {
+                    GlobalV::ofs_running << "      orb inner: Armijo failed again after optimiser reset "
+                                            "(steepest-descent recovery); stopping orbital inner loop."
+                                         << std::endl;
+                    result.iterations = inner + 1;
+                    result.final_energy = E;
+                    print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                            occ_flat, nk_, nbands_, false);
+                    break;
+                }
+                orb_after_ls_retry = true;
                 // Reset the Euclidean optimiser state so the next step
                 // starts from steepest descent.  This is the Riemannian
                 // analogue of the CG Powell-restart safeguard above.
@@ -3078,6 +3129,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                                     occ_flat, nk_, nbands_, false);
             break;
         }
+
+        orb_after_ls_retry = false;
 
         // Save this step's gradient and direction for the next CG iteration.
         if (use_cg)
@@ -3236,60 +3289,35 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
     // ---- Orbital gradient check (directional derivative along Riemannian G) ----
     GlobalV::ofs_running << "\n-- Orbital gradient check --" << std::endl;
     {
-        // Project Euclidean gradient onto tangent space; this is the direction
-        // we take the step along.
-        psi::Psi<TK> G_tan(grad_wfc);
-        energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), G_tan);
+        // Match optimize_orbitals: project the Euclidean gradient in-place to G_R,
+        // then compare the Armijo slope -||G_R||^2 to a finite difference along the
+        // same retract used in the line search (Y = X - step*G_R, then polar).
+        //
+        // A symmetric central difference in ±t can disagree badly with -||G_R||^2 for
+        // this polar/Cholesky retraction (nonlinear asymmetry in t); use a forward
+        // difference (E(t)-E0)/t, which matches the Armijo first-order model at t=0+.
+        energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), grad_wfc);
+        psi::Psi<TK> G_dir(grad_wfc);
+        const double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+        const double analytic_dd = -gnorm2;
 
-        // <G, G_tan> = directional derivative along direction = G_tan
-        double dd = 0.0;
-        const int nk = wfc.get_nk();
-        const int nb_local = wfc.get_nbands();
-        const int nbs_local = wfc.get_nbasis();
-        for (int ik = 0; ik < nk; ++ik)
-            for (int ib = 0; ib < nb_local; ++ib)
-                for (int mu = 0; mu < nbs_local; ++mu)
-                {
-                    // Real part of conj(grad_wfc) * G_tan
-                    TK a = grad_wfc(ik, ib, mu);
-                    TK b = G_tan(ik, ib, mu);
-                    dd += std::real(std::conj(a) * b);
-                }
-#ifdef __MPI
-        Parallel_Reduce::reduce_all(dd);
-#endif
-
-        double gnorm2 = 0.0;
-        for (int ik = 0; ik < nk; ++ik)
-            for (int ib = 0; ib < nb_local; ++ib)
-                for (int mu = 0; mu < nbs_local; ++mu)
-                    gnorm2 += abs2(G_tan(ik, ib, mu));
-#ifdef __MPI
-        Parallel_Reduce::reduce_all(gnorm2);
-#endif
-
-        // f(t) = E(occ, R_C(-t * G_tan)).  f'(0) = -<G, G_tan> via Armijo convention.
-        auto f_at = [&](double t) -> double {
+        auto f_at = [&](double step) -> double {
             psi::Psi<TK> wfc_trial(wfc);
-            energy_grad_->retract_orbitals(wfc_trial, G_tan, t);
+            energy_grad_->retract_orbitals(wfc_trial, G_dir, step);
             energy_grad_->invalidate_hone_cache();
             return energy_grad_->compute_energy(occ_flat, wfc_trial);
         };
         const double t = epsilon;
-        double f_plus  = f_at(+t);
-        double f_minus = f_at(-t);
-        double fd = (f_plus - f_minus) / (2.0 * t);
-        // Along the steepest-descent direction the analytic directional derivative
-        // is  -<grad, G_tan> = -||G_tan||^2 up to manifold curvature.
-        double analytic_dd = -dd;
+        const double fd = (f_at(t) - E0) / t;
+
         double rel_err = (std::abs(analytic_dd) > 1e-10)
-                         ? std::abs(fd - analytic_dd) / std::abs(analytic_dd)
-                         : std::abs(fd - analytic_dd);
+                             ? std::abs(fd - analytic_dd) / std::abs(analytic_dd)
+                             : std::abs(fd - analytic_dd);
         bool pass = rel_err < tolerance;
         if (!pass) all_pass = false;
         GlobalV::ofs_running << std::fixed << std::setprecision(8)
             << "  orb dir deriv: analytic=" << analytic_dd
-            << "  fd=" << fd
+            << "  fd_fwd=" << fd
             << "  ||G_R||^2=" << gnorm2
             << "  rel_err=" << rel_err
             << (pass ? "  PASS" : "  FAIL") << std::endl;

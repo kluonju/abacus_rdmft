@@ -1358,7 +1358,10 @@ double EnergyGradient<TK, TR>::compute(
                                           + wk * dgn * vx_diag[ib];
         }
 
-        // Orbital gradient: dE/dC*(ik) = wk * [n * (H_one + V_H) * C + g(n) * H_exx * C]
+        // Orbital gradient w.r.t. LCAO coefficients (before X transform):
+        //   TK = std::complex<...>: Wirtinger ∂E/∂C* as wk * [n * (H_one + V_H) * C + g(n) * H_exx * C].
+        //   TK = double (real gamma-only LCAO): for n * C^T H C with symmetric H,
+        //   ∂E/∂C_μ = 2 wk n (H C)_μ (same H·C factors); apply the factor below.
         // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {

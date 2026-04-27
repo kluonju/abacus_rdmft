@@ -240,7 +240,7 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_grad_check` | bool | `false` | If `true`, run a finite-difference gradient verification **at the start of the RDMFT solve**, immediately after the LCAO coefficients are converted to internal **X-space** (`precompute_cholesky_S` / `wfc_C_to_X`) and before the main alternating or joint loop. This is expensive but essential for development and validation. Results are written to the running log. |
+| `rdmft_grad_check` | bool | `false` | If `true`, run a finite-difference gradient verification **at the start of the RDMFT solve**, immediately after the LCAO coefficients are converted to internal **X-space** (`precompute_cholesky_S` / `wfc_C_to_X`) and before the main alternating or joint loop. Occupations use a central difference in `n`; the **orbital** check uses the projected Riemannian gradient `G_R` and a **forward** difference along the same polar retraction as the line search `(E(t)-E_0)/t`, which matches the Armijo slope `-||G_R||^2` more reliably than a symmetric `±t` probe. This is expensive but essential for development and validation. Results are written to the running log. |
 
 ---
 
