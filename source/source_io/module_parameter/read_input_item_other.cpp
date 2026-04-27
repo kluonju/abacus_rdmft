@@ -1112,11 +1112,11 @@ void ReadInput::item_others()
         item.annotation = "RDMFT convergence threshold on energy change (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Alternating and joint RDMFT: outer loop declares convergence when (after the first "
-                           "outer iteration) this **and** the occupation- and orbital-inner `converged` flags are "
-                           "satisfied, i.e. |E - E_prev| (Ry) < rdmft_energy_tol **and** both inner sub-problems "
-                           "converged. If <= 0, the energy check is disabled and the outer loop stops on inner "
-                           "convergence only.";
+        item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop declares "
+                           "convergence if |E - E_prev| (Ry) < rdmft_energy_tol (used only when > 0) **or** both "
+                           "occupation- and orbital-inner criteria are met (alternating: inner `converged` flags; "
+                           "joint: occ/orb stationarity flags). If <= 0, the energy test is omitted and outer "
+                           "convergence uses the inner criteria only.";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

@@ -1225,27 +1225,31 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        // Outer stop: need occupation inner, orbital inner, and (when energy_tol>0) total-energy stability.
+        // Outer stop: energy change below tol (if tol > 0) or both inner sub-problems converged.
         const bool inner_both = occ_result.converged && orb_result.converged;
         const bool energy_ok
-            = (config_.energy_tol <= 0.0) || ((iter > 0) && (dE < config_.energy_tol));
-        const bool outer_converged = (iter > 0) && inner_both && energy_ok;
+            = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
+        const bool outer_converged = (iter > 0) && (energy_ok || inner_both);
         if (outer_converged)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
             last_result_.final_energy = E;
             last_result_.grad_norm = std::max(occ_result.grad_norm, orb_result.grad_norm);
-            if (config_.energy_tol > 0.0)
+            if (energy_ok && inner_both)
             {
-                GlobalV::ofs_running
-                    << "  RDMFT alternating: outer loop stopped (OCC&ORB converged, |dE| < rdmft_energy_tol)"
-                    << std::endl;
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol and "
+                                        "OCC&ORB inner converged)"
+                                     << std::endl;
+            }
+            else if (energy_ok)
+            {
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol)"
+                                     << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB converged; energy tol "
-                                        "disabled)"
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged)"
                                      << std::endl;
             }
             break;
@@ -1970,10 +1974,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;
 
+        // Outer stop: energy change below tol (if tol > 0) or both occ/orb stationarity flags.
         const bool inner_both_joint = occ_conv_joint && orb_conv_joint;
         const bool energy_ok_joint
-            = (config_.energy_tol <= 0.0) || ((iter > 0) && (dE < config_.energy_tol));
-        const bool outer_converged_joint = (iter > 0) && inner_both_joint && energy_ok_joint;
+            = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
+        const bool outer_converged_joint = (iter > 0) && (energy_ok_joint || inner_both_joint);
         if (outer_converged_joint)
         {
             last_result_.converged = true;
@@ -1981,15 +1986,20 @@ double RDMFTSolver<TK, TR>::solve_joint(
             last_result_.final_energy = E_new;
             last_result_.grad_norm = gnorm_total;
             E = E_new;
-            if (config_.energy_tol > 0.0)
+            if (energy_ok_joint && inner_both_joint)
             {
-                GlobalV::ofs_running
-                    << "  RDMFT joint: outer loop stopped (OCC&ORB flags, |dE| < rdmft_energy_tol)" << std::endl;
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol and OCC&ORB "
+                                        "flags)"
+                                     << std::endl;
+            }
+            else if (energy_ok_joint)
+            {
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol)"
+                                     << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags; energy tol disabled)"
-                                     << std::endl;
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags)" << std::endl;
             }
             break;
         }
