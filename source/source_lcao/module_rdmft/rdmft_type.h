@@ -122,6 +122,19 @@ inline std::string xc_type_to_string(XCFunctionalType type)
     return "unknown";
 }
 
+/// How the RDMFT electron equality target N_e was built (for logging and diagnostics).
+struct RDMFTNelectronTargetMeta
+{
+    /// Sum of KS occupation weights sum_{ik,ib} wg(ik, ib) before RDMFT.
+    double sum_initial_wg = 0.;
+    /// PARAM.inp.nelec used elsewhere in the LCAO driver.
+    double input_nelec = 0.;
+    /// If true, N_e base is input_nelec; else base is sum_initial_wg.
+    bool use_input_nelec = false;
+    /// Additive RDMFT-only offset: N_e = base + rdmft_nelec_delta.
+    double rdmft_nelec_delta = 0.;
+};
+
 struct RDMFTConfig
 {
     XCFunctionalType xc_type = XCFunctionalType::Power;

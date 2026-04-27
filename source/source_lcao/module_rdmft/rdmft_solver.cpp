@@ -517,81 +517,15 @@ std::string occ_ls_init_to_string(const LineSearchInitStep m)
     return "unknown";
 }
 
-void print_rdmft_run_config(const RDMFTConfig& cfg,
-                            const int nk,
-                            const int nbands,
-                            const double n_electrons)
+void emit_rdmft_config_kv_table(const char* section_title,
+                                const std::vector<std::string>& keys,
+                                const std::vector<std::string>& vals)
 {
-    GlobalV::ofs_running << "\n===== RDMFT Run Configuration =====" << std::endl;
-    GlobalV::ofs_running << "  Path: KS -> RDMFT [strategy=" << strategy_to_string(cfg.strategy)
-                         << ", constraint=" << constraint_method_to_string(cfg.constraint_method)
-                         << "]" << std::endl;
-
-    const std::string occ_opt = (cfg.strategy == SolverStrategy::Joint)
-                                    ? "(joint mode: ignored)"
-                                    : optimizer_to_string(cfg.occ_optimizer);
-    const std::string orb_opt = (cfg.strategy == SolverStrategy::Joint)
-                                    ? "(joint mode: ignored)"
-                                    : optimizer_to_string(cfg.orb_optimizer);
-    const std::string joint_opt = (cfg.strategy == SolverStrategy::Joint)
-                                      ? optimizer_to_string(cfg.joint_optimizer)
-                                      : "(alternating mode: ignored)";
-
-    std::vector<std::string> keys;
-    std::vector<std::string> vals;
-    auto add_kv = [&](const std::string& k, const std::string& v) {
-        keys.push_back(k);
-        vals.push_back(v);
-    };
-    auto as_sci = [](const double v) {
-        std::ostringstream os;
-        os << std::scientific << std::setprecision(6) << v;
-        return os.str();
-    };
-
-    add_kv("nk", std::to_string(nk));
-    add_kv("nbands", std::to_string(nbands));
-    add_kv("n_electrons", as_sci(n_electrons));
-    add_kv("rdmft_solver_strategy", strategy_to_string(cfg.strategy));
-    add_kv("rdmft_constraint", constraint_method_to_string(cfg.constraint_method));
-    add_kv("rdmft_occ_optimizer", occ_opt);
-    add_kv("rdmft_orb_optimizer", orb_opt);
-    add_kv("rdmft_joint_optimizer", joint_opt);
-    add_kv("rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
-    add_kv("rdmft_occ_maxiter", std::to_string(cfg.occ_maxiter));
-    add_kv("rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
-    add_kv("rdmft_energy_tol", as_sci(cfg.energy_tol));
-    add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
-    add_kv("rdmft_orb_energy_tol", as_sci(cfg.orb_energy_tol));
-    add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
-    add_kv("rdmft_occ_energy_tol", as_sci(cfg.occ_energy_tol));
-    add_kv("rdmft_occ_grad_tol", as_sci(cfg.occ_grad_tol));
-    add_kv("rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
-    add_kv("rdmft_occ_param", occ_param_to_string(cfg.occ_param));
-    add_kv("rdmft_occ_init_mode", occ_init_mode_to_string(cfg.occ_init_mode));
-    add_kv("rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
-    add_kv("rdmft_occ_init_perturb", as_sci(cfg.occ_init_perturb));
-    add_kv("rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
-    add_kv("rdmft_occ_ls_init_step", occ_ls_init_to_string(cfg.occ_line_search_init_step));
-    add_kv("alm_bb_enabled", cfg.alm_bb_enabled ? "true" : "false");
-    add_kv("alm_bb_mode", bb_mode_to_string(cfg.alm_bb_mode));
-    add_kv("alm_bb_alpha_min", as_sci(cfg.alm_bb_alpha_min));
-    add_kv("alm_bb_alpha_max", as_sci(cfg.alm_bb_alpha_max));
-    add_kv("line_search_c1", as_sci(cfg.line_search_c1));
-    add_kv("line_search_rho", as_sci(cfg.line_search_rho));
-    add_kv("line_search_max_iter", std::to_string(cfg.line_search_max_iter));
-    add_kv("line_search_polynomial", cfg.line_search_polynomial ? "true" : "false");
-    add_kv("line_search_c2", as_sci(cfg.line_search_c2));
-    add_kv("line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
-    add_kv("lbfgs_memory", std::to_string(cfg.lbfgs_memory));
-    add_kv("adam_lr", as_sci(cfg.adam_lr));
-    add_kv("joint_orb_scale", as_sci(cfg.joint_orb_scale));
-    add_kv("rdmft_grad_check", cfg.grad_check ? "true" : "false");
-    add_kv("alm_lambda_init", as_sci(cfg.aug_lag_lambda_init));
-    add_kv("alm_mu_init", as_sci(cfg.aug_lag_mu_init));
-    add_kv("alm_mu_factor", as_sci(cfg.aug_lag_mu_factor));
-    add_kv("alm_mu_max", as_sci(cfg.aug_lag_mu_max));
-
+    if (keys.empty())
+    {
+        return;
+    }
+    GlobalV::ofs_running << "\n  --- " << section_title << " ---" << std::endl;
     FmtTable table(/*titles=*/{"RDMFT option", "value"},
                    /*nrows=*/keys.size(),
                    /*formats=*/{"%-34s", "%-40s"},
@@ -599,6 +533,167 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
                    /*align=*/{/*value*/FmtTable::Align::LEFT, /*title*/FmtTable::Align::CENTER});
     table << keys << vals;
     GlobalV::ofs_running << table.str() << std::endl;
+}
+
+void print_rdmft_run_config(const RDMFTConfig& cfg,
+                            const int nk,
+                            const int nbands,
+                            const double n_electrons,
+                            const RDMFTNelectronTargetMeta& meta)
+{
+    GlobalV::ofs_running << "\n===== RDMFT Run Configuration =====" << std::endl;
+    GlobalV::ofs_running << "  Path: KS -> RDMFT [strategy=" << strategy_to_string(cfg.strategy)
+                         << ", constraint=" << constraint_method_to_string(cfg.constraint_method)
+                         << "]" << std::endl;
+
+    auto as_sci = [](const double v) {
+        std::ostringstream os;
+        os << std::scientific << std::setprecision(6) << v;
+        return os.str();
+    };
+    auto add_kv = [](std::vector<std::string>& keys,
+                     std::vector<std::string>& vals,
+                     const std::string& k,
+                     const std::string& v) {
+        keys.push_back(k);
+        vals.push_back(v);
+    };
+
+    // --- Section A: problem size and electron target ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "nk", std::to_string(nk));
+        add_kv(keys, vals, "nbands", std::to_string(nbands));
+        add_kv(keys, vals, "rdmft_nelec_use_input", meta.use_input_nelec ? "true" : "false");
+        add_kv(keys, vals, "sum_initial_wg", as_sci(meta.sum_initial_wg));
+        add_kv(keys, vals, "input_nelec", as_sci(meta.input_nelec));
+        add_kv(keys, vals, "rdmft_nelec_delta", as_sci(meta.rdmft_nelec_delta));
+        add_kv(keys, vals, "n_electrons_constraint_Ne", as_sci(n_electrons));
+        emit_rdmft_config_kv_table("Problem size and electron constraint", keys, vals);
+    }
+    if (meta.use_input_nelec && std::abs(meta.sum_initial_wg - meta.input_nelec) > 1.0e-6)
+    {
+        GlobalV::ofs_running << "  Note: sum_initial_wg differs from input_nelec; initial KS occupations may "
+                                 "violate the equality target until the optimiser updates n."
+                             << std::endl;
+    }
+
+    // --- Section B: strategy ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "rdmft_solver_strategy", strategy_to_string(cfg.strategy));
+        if (cfg.strategy == SolverStrategy::Alternating)
+        {
+            add_kv(keys, vals, "rdmft_occ_optimizer", optimizer_to_string(cfg.occ_optimizer));
+            add_kv(keys, vals, "rdmft_orb_optimizer", optimizer_to_string(cfg.orb_optimizer));
+            add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
+            add_kv(keys, vals, "rdmft_occ_maxiter", std::to_string(cfg.occ_maxiter));
+            add_kv(keys, vals, "rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
+            add_kv(keys, vals, "rdmft_print_stiefel_gram", cfg.print_stiefel_gram ? "true" : "false");
+        }
+        else
+        {
+            add_kv(keys, vals, "rdmft_joint_optimizer", optimizer_to_string(cfg.joint_optimizer));
+            add_kv(keys, vals, "joint_orb_scale", as_sci(cfg.joint_orb_scale));
+            add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
+        }
+        emit_rdmft_config_kv_table("Solver strategy", keys, vals);
+    }
+
+    // --- Section C: constraint method ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "rdmft_constraint", constraint_method_to_string(cfg.constraint_method));
+        if (cfg.constraint_method == ConstraintMethod::AugmentedLagrangian)
+        {
+            add_kv(keys, vals, "rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
+            add_kv(keys, vals, "rdmft_occ_energy_tol", as_sci(cfg.occ_energy_tol));
+            add_kv(keys, vals, "alm_lambda_init", as_sci(cfg.aug_lag_lambda_init));
+            add_kv(keys, vals, "alm_mu_init", as_sci(cfg.aug_lag_mu_init));
+            add_kv(keys, vals, "alm_mu_factor", as_sci(cfg.aug_lag_mu_factor));
+            add_kv(keys, vals, "alm_mu_max", as_sci(cfg.aug_lag_mu_max));
+        }
+        else
+        {
+            add_kv(keys, vals, "rdmft_occ_grad_tol", as_sci(cfg.occ_grad_tol));
+        }
+        emit_rdmft_config_kv_table("Electron-number constraint method", keys, vals);
+    }
+
+    // --- Occupation line search / BB (ALM, PG, AS) ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
+        add_kv(keys, vals, "rdmft_occ_ls_init_step", occ_ls_init_to_string(cfg.occ_line_search_init_step));
+        add_kv(keys, vals, "alm_bb_enabled", cfg.alm_bb_enabled ? "true" : "false");
+        add_kv(keys, vals, "alm_bb_mode", bb_mode_to_string(cfg.alm_bb_mode));
+        add_kv(keys, vals, "alm_bb_alpha_min", as_sci(cfg.alm_bb_alpha_min));
+        add_kv(keys, vals, "alm_bb_alpha_max", as_sci(cfg.alm_bb_alpha_max));
+        emit_rdmft_config_kv_table("Occupation line search and BB seed", keys, vals);
+    }
+
+    // --- Section D: occupation model ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "rdmft_occ_param", occ_param_to_string(cfg.occ_param));
+        add_kv(keys, vals, "rdmft_occ_init_mode", occ_init_mode_to_string(cfg.occ_init_mode));
+        add_kv(keys, vals, "rdmft_occ_init_nbands_top", std::to_string(cfg.occ_init_nbands_top));
+        add_kv(keys, vals, "rdmft_occ_init_perturb", as_sci(cfg.occ_init_perturb));
+        if (cfg.xc_type == XCFunctionalType::HF)
+        {
+            add_kv(keys, vals, "rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
+        }
+        emit_rdmft_config_kv_table("Occupation model and initialisation", keys, vals);
+    }
+
+    // --- Section E: global tolerances and line search ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        add_kv(keys, vals, "rdmft_energy_tol", as_sci(cfg.energy_tol));
+        add_kv(keys, vals, "rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
+        add_kv(keys, vals, "rdmft_orb_energy_tol", as_sci(cfg.orb_energy_tol));
+        add_kv(keys, vals, "line_search_c1", as_sci(cfg.line_search_c1));
+        add_kv(keys, vals, "line_search_rho", as_sci(cfg.line_search_rho));
+        add_kv(keys, vals, "line_search_max_iter", std::to_string(cfg.line_search_max_iter));
+        add_kv(keys, vals, "line_search_polynomial", cfg.line_search_polynomial ? "true" : "false");
+        add_kv(keys, vals, "line_search_c2", as_sci(cfg.line_search_c2));
+        add_kv(keys, vals, "line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
+        add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
+        emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
+    }
+
+    // --- Section F: optimiser hyperparameters (active optimisers only) ---
+    {
+        std::vector<std::string> keys;
+        std::vector<std::string> vals;
+        bool need_lbfgs = false;
+        bool need_adam = false;
+        if (cfg.strategy == SolverStrategy::Joint)
+        {
+            need_lbfgs = (cfg.joint_optimizer == OptimizerType::LBFGS);
+            need_adam = (cfg.joint_optimizer == OptimizerType::Adam);
+        }
+        else
+        {
+            need_lbfgs = (cfg.occ_optimizer == OptimizerType::LBFGS) || (cfg.orb_optimizer == OptimizerType::LBFGS);
+            need_adam = (cfg.occ_optimizer == OptimizerType::Adam) || (cfg.orb_optimizer == OptimizerType::Adam);
+        }
+        if (need_lbfgs)
+        {
+            add_kv(keys, vals, "lbfgs_memory", std::to_string(cfg.lbfgs_memory));
+        }
+        if (need_adam)
+        {
+            add_kv(keys, vals, "adam_lr", as_sci(cfg.adam_lr));
+        }
+        emit_rdmft_config_kv_table("Optimiser hyperparameters", keys, vals);
+    }
 }
 
 void print_rdmft_optimization_summary_alternating(const int outer_iters,
@@ -768,7 +863,8 @@ void RDMFTSolver<TK, TR>::init(
     EnergyGradient<TK, TR>& energy_grad,
     const K_Vectors* kv,
     int nbands,
-    double n_electrons)
+    double n_electrons,
+    const RDMFTNelectronTargetMeta& nelec_meta)
 {
     if (kv == nullptr)
     {
@@ -790,6 +886,13 @@ void RDMFTSolver<TK, TR>::init(
     kv_ = kv;
     nbands_ = nbands;
     n_electrons_ = n_electrons;
+    nelec_meta_ = nelec_meta;
+    if (nelec_meta_.sum_initial_wg == 0.0 && nelec_meta_.input_nelec == 0.0 && !nelec_meta_.use_input_nelec
+        && nelec_meta_.rdmft_nelec_delta == 0.0)
+    {
+        nelec_meta_.sum_initial_wg = n_electrons;
+        nelec_meta_.input_nelec = n_electrons;
+    }
     nk_ = energy_grad.nk();
 
     if (nk_ <= 0)
@@ -839,7 +942,7 @@ double RDMFTSolver<TK, TR>::solve(
     ModuleBase::timer::start("RDMFT", "solve");
     last_result_ = {};
 
-    print_rdmft_run_config(config_, nk_, nbands_, n_electrons_);
+    print_rdmft_run_config(config_, nk_, nbands_, n_electrons_, nelec_meta_);
 
     // occ_flat on entry is the KS occupation seed from pelec->wg.
     const std::vector<double> occ_ks_seed = occ_flat;
@@ -1215,24 +1318,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 
         // stdout: one block per outer iteration (inner loops stay off stdout).
         std::cout << std::fixed << std::setprecision(10)
-                  << "  RDMFT outer iter " << (iter + 1) << "  E_total=" << E << "  (Ry)"
-                  << "  E_one=" << E_one << "  E_Hartree=" << E_hartree << "  E_xc=" << E_xc;
-        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+                  << "  RDMFT outer iter " << (iter + 1) << "  E_total=" << E_total << "  (Ry)";
+        if (iter > 0)
         {
-            std::cout << "  E_entropy=" << E_entropy;
+            std::cout << std::scientific << "  dE=" << (E - E_prev) << std::fixed;
         }
-        std::cout << "  E_Ewald=" << E_ewald << std::endl;
-        if (iter == 0)
-        {
-            std::cout << "  dE: first outer (no previous total energy for comparison)" << std::endl;
-        }
-        else
-        {
-            const double dE_signed = E - E_prev;
-            std::cout << std::scientific << "  dE_signed=E-E_prev_outer=" << dE_signed << "  |dE|=" << dE
-                      << std::fixed << std::endl;
-        }
-        print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
+        std::cout << std::defaultfloat << std::endl;
 
         last_dE = dE;
         last_abs_c = std::abs(constraint_viol);
@@ -1449,7 +1540,6 @@ double RDMFTSolver<TK, TR>::solve_joint(
             {
                 hdr_start << "  sigma_lambda=" << sigma_lambda;
             }
-            print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, hdr_start.str(), 2);
             print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk_, nbands_, hdr_start.str(), 2);
         }
 
@@ -1943,28 +2033,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         // stdout: one block per joint outer iteration (inner line search stays off stdout).
         std::cout << std::fixed << std::setprecision(10)
-                  << "  RDMFT joint iter " << (iter + 1) << "  E_total=" << E_total << "  (Ry)"
-                  << "  E_one=" << E_one << "  E_Hartree=" << E_hartree << "  E_xc=" << E_xc;
-        if (config_.occ_entropy_gamma > 0.0 && config_.xc_type == XCFunctionalType::HF)
+                  << "  RDMFT joint iter " << (iter + 1) << "  E_total=" << E_total << "  (Ry)";
+        if (iter > 0)
         {
-            std::cout << "  E_entropy=" << E_entropy;
+            std::cout << std::scientific << "  dE=" << (E_new - E_prev) << std::fixed;
         }
-        std::cout << "  E_Ewald=" << E_ewald;
-        if (config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
-        {
-            std::cout << "  E_penalty=" << E_penalty << "  E_aug=" << (E_total + E_penalty);
-        }
-        std::cout << std::endl;
-        if (iter == 0)
-        {
-            std::cout << "  dE: first joint iter (no previous total for comparison)" << std::endl;
-        }
-        else
-        {
-            const double dE_signed = E_new - E_prev;
-            std::cout << std::scientific << "  dE_signed=E-E_prev_outer=" << dE_signed << "  |dE|=" << dE
-                      << "  alpha=" << alpha << std::fixed << std::endl;
-        }
+        std::cout << std::defaultfloat << std::endl;
         {
             std::ostringstream hdr_end;
             hdr_end << std::fixed << std::setprecision(10)
@@ -1976,7 +2050,6 @@ double RDMFTSolver<TK, TR>::solve_joint(
             {
                 hdr_end << "  sigma_lambda=" << sigma_lambda;
             }
-            print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, hdr_end.str(), 2);
             print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk_, nbands_, hdr_end.str(), 2);
         }
 

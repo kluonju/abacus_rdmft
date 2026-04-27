@@ -717,6 +717,10 @@ struct Input_para
     /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).
     bool rdmft_print_stiefel_gram = false;
     double rdmft_joint_orb_scale = 1.0;             // joint-strategy per-block preconditioner on the orbital block (see RDMFTConfig::joint_orb_scale)
+    /// If false, RDMFT equality target N_e uses sum of KS wg; if true, base is PARAM.inp.nelec.
+    bool rdmft_nelec_use_input = false;
+    /// Added to that base: N_e = base + rdmft_nelec_delta.
+    double rdmft_nelec_delta = 0.0;
 
     // ==============   #Parameters (22.EXX PW) =====================
     // EXX for planewave basis, rhx0820 2025-03-10

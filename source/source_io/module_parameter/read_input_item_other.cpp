@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 
@@ -1603,6 +1604,45 @@ void ReadInput::item_others()
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\" && rdmft_solver_strategy == \"joint\"";
         read_sync_double(input.rdmft_joint_orb_scale);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_nelec_use_input");
+        item.annotation = "Use PARAM.inp.nelec as base for RDMFT electron equality constraint";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If false (default), the constraint target is N_e = sum_{ik} wg(ik,ib) + "
+                           "rdmft_nelec_delta (KS occupation weights before RDMFT). If true, "
+                           "N_e = PARAM.inp.nelec + rdmft_nelec_delta. Use true to align the RDMFT "
+                           "constraint with the global charge target when it differs from the "
+                           "current wg sum.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_nelec_use_input);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_nelec_delta");
+        item.annotation = "Additive offset for RDMFT electron equality target N_e";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "N_e = (rdmft_nelec_use_input ? PARAM.inp.nelec : sum wg) + rdmft_nelec_delta. "
+                           "Must yield a positive N_e at runtime.";
+        item.default_value = "0.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_nelec_delta);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const double d = para.input.rdmft_nelec_delta;
+                if (!std::isfinite(d))
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_nelec_delta must be finite");
+                }
+            }
+        };
         this->add_item(item);
     }
 #endif

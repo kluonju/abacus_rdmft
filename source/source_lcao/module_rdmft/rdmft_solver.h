@@ -37,7 +37,8 @@ class RDMFTSolver
               EnergyGradient<TK, TR>& energy_grad,
               const K_Vectors* kv,
               int nbands,
-              double n_electrons);
+              double n_electrons,
+              const RDMFTNelectronTargetMeta& nelec_meta = RDMFTNelectronTargetMeta());
 
     /// Run the full RDMFT optimization.
     /// On input: occ_flat contains initial occupations, wfc contains initial orbitals.
@@ -89,6 +90,7 @@ class RDMFTSolver
     int nk_ = 0;
     int nbands_ = 0;
     double n_electrons_ = 0.0;
+    RDMFTNelectronTargetMeta nelec_meta_{};
 
     // Occupation sub-components
     std::unique_ptr<OccupationParam> occ_param_;

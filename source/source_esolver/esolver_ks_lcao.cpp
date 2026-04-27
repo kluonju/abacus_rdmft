@@ -691,19 +691,31 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
         rdmft_config.grad_check = inp.rdmft_grad_check;
 
-        // Initialise solver (lightweight).  Use the actual KS electron count from
-        // wg so the RDMFT equality constraint matches the loaded occupations
-        // (avoids large early |Σ w n − N_e| when input nelec and SCF wg differ).
-        double n_electrons = 0.0;
+        // RDMFT equality target N_e: default base is sum wg (matches loaded occupations);
+        // optional base PARAM.inp.nelec plus rdmft_nelec_delta (see INPUT).
+        double sum_wg = 0.0;
         for (int ik = 0; ik < nk; ++ik)
         {
             for (int ib = 0; ib < nbands; ++ib)
             {
-                n_electrons += this->pelec->wg(ik, ib);
+                sum_wg += this->pelec->wg(ik, ib);
             }
         }
+        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
+        const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
+        if (n_electrons <= 0.0)
+        {
+            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
+                                     "RDMFT electron target N_e must be positive. Check rdmft_nelec_use_input, "
+                                     "nelec, sum(wg), and rdmft_nelec_delta.");
+        }
+        rdmft::RDMFTNelectronTargetMeta nelec_meta;
+        nelec_meta.sum_initial_wg = sum_wg;
+        nelec_meta.input_nelec = inp.nelec;
+        nelec_meta.use_input_nelec = inp.rdmft_nelec_use_input;
+        nelec_meta.rdmft_nelec_delta = inp.rdmft_nelec_delta;
         rdmft::RDMFTSolver<TK, TR> rdmft_new_solver;
-        rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons);
+        rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons, nelec_meta);
         this->rdmft_eg.set_occ_entropy_gamma(rdmft_config.occ_entropy_gamma);
 
         // Run the optimization (`rdmft_grad_check` runs inside solve() after X-space setup)
