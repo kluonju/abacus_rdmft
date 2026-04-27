@@ -681,14 +681,14 @@ struct Input_para
     std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, binary, uniform
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
     int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
-    double rdmft_energy_tol = 1e-8;                // convergence threshold on energy change (Ry)
+    double rdmft_energy_tol = 1e-8;                // outer |dE| AND occ+orb inner converged; <=0: inner flags only
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
     double rdmft_orb_energy_tol = 1e-8;
     double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
-    /// PG occupation inner: |E_post - E| < this (Ry); <=0 uses rdmft_occ_grad_tol on PG map instead
+    /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
     double rdmft_occ_energy_tol = 1e-8;
-    /// PG map / ALM / other gradient thresholds (see solver); legacy PG stop if rdmft_occ_energy_tol <= 0
+    /// PG: ||(n-P(n-τ∇E))/τ||_inf; also ALM/AS/joint thresholds as in solver
     double rdmft_occ_grad_tol = 1e-6;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;

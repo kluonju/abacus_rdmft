@@ -157,11 +157,22 @@ If **no** trial in that backtracking loop is accepted, the solver applies a
 / Adam history).  This mirrors the recovery used in the `active_set` path when
 its line search fails.
 
-**Convergence criterion.**  Inner PG iterations stop when the **infinity norm**
-of the Bertsekas map residual \(\|n - P(n-\tau\nabla_n E)\|_\infty\) falls below
-`rdmft_occ_grad_tol`, with \(\tau =\) `rdmft_alpha_step`.  The first inner may
-also exit immediately if that map norm is already below the tolerance (no line
-search).
+**Convergence criterion (inner).**  Define the **projected-gradient** (Bertsekas)
+\(\mathbf{g}_{\mathrm{proj}} = \tfrac{1}{\tau}\bigl(\mathbf{n} - P(\mathbf{n} -
+\tau \nabla_{\mathbf{n}}E)\bigr)\) with \(\tau =\) `rdmft_alpha_step`.  The PG
+inner loop stops only when \(\|\mathbf{g}_{\mathrm{proj}}\|_\infty <\)
+`rdmft_occ_grad_tol` (evaluated **post-step**; the log also reports the unscaled
+map \(\|\mathbf{n} - P(\cdot)\|_\infty\) and \(|E_{\mathrm{post}}-E|\) as
+diagnostics).  The first inner may exit early if
+\(\|\mathbf{g}_{\mathrm{proj}}\|_\infty\) is already below the tolerance before
+a line search.  INPUT `rdmft_occ_energy_tol` is **not** used for PG stopping.
+
+**Outer (alternating / joint).**  A run is not considered **globally** converged
+on `rdmft_energy_tol` alone: the outer loop requires (after the first cycle)
+**both** inner sub-problem convergence flags and, when `rdmft_energy_tol` \(>0\), a
+small \(|E - E_{\mathrm{prev}}|\) between outer iterations.  If
+`rdmft_energy_tol` \(\le 0\), the outer energy test is off and the loop stops
+when the inner flags alone indicate convergence.
 
 **When to use PG.**  Useful for experiments or when you want updates purely in
 \(n\)-space without ALM penalties.  For difficult functionals (e.g. Müller at
@@ -205,11 +216,12 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_outer_maxiter` | int | `200` | Maximum **outer** RDMFT cycles: each cycle is one occupation optimisation plus one orbital optimisation (`alternating`), or one joint product-manifold step (`joint`). |
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
-| `rdmft_energy_tol` | real | `1e-8` | Convergence threshold on the change in total energy (Ry) between outer steps. |
+| `rdmft_energy_tol` | real | `1e-8` | Outer: require **smaller** than this for \(\|E - E_{\mathrm{prev}}\|\) (Ry) **and** both occupation- and orbital-inner `converged` flags, after the first outer step.  Set `<=0` to disable the energy part (stopping uses inner flags only). |
 | `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
 | `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: when `> 0`, stopping requires **both** `||G_R|| <` `rdmft_orb_grad_tol` **and** small energy moves: `|E_k - E_{k-1}|` before the step and `|E_{\mathrm{new}} - E|` after an accepted line search must stay below this (Ry). Set `<= 0` for gradient-only stopping. |
 | `rdmft_occ_tol` | real | `1e-7` | **ALM / active_set:** tolerance on occupation inner updates (e.g. sum \(|\Delta n|\) and KKT-style checks for AS). **Not** the PG stopping rule. |
-| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|n-P(n-\tau\nabla_n E)\|_\infty <\) this with \(\tau=\) `rdmft_alpha_step`. Also used where the code documents a uniform occupation-gradient tolerance (e.g. some ALM diagnostics). |
+| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, \(\tau=\) `rdmft_alpha_step`.  When \(\tau=1\), this equals the Bertsekas map norm.  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
+| `rdmft_occ_energy_tol` | real | `1e-8` | **Not used** for `projected_gradient` (PG inner stop is `rdmft_occ_grad_tol` vs \(\|g_{\mathrm{proj}}\|_\infty\) only). Kept for backward-compatible INPUT. |
 
 ### Initial occupation setup
 

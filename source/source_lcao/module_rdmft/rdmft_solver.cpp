@@ -51,7 +51,7 @@ inline double euclidean_norm(const std::vector<double>& v)
     return std::sqrt(s);
 }
 
-/// Bertsekas projected-gradient map residual r = n - P(n - τ g); one projection.
+/// Bertsekas map residual r = n - P(n - τ g); projected gradient (same τ) is g_proj = r / τ.
 void projected_gradient_map_l2_linf(const std::vector<double>& occ,
                                   const std::vector<double>& grad,
                                   const OccupationConstraint& constraint,
@@ -1225,22 +1225,27 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        // Outer stop: |E - E_prev| < rdmft_energy_tol (after first outer), or if energy_tol <= 0 require
-        // both occupation and orbital inner loops to report converged.
-        const bool energy_stop = (config_.energy_tol > 0.0) && (iter > 0) && (dE < config_.energy_tol);
+        // Outer stop: need occupation inner, orbital inner, and (when energy_tol>0) total-energy stability.
         const bool inner_both = occ_result.converged && orb_result.converged;
-        const bool outer_converged = energy_stop
-                                     || (inner_both && (config_.energy_tol <= 0.0
-                                                        || ((iter > 0) && (dE < config_.energy_tol))));
+        const bool energy_ok
+            = (config_.energy_tol <= 0.0) || ((iter > 0) && (dE < config_.energy_tol));
+        const bool outer_converged = (iter > 0) && inner_both && energy_ok;
         if (outer_converged)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
             last_result_.final_energy = E;
             last_result_.grad_norm = std::max(occ_result.grad_norm, orb_result.grad_norm);
-            if (energy_stop)
+            if (config_.energy_tol > 0.0)
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol)"
+                GlobalV::ofs_running
+                    << "  RDMFT alternating: outer loop stopped (OCC&ORB converged, |dE| < rdmft_energy_tol)"
+                    << std::endl;
+            }
+            else
+            {
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB converged; energy tol "
+                                        "disabled)"
                                      << std::endl;
             }
             break;
@@ -1965,11 +1970,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;
 
-        const bool energy_stop_joint = (config_.energy_tol > 0.0) && (iter > 0) && (dE < config_.energy_tol);
         const bool inner_both_joint = occ_conv_joint && orb_conv_joint;
-        const bool outer_converged_joint = energy_stop_joint
-                                           || (inner_both_joint && (config_.energy_tol <= 0.0
-                                                                    || ((iter > 0) && (dE < config_.energy_tol))));
+        const bool energy_ok_joint
+            = (config_.energy_tol <= 0.0) || ((iter > 0) && (dE < config_.energy_tol));
+        const bool outer_converged_joint = (iter > 0) && inner_both_joint && energy_ok_joint;
         if (outer_converged_joint)
         {
             last_result_.converged = true;
@@ -1977,9 +1981,14 @@ double RDMFTSolver<TK, TR>::solve_joint(
             last_result_.final_energy = E_new;
             last_result_.grad_norm = gnorm_total;
             E = E_new;
-            if (energy_stop_joint)
+            if (config_.energy_tol > 0.0)
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol)"
+                GlobalV::ofs_running
+                    << "  RDMFT joint: outer loop stopped (OCC&ORB flags, |dE| < rdmft_energy_tol)" << std::endl;
+            }
+            else
+            {
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags; energy tol disabled)"
                                      << std::endl;
             }
             break;
@@ -2255,6 +2264,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
+            // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ).
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
             GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
@@ -2294,6 +2304,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     pg_map_l2_pre,
                     pg_map_inf_pre);
 
+                const double tau_pg = (config_.line_search_alpha_init > 0.0) ? config_.line_search_alpha_init
+                                                                            : 1.0;
+                const double g_inf_pre = pg_map_inf_pre / tau_pg;
+                const double g_l2_pre = pg_map_l2_pre / tau_pg;
+
                 double grad_l2_pre = 0.0;
                 for (auto g : grad_occ)
                 {
@@ -2306,25 +2321,26 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     os << "      occ inner PG " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
                        << "  |c|=" << c_abs
-                       << "  PG map ||n-P(n-τ∇E)||_inf (pre-step)=" << pg_map_inf_pre
-                       << "  ||n-P||_2=" << pg_map_l2_pre
+                       << "  ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (pre-step)=" << g_inf_pre
+                       << "  ||g_proj||_2=" << g_l2_pre
+                       << "  (diag map ||n-P||_inf=" << pg_map_inf_pre << "  τ=" << tau_pg << ")"
                        << "  ||grad_n E||_2 (diag)=" << grad_l2_pre;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (inner == 0 && config_.occ_energy_tol <= 0.0 && pg_map_inf_pre < config_.occ_grad_tol)
+                if (inner == 0 && g_inf_pre < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = 1;
                     result.final_energy = E;
-                    result.grad_norm = pg_map_inf_pre;
+                    result.grad_norm = g_inf_pre;
                     print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
-                    GlobalV::ofs_running << "      PG projected-gradient map infinity norm ||n-P(n-τ∇E)||_inf "
-                                            "(pre-step) = "
-                                         << std::scientific << pg_map_inf_pre << "  rdmft_occ_grad_tol="
-                                         << config_.occ_grad_tol << std::defaultfloat << std::endl;
-                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (legacy PG map < "
-                                             "rdmft_occ_grad_tol; rdmft_occ_energy_tol<=0); skipping line search."
+                    GlobalV::ofs_running << "      PG ||g_proj||_inf (pre-step) = " << std::scientific
+                                         << g_inf_pre << "  (||n-P(n-τ∇E)||_inf=" << pg_map_inf_pre
+                                         << "  τ=" << tau_pg << ")  rdmft_occ_grad_tol=" << config_.occ_grad_tol
+                                         << std::defaultfloat << std::endl;
+                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (||g_proj||_inf < "
+                                            "rdmft_occ_grad_tol); skipping line search."
                                          << std::endl;
                     break;
                 }
@@ -2471,7 +2487,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     config_.line_search_alpha_init,
                     pg_map_l2_post,
                     pg_map_inf_post);
-                result.grad_norm = pg_map_inf_post;
+                const double g_inf_post = pg_map_inf_post / tau_pg;
+                const double g_l2_post = pg_map_l2_post / tau_pg;
+                result.grad_norm = g_inf_post;
                 pg_opt.update(new_grad_occ, step_vec);
                 if (ls_success)
                 {
@@ -2488,25 +2506,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
                     << "  N_e=" << n_electrons_ << std::endl;
                 const double dE_occ_step = std::abs(E_post - E);
-                GlobalV::ofs_running << "      PG projected-gradient map ||n-P(n-τ∇E)||_inf (post-step) = "
-                                     << std::scientific << pg_map_inf_post << "  (diagnostic)"
+                GlobalV::ofs_running
+                    << "      PG ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (post-step) = " << std::scientific
+                    << g_inf_post << "  (map ||n-P||_inf=" << pg_map_inf_post << "  τ=" << tau_pg << ")"
+                    << "  rdmft_occ_grad_tol=" << config_.occ_grad_tol << std::defaultfloat << std::endl;
+                GlobalV::ofs_running << "      PG diagnostic: |E_post-E|=" << std::scientific << dE_occ_step
                                      << std::defaultfloat << std::endl;
-                GlobalV::ofs_running << "      PG stop-check: |E_post-E|=" << std::scientific << dE_occ_step
-                                     << "  rdmft_occ_energy_tol=" << config_.occ_energy_tol << std::defaultfloat;
-                if (config_.occ_energy_tol <= 0.0)
-                {
-                    GlobalV::ofs_running << "  [using legacy: PG map vs rdmft_occ_grad_tol=" << config_.occ_grad_tol
-                                         << "]";
-                }
-                GlobalV::ofs_running << std::endl;
                 GlobalV::ofs_running << "      PG diagnostics: sum|dn|=" << std::scientific << sum_abs_dn
-                                     << "  ||n-P||_2=" << pg_map_l2_post
-                                     << "  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
-                const bool occ_pg_energy_stop
-                    = (config_.occ_energy_tol > 0.0) && (dE_occ_step < config_.occ_energy_tol);
-                const bool occ_pg_map_stop
-                    = (config_.occ_energy_tol <= 0.0) && (pg_map_inf_post < config_.occ_grad_tol);
-                if (occ_pg_energy_stop || occ_pg_map_stop)
+                                     << "  ||g_proj||_2=" << g_l2_post << "  (map ||n-P||_2=" << pg_map_l2_post
+                                     << ")  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
+                if (g_inf_post < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     break;

@@ -150,6 +150,9 @@ struct RDMFTConfig
     int orb_maxiter = 50;
     /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
+    /// Alternating / joint outer: when >0, require |dE| < this between outer iters
+    /// **and** occupation+orbital inner `converged` flags. When <=0, outer stops on inner flags only
+    /// (after first outer iter). Same field as INPUT `rdmft_energy_tol`.
     double energy_tol = 1e-8;
     /// Inner orbital step: Riemannian gradient norm ||G_R|| must fall below this
     /// for convergence (and, when orb_energy_tol > 0, the energy change criterion
@@ -161,12 +164,10 @@ struct RDMFTConfig
     double orb_energy_tol = 1e-8;
     /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
     double rdmft_occ_tol = 1e-8;
-    /// Projected gradient occupation inner: when > 0, converge when |E_post - E| < this after each inner step
-    /// (Ry), where E is the pre-step energy and E_post after the update. Set <= 0 to use the legacy criterion
-    /// occ_grad_tol on the PG map ||n - P(n - τ∇E)||_inf (τ = line_search_alpha_init).
+    /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-8;
-    /// Legacy PG stopping (used only if occ_energy_tol <= 0): ||n - P(n - τ∇E)||_inf < this, post-step.
-    /// Also used for ALM first-inner gradient norm, joint, and other checks as implemented in the solver.
+    /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ = line_search_alpha_init).
+    /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
