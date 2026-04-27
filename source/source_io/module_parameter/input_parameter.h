@@ -699,6 +699,8 @@ struct Input_para
     std::string rdmft_occ_ls_init_step = "bb";     // occupation line-search alpha0 policy: fixed, bb, quad
     /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
     bool rdmft_line_search_polynomial = true;
+    /// Armijo sufficient-decrease parameter c1 (RDMFT occupation/orbital line searches, joint Armijo)
+    double rdmft_line_search_c1 = 1e-4;
     /// Strong Wolfe curvature parameter c2 (used with lbfgs + Strong Wolfe line search)
     double rdmft_line_search_c2 = 0.9;
     /// Strong Wolfe zoom iteration cap

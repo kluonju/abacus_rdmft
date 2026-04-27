@@ -607,6 +607,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::BarzilaiBorwein;
         rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
+        rdmft_config.line_search_c1 = inp.rdmft_line_search_c1;
         rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
         rdmft_config.line_search_max_zoom = inp.rdmft_line_search_max_zoom;
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
@@ -687,6 +688,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
         rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
         rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
+        rdmft_config.grad_check = inp.rdmft_grad_check;
 
         // Initialise solver (lightweight)
         const double n_electrons = PARAM.inp.nelec;
@@ -694,13 +696,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons);
         this->rdmft_eg.set_occ_entropy_gamma(rdmft_config.occ_entropy_gamma);
 
-        // Optional gradient check
-        if (inp.rdmft_grad_check)
-        {
-            rdmft_new_solver.check_gradient_consistency(occ_flat, *this->psi);
-        }
-
-        // Run the optimization
+        // Run the optimization (`rdmft_grad_check` runs inside solve() after X-space setup)
         double etot_rdmft = rdmft_new_solver.solve(occ_flat, *this->psi);
 
         // Update pelec->wg from optimized occupations

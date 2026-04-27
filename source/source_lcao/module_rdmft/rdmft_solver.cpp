@@ -563,6 +563,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("lbfgs_memory", std::to_string(cfg.lbfgs_memory));
     add_kv("adam_lr", as_sci(cfg.adam_lr));
     add_kv("joint_orb_scale", as_sci(cfg.joint_orb_scale));
+    add_kv("rdmft_grad_check", cfg.grad_check ? "true" : "false");
     add_kv("alm_lambda_init", as_sci(cfg.aug_lag_lambda_init));
     add_kv("alm_mu_init", as_sci(cfg.aug_lag_mu_init));
     add_kv("alm_mu_factor", as_sci(cfg.aug_lag_mu_factor));
@@ -1041,6 +1042,13 @@ double RDMFTSolver<TK, TR>::solve(
     // Orthonormalize in X-space so all subsequent manifold operations start
     // from a valid point on the standard Stiefel manifold X^H X = I.
     energy_grad_->retract_orbitals(wfc, wfc, 0.0);
+
+    // Gradient check must run only after X-space setup above; compute()/retract
+    // paths require precompute_cholesky_S() (see EnergyGradient::wfc_X_to_C).
+    if (config_.grad_check)
+    {
+        (void)check_gradient_consistency(occ_flat, wfc);
+    }
 
     double E = 0.0;
     switch (config_.strategy)

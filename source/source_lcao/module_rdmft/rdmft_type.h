@@ -245,6 +245,11 @@ struct RDMFTConfig
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.
     bool print_stiefel_gram = false;
+
+    /// If true, `RDMFTSolver::solve` runs finite-difference gradient checks after
+    /// `precompute_cholesky_S()` and `wfc_C_to_X` (must not run earlier: orbitals are
+    /// still in C-space before that).
+    bool grad_check = false;
 };
 
 } // namespace rdmft

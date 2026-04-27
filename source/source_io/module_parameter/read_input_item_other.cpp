@@ -1353,6 +1353,29 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_line_search_c1");
+        item.annotation = "Armijo sufficient-decrease c1 for RDMFT line searches";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Armijo constant in (0, 1): E_trial <= E + c1 * alpha * (directional derivative). "
+                           "Used for alternating orbital Armijo, ALM/PG/AS occupation line searches, joint Armijo, "
+                           "and the Armijo condition inside Strong Wolfe. Smaller values demand a steeper energy cut.";
+        item.default_value = "1e-4";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_line_search_c1);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_line_search_c1 <= 0.0 || para.input.rdmft_line_search_c1 >= 1.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_c1 must be in (0, 1)");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_line_search_c2");
         item.annotation = "Strong Wolfe curvature parameter c2 for RDMFT (lbfgs line search)";
         item.category = "Reduced Density Matrix Functional Theory";
