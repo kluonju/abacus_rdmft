@@ -379,9 +379,11 @@ class OccupationConstraint
 /// electron-count constraint.  No augmented-Lagrangian penalty is needed in
 /// the joint (product-manifold) strategy.
 ///
-/// The gradient chain rule gives:
-///   dE/dz_{ik} = dE/dn_{ik} · σ'(z_{ik} + λ) = dE/dn_{ik} · n_{ik}(1−n_{ik})
-/// (treating λ as a Lagrange multiplier determined externally at each step).
+/// λ is an implicit function of z from the electron-count equation.  With
+/// h_{ik} = ∂E/∂n_{ik} (ABACUS `grad_occ`, already including k-point weights
+/// in the usual RDMFT energy derivative),
+///   ∂E/∂z_{ik} = σ'_{ik} ( h_{ik} - w_k · (Σ_{jq} h_{jq} σ'_{jq}) / (Σ_{jq} w_j σ'_{jq}) ),
+/// σ'_{ik} = σ(z_{ik}+λ)(1−σ(...)).  If Σ w σ' ≈ 0 (saturated occupations), ∂E/∂z is set to 0.
 class SigmaShiftOccParam
 {
   public:
@@ -392,6 +394,25 @@ class SigmaShiftOccParam
           nbands_(nbands), nk_(static_cast<int>(kweights.size())),
           lambda_(0.0)
     {}
+
+    /// Numerically stable σ(x); avoids exp overflow for |x| large.
+    static double stable_sigmoid(double x)
+    {
+        if (x >= 0.0)
+        {
+            const double z = std::exp(-x);
+            return 1.0 / (1.0 + z);
+        }
+        const double z = std::exp(x);
+        return z / (1.0 + z);
+    }
+
+    /// σ'(x) using stable σ.
+    static double stable_sigmoid_prime(double x)
+    {
+        const double s = stable_sigmoid(x);
+        return s * (1.0 - s);
+    }
 
     /// Find λ by bisection such that Σ_k w_k Σ_i σ(z_{ik}+λ) = N_e.
     /// Stores and returns the computed λ.
@@ -411,7 +432,10 @@ class SigmaShiftOccParam
             double s = 0.0;
             for (int ik = 0; ik < nk_; ++ik)
                 for (int ib = 0; ib < nbands_; ++ib)
-                    s += kweights_[ik] / (1.0 + std::exp(-(z_params[ik * nbands_ + ib] + lam)));
+                {
+                    const double x = z_params[ik * nbands_ + ib] + lam;
+                    s += kweights_[ik] * stable_sigmoid(x);
+                }
             return s;
         };
 
@@ -466,7 +490,7 @@ class SigmaShiftOccParam
     {
         occ.resize(z.size());
         for (size_t i = 0; i < z.size(); ++i)
-            occ[i] = 1.0 / (1.0 + std::exp(-(z[i] + lambda)));
+            occ[i] = stable_sigmoid(z[i] + lambda);
     }
 
     /// Map n → z (initial parameterization): z_i = logit(n_i) = log(n/(1-n)).
@@ -482,17 +506,47 @@ class SigmaShiftOccParam
         }
     }
 
-    /// Chain rule: dE/dz_i = dE/dn_i · σ'(z_i + λ) = dE/dn_i · n_i(1−n_i).
+    /// ∂E/∂z with λ(z) from Σ_k w_k Σ_i σ(z_{ik}+λ) = N_e (implicit differentiation).
     void transform_gradient_batch(const std::vector<double>& dE_dn,
                                   const std::vector<double>& z,
                                   double lambda,
                                   std::vector<double>& dE_dz) const
     {
+        assert(static_cast<int>(dE_dn.size()) == nk_ * nbands_);
+        assert(static_cast<int>(z.size()) == nk_ * nbands_);
         dE_dz.resize(dE_dn.size());
-        for (size_t i = 0; i < dE_dn.size(); ++i)
+
+        double sum_s = 0.0;
+        double sum_hsp = 0.0;
+        for (int ik = 0; ik < nk_; ++ik)
         {
-            const double n = 1.0 / (1.0 + std::exp(-(z[i] + lambda)));
-            dE_dz[i] = dE_dn[i] * n * (1.0 - n);
+            const double wk = kweights_[ik];
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const int idx = ik * nbands_ + ib;
+                const double sp = stable_sigmoid_prime(z[idx] + lambda);
+                sum_s += wk * sp;
+                sum_hsp += dE_dn[idx] * sp;
+            }
+        }
+
+        constexpr double sum_s_floor = 1e-12;
+        if (std::abs(sum_s) < sum_s_floor)
+        {
+            std::fill(dE_dz.begin(), dE_dz.end(), 0.0);
+            return;
+        }
+
+        const double ratio = sum_hsp / sum_s;
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            const double wk = kweights_[ik];
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const int idx = ik * nbands_ + ib;
+                const double sp = stable_sigmoid_prime(z[idx] + lambda);
+                dE_dz[idx] = sp * (dE_dn[idx] - wk * ratio);
+            }
         }
     }
 

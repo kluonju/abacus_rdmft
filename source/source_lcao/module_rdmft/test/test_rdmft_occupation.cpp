@@ -208,3 +208,84 @@ TEST_F(OccupationConstraintTest, active_set_identification)
     EXPECT_TRUE(info.is_free[1]);
     EXPECT_TRUE(info.is_free[2]);
 }
+
+class SigmaShiftOccParamTest : public ::testing::Test {};
+
+TEST_F(SigmaShiftOccParamTest, compute_lambda_weighted_occupation_sum)
+{
+    const std::vector<double> wk = {0.25, 0.25, 0.25, 0.25};
+    const int nbands = 3;
+    const double nel = 2.0;
+    SigmaShiftOccParam param(nel, wk, nbands);
+
+    std::vector<double> z(12);
+    for (int i = 0; i < 12; ++i)
+    {
+        z[static_cast<size_t>(i)] = 0.07 * static_cast<double>(i - 6);
+    }
+
+    const double lambda = param.compute_lambda(z);
+    std::vector<double> occ;
+    param.params_to_occ(z, lambda, occ);
+
+    double sum = 0.0;
+    for (int ik = 0; ik < 4; ++ik)
+    {
+        for (int ib = 0; ib < nbands; ++ib)
+        {
+            sum += wk[static_cast<size_t>(ik)] * occ[static_cast<size_t>(ik * nbands + ib)];
+        }
+    }
+    EXPECT_NEAR(sum, nel, 1e-11) << "lambda=" << lambda;
+}
+
+TEST_F(SigmaShiftOccParamTest, transform_gradient_matches_finite_difference_linear_energy)
+{
+    const std::vector<double> wk = {0.5, 0.5};
+    const int nbands = 2;
+    const double nel = 1.2;
+    SigmaShiftOccParam param(nel, wk, nbands);
+
+    std::vector<double> z = {-0.31, 0.12, 0.37, -0.21};
+    const double lambda = param.compute_lambda(z);
+    const std::vector<double> h = {0.73, -0.41, 1.07, 0.19};
+
+    std::vector<double> analytic;
+    param.transform_gradient_batch(h, z, lambda, analytic);
+    ASSERT_EQ(analytic.size(), z.size());
+
+    const double eps = 1e-7;
+    for (size_t j = 0; j < z.size(); ++j)
+    {
+        std::vector<double> z_plus = z;
+        std::vector<double> z_minus = z;
+        z_plus[j] += eps;
+        z_minus[j] -= eps;
+
+        SigmaShiftOccParam p_plus(nel, wk, nbands);
+        SigmaShiftOccParam p_minus(nel, wk, nbands);
+        const double lam_p = p_plus.compute_lambda(z_plus);
+        const double lam_m = p_minus.compute_lambda(z_minus);
+        std::vector<double> occ_p;
+        std::vector<double> occ_m;
+        p_plus.params_to_occ(z_plus, lam_p, occ_p);
+        p_minus.params_to_occ(z_minus, lam_m, occ_m);
+
+        double Ep = 0.0;
+        double Em = 0.0;
+        for (size_t i = 0; i < h.size(); ++i)
+        {
+            Ep += h[i] * occ_p[i];
+            Em += h[i] * occ_m[i];
+        }
+        const double fd = (Ep - Em) / (2.0 * eps);
+        EXPECT_NEAR(analytic[j], fd, 5e-6) << "j=" << j;
+    }
+}
+
+TEST_F(SigmaShiftOccParamTest, stable_sigmoid_extremes)
+{
+    EXPECT_NEAR(SigmaShiftOccParam::stable_sigmoid(-80.0), 0.0, 1e-30);
+    EXPECT_NEAR(SigmaShiftOccParam::stable_sigmoid(80.0), 1.0, 1e-30);
+    EXPECT_NEAR(SigmaShiftOccParam::stable_sigmoid(0.0), 0.5, 1e-15);
+}

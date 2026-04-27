@@ -74,9 +74,9 @@ The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMF
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_occ_param` | string | `cosine_sq` | `cosine_sq`, `logistic` |
+| `rdmft_occ_param` | string | `cosine_sq` | `cosine_sq`, `logistic`, `sigma_shift` |
 
-Both options map an unconstrained real parameter to the interval [0, 1]:
+The first two options map unconstrained real parameters to the interval [0, 1]:
 
 - **`cosine_sq`** — n = cos²(θ).  The gradient transforms as
   dE/dθ = −sin(2θ) · dE/dn.
@@ -85,6 +85,14 @@ Both options map an unconstrained real parameter to the interval [0, 1]:
   electron-number constraint is handled by the augmented Lagrangian (not a
   global μ solve). Projected gradient and active set work in occupation space
   and do not use this map.
+- **`sigma_shift`** — \(n_{ik}=\sigma(z_{ik}+\lambda)\) with a **scalar**
+  \(\lambda\) solved each evaluation so that \(\sum_k w_k\sum_i n_{ik}=N_e\)
+  exactly (bisection).  This is the unconstrained occupation block of the
+  **product-manifold** setup and is wired only in **`rdmft_solver_strategy joint`**.
+  Using `sigma_shift` with `alternating` is rejected at solver initialisation.
+  The joint driver skips the augmented-Lagrangian occupation penalty when
+  `sigma_shift` is active; `rdmft_constraint` still selects the method for
+  **alternating** runs (not applicable together with `sigma_shift`).
 
 ### Electron-number constraint
 
@@ -113,8 +121,8 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
 
 PG works **directly in occupation space** on the convex set
 \(0\le n_{ik}\le 1\) with the linear equality \(\sum_k w_k\sum_i n_{ik}=N_e\).
-The `rdmft_occ_param` keyword is ignored for this path (it only applies to
-ALM / sigma-shift parameterisations).
+The `rdmft_occ_param` keyword is ignored for this path (ALM uses `cosine_sq` /
+`logistic`; `sigma_shift` is only used with `joint`).
 
 **Feasible set and projection.**  After a trial move \(n+\alpha d\), the code
 clips each \(n_{ik}\) to \([0,1]\) and applies a **one-dimensional dual solve**

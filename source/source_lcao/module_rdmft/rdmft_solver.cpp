@@ -15,6 +15,7 @@
 #include <complex>
 #include <chrono>
 #include <limits>
+#include <stdexcept>
 
 namespace rdmft
 {
@@ -782,6 +783,13 @@ void RDMFTSolver<TK, TR>::init(
                                     + std::to_string(nk_));
     }
 
+    if (config_.occ_param == OccParamType::SigmaShift && config_.strategy == SolverStrategy::Alternating)
+    {
+        throw std::invalid_argument(
+            "RDMFTSolver::init: rdmft_occ_param sigma_shift requires rdmft_solver_strategy joint "
+            "(alternating occupation optimisation does not apply the sigma-shift lambda solve).");
+    }
+
     // Initialize occupation parameterization
     occ_param_ = std::make_unique<OccupationParam>(config_.occ_param);
 
@@ -1050,6 +1058,16 @@ double RDMFTSolver<TK, TR>::solve(
     // from a valid point on the standard Stiefel manifold X^H X = I.
     energy_grad_->retract_orbitals(wfc, wfc, 0.0);
 
+    // Sigma-shift: map KS occupations to n = σ(z+λ) with λ enforcing Σ w n = N_e
+    // before gradient check or strategy entry (KS wg/wk may not satisfy N_e exactly).
+    if (config_.occ_param == OccParamType::SigmaShift && sigma_shift_param_ != nullptr)
+    {
+        std::vector<double> z_pre(occ_flat.size());
+        sigma_shift_param_->occ_to_params(occ_flat, z_pre);
+        const double lam_pre = sigma_shift_param_->compute_lambda(z_pre);
+        sigma_shift_param_->params_to_occ(z_pre, lam_pre, occ_flat);
+    }
+
     // Gradient check must run only after X-space setup above; compute()/retract
     // paths require precompute_cholesky_S() (see EnergyGradient::wfc_X_to_C).
     if (config_.grad_check)
@@ -1307,9 +1325,22 @@ double RDMFTSolver<TK, TR>::solve_joint(
     // Convert occupations to unconstrained parameters.
     std::vector<double> params(occ_flat.size());
     if (use_sigma_shift)
+    {
         sigma_shift_param_->occ_to_params(occ_flat, params);
+        // Fold the first implicit λ into z: with z' = z + λ, n_i = σ(z'_i) and
+        // Σ_k w_k Σ_i n_i = N_e still holds, while the next λ solve is ~0.  This
+        // avoids a large shift from logit(KS) vs the target electron sum and
+        // keeps early joint iterations numerically on the electron constraint.
+        const double lam_fold = sigma_shift_param_->compute_lambda(params);
+        for (double& z : params)
+            z += lam_fold;
+        const double lam_canon = sigma_shift_param_->compute_lambda(params);
+        sigma_shift_param_->params_to_occ(params, lam_canon, occ_flat);
+    }
     else
+    {
         occ_param_->occ_to_params(occ_flat, params);
+    }
 
     const int n_occ_params = static_cast<int>(params.size());
     const int nk = wfc.get_nk();
@@ -1381,6 +1412,22 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
         const std::vector<double> occ_before_joint_step(occ_flat);
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
+
+        // SCF stdout / running: occupations at the beginning of this joint outer iteration.
+        {
+            std::ostringstream hdr_start;
+            hdr_start << std::fixed << std::setprecision(10)
+                      << "  RDMFT joint iter " << (iter + 1)
+                      << "  occupations n(ik,ib) at iteration START"
+                      << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                      << "  N_e=" << n_electrons_;
+            if (use_sigma_shift)
+            {
+                hdr_start << "  sigma_lambda=" << sigma_lambda;
+            }
+            print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, hdr_start.str(), 2);
+            print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk_, nbands_, hdr_start.str(), 2);
+        }
 
         // Full energy + Euclidean gradients at the current point.
         std::vector<double> grad_occ;
@@ -1894,7 +1941,20 @@ double RDMFTSolver<TK, TR>::solve_joint(
             std::cout << std::scientific << "  dE_signed=E-E_prev_outer=" << dE_signed << "  |dE|=" << dE
                       << "  alpha=" << alpha << std::fixed << std::endl;
         }
-        print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, "  Occupations n(ik, ib):", 2);
+        {
+            std::ostringstream hdr_end;
+            hdr_end << std::fixed << std::setprecision(10)
+                    << "  RDMFT joint iter " << (iter + 1)
+                    << "  occupations n(ik,ib) after step"
+                    << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                    << "  N_e=" << n_electrons_;
+            if (use_sigma_shift)
+            {
+                hdr_end << "  sigma_lambda=" << sigma_lambda;
+            }
+            print_occ_table_to_stream(std::cout, occ_flat, nk_, nbands_, hdr_end.str(), 2);
+            print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk_, nbands_, hdr_end.str(), 2);
+        }
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
         joint_last_E = E_new;

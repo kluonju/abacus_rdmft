@@ -5,8 +5,18 @@ if(ENABLE_LCAO AND BUILD_TESTING)
     )
     AddTest(
         TARGET rdmft_occupation_test
+        LIBS base ${math_libs} device parameter
         SOURCES test_rdmft_occupation.cpp
     )
+    # oneAPI 2025.3 (IntelLLVM): icpx can ICE in HIR codegen on this TU (see rdmft/CMakeLists.txt).
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "IntelLLVM")
+        # -O2 -fno-vectorize still ICEs on oneAPI 2025.3; -O0 avoids HIR codegen crash.
+        set_source_files_properties(
+            test_rdmft_occupation.cpp
+            PROPERTIES
+            COMPILE_OPTIONS "-O0"
+        )
+    endif()
     AddTest(
         TARGET rdmft_stiefel_test
         SOURCES test_rdmft_stiefel.cpp
