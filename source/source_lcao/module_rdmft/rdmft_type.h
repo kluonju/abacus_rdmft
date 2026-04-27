@@ -130,12 +130,15 @@ struct RDMFTConfig
     OccParamType occ_param = OccParamType::CosineSq;
     ConstraintMethod constraint_method = ConstraintMethod::AugmentedLagrangian;
 
+    /// ALM occupation inner: Strong Wolfe line search if occ_optimizer is LBFGS, else Armijo.
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
+    /// Alternating orbital inner: Armijo only (all optimiser types).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
+    /// Joint line search: Strong Wolfe if joint_optimizer is LBFGS, else Armijo.
     OptimizerType joint_optimizer = OptimizerType::LBFGS;
 
     SolverStrategy strategy = SolverStrategy::Alternating;

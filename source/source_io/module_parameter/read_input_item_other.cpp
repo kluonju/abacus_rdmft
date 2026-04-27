@@ -935,7 +935,8 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the occupation sub-problem. "
-                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam.";
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
+                           "Augmented-Lagrangian inner line search: Strong Wolfe if lbfgs, Armijo if sd/cg/adam.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -948,7 +949,8 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the orbital (Stiefel manifold) sub-problem. "
-                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam.";
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
+                           "Alternating orbital inner always uses Armijo line search (no Strong Wolfe).";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -964,7 +966,7 @@ void ReadInput::item_others()
                            "orbital coefficients are packed into one point on the product manifold "
                            "and stepped simultaneously by a single optimiser of this type. "
                            "Allowed values: sd (steepest descent), cg (conjugate gradient), "
-                           "lbfgs, adam.";
+                           "lbfgs, adam. Joint line search: Strong Wolfe if lbfgs, Armijo if sd/cg/adam.";
         item.default_value = "lbfgs";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

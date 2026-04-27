@@ -29,6 +29,12 @@ double sum_abs_diff(const std::vector<double>& a, const std::vector<double>& b)
     return s;
 }
 
+/// Line search in RDMFT: Strong Wolfe only for LBFGS; Armijo (backtracking) for sd / cg / adam.
+inline bool line_search_uses_strong_wolfe(const OptimizerType opt)
+{
+    return opt == OptimizerType::LBFGS;
+}
+
 /// Stop augmented-Lagrangian occupation inner loop when the total occupation change is small.
 bool occ_inner_should_stop(double sum_abs_dn,
                            double dn_tol)
@@ -1340,6 +1346,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
     double joint_gn_orb = 0.0;
     double joint_gn_tot = 0.0;
     int joint_outer_done = 0;
+    // After a joint line-search failure we reset the optimiser (next iter is
+    // effectively steepest descent). If line search fails again on that
+    // recovery iteration, stop the outer loop.
+    bool joint_ls_failed_prev = false;
 
     auto total_energy = [&](const std::vector<double>& occ_in,
                             const psi::Psi<TK>& wfc_in) -> double {
@@ -1530,7 +1540,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
                         wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
         }
 
-        // Joint line search: Strong Wolfe for lbfgs; Armijo for SD / CG / Adam.
+        // Joint line search: Strong Wolfe for lbfgs only; Armijo for sd / cg / adam
+        // (see line_search_uses_strong_wolfe).
         const double alpha_init = (joint_is_lbfgs || joint_is_adam)
                                       ? 1.0
                                       : config_.line_search_alpha_init;
@@ -1542,7 +1553,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         bool ls_success = false;
         int joint_ls_trials = 0;
         int joint_n_feval = 0;
-        const bool joint_use_sw = joint_is_lbfgs;
+        const bool joint_use_sw = line_search_uses_strong_wolfe(joint_type);
 
         std::vector<double> occ_flat_new;
         std::vector<double> params_new(params.size());
@@ -1690,6 +1701,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         if (!ls_success)
         {
+            if (joint_ls_failed_prev)
+            {
+                GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
+                    << "  line search failed again after optimiser reset (SD recovery); stopping outer loop."
+                    << std::endl;
+                last_result_.converged = false;
+                break;
+            }
+            joint_ls_failed_prev = true;
             // Line search failed: roll back, restart the optimiser state and
             // continue with steepest descent at the next iteration.
             if (step_orbitals)
@@ -1715,10 +1735,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 GlobalV::ofs_running << " n_trial=" << joint_ls_trials;
             }
             GlobalV::ofs_running << "  E_last=" << E_new << std::defaultfloat
-                << ", restarting optimiser state" << std::endl;
+                << ", restarting optimiser state (next outer: steepest-descent step)" << std::endl;
             E_prev = E;
             continue;
         }
+
+        joint_ls_failed_prev = false;
 
         // Commit occupation step (orbitals are already retracted by the
         // final, successful line-search trial above).
@@ -2064,7 +2086,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     return {Et, dd_trial};
                 };
 
-                const bool use_strong_wolfe = (config_.occ_optimizer == OptimizerType::LBFGS);
+                const bool use_strong_wolfe = line_search_uses_strong_wolfe(config_.occ_optimizer);
                 LineSearchResult ls;
                 if (use_strong_wolfe)
                 {
