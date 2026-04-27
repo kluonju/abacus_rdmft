@@ -166,7 +166,8 @@ struct RDMFTConfig
     double rdmft_occ_tol = 1e-8;
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-8;
-    /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ = line_search_alpha_init).
+    /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:
+    /// initial trial α₀ pre-step, accepted Armijo α post-step, line_search_alpha_init on SD fallback).
     /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables

@@ -159,13 +159,17 @@ its line search fails.
 
 **Convergence criterion (inner).**  Define the **projected-gradient** (Bertsekas)
 \(\mathbf{g}_{\mathrm{proj}} = \tfrac{1}{\tau}\bigl(\mathbf{n} - P(\mathbf{n} -
-\tau \nabla_{\mathbf{n}}E)\bigr)\) with \(\tau =\) `rdmft_alpha_step`.  The PG
-inner loop stops only when \(\|\mathbf{g}_{\mathrm{proj}}\|_\infty <\)
-`rdmft_occ_grad_tol` (evaluated **post-step**; the log also reports the unscaled
-map \(\|\mathbf{n} - P(\cdot)\|_\infty\) and \(|E_{\mathrm{post}}-E|\) as
-diagnostics).  The first inner may exit early if
-\(\|\mathbf{g}_{\mathrm{proj}}\|_\infty\) is already below the tolerance before
-a line search.  INPUT `rdmft_occ_energy_tol` is **not** used for PG stopping.
+\tau \nabla_{\mathbf{n}}E)\bigr)\) with **\(\tau\) tied to the occupation line
+search**: before stepping, \(\tau\) equals the first Armijo trial \(\alpha_0\)
+from `rdmft_occ_ls_init_step` (with fallback to `rdmft_alpha_step` if \(\alpha_0\)
+is invalid); after a successful line search, \(\tau\) is the **accepted** Armijo
+step \(\alpha\); after an SD fallback (failed line search), \(\tau =\)
+`rdmft_alpha_step`, matching the recovery step.  The PG inner loop stops only
+when \(\|\mathbf{g}_{\mathrm{proj}}\|_\infty <\) `rdmft_occ_grad_tol` (evaluated
+**post-step**; the log reports the unscaled map \(\|\mathbf{n} - P(\cdot)\|_\infty\)
+and the \(\tau\) used).  The first inner may exit early if the **pre-step**
+\(\|\mathbf{g}_{\mathrm{proj}}\|_\infty\) is already below the tolerance.  INPUT
+`rdmft_occ_energy_tol` is **not** used for PG stopping.
 
 **Outer (alternating / joint).**  A run is not considered **globally** converged
 on `rdmft_energy_tol` alone: the outer loop requires (after the first cycle)
@@ -220,7 +224,7 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
 | `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: when `> 0`, stopping requires **both** `||G_R|| <` `rdmft_orb_grad_tol` **and** small energy moves: `|E_k - E_{k-1}|` before the step and `|E_{\mathrm{new}} - E|` after an accepted line search must stay below this (Ry). Set `<= 0` for gradient-only stopping. |
 | `rdmft_occ_tol` | real | `1e-7` | **ALM / active_set:** tolerance on occupation inner updates (e.g. sum \(|\Delta n|\) and KKT-style checks for AS). **Not** the PG stopping rule. |
-| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, \(\tau=\) `rdmft_alpha_step`.  When \(\tau=1\), this equals the Bertsekas map norm.  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
+| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, with \(\tau\) from the occupation line search (initial \(\alpha_0\), accepted \(\alpha\), or `rdmft_alpha_step` after SD fallback—see projected-gradient details).  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
 | `rdmft_occ_energy_tol` | real | `1e-8` | **Not used** for `projected_gradient` (PG inner stop is `rdmft_occ_grad_tol` vs \(\|g_{\mathrm{proj}}\|_\infty\) only). Kept for backward-compatible INPUT. |
 
 ### Initial occupation setup
@@ -243,7 +247,7 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Default / fallback trial step for RDMFT line searches. Orbitals (Armijo) use it for non–quasi-Newton optimisers. For **PG** occupations it is both the Bertsekas-map step \(\tau\) in the convergence test and the step length in the **SD fallback** after a failed line search; for ALM it is also the fallback when `rdmft_occ_ls_init_step` does not supply \(\alpha_0\). |
+| `rdmft_alpha_step` | real | `1.0` | Default / fallback trial step for RDMFT line searches. Orbitals (Armijo) use it for non–quasi-Newton optimisers. For **PG** occupations it is the fallback if the line-search initial \(\alpha_0\) is non-positive / non-finite, the step length in the **SD fallback** after a failed line search, and (matching that move) the post-step Bertsekas \(\tau\) when fallback runs; the usual post-step \(\tau\) is the **accepted** Armijo \(\alpha\). For ALM it is also the fallback when `rdmft_occ_ls_init_step` does not supply \(\alpha_0\). |
 | `rdmft_occ_ls_init_step` | string | `bb` | Occupation line-search **first trial** step: `fixed` (always 1.0), `bb` (Barzilai–Borwein estimate; uses `rdmft_alm_bb_*` clamps), or `quad` (quadratic interpolation from the previous inner iteration’s first energy trial). Used for `projected_gradient` and `active_set`. |
 | `rdmft_line_search_c1` | real | `1e-4` | Armijo sufficient-decrease \(c_1\) in \((0,1)\): smaller is stricter. Used for alternating **orbital** Armijo, ALM / PG / AS **occupation** line searches, and joint Armijo; also the Armijo side of **Strong Wolfe** when \(c_2\) is used. |
 | `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature \(c_2\): used when **Strong Wolfe** runs (`rdmft_occ_optimizer = lbfgs` with ALM, or `rdmft_joint_optimizer = lbfgs` in joint mode). Require \(\lvert g^\top d\rvert \le c_2 \lvert g_0^\top d\rvert\). |

@@ -382,26 +382,32 @@ $$
 
 ### 6.2 Projected Gradient Method
 
-Perform gradient descent on $n_{i\mathbf{k}}$ and project back onto the feasible set.
+Optimize $n_{i\mathbf{k}}$ on the feasible set using a **projected search**
+along a descent direction, with monotone Armijo backtracking.
 
-Overview:
-
-- Take an (unconstrained) gradient step for the occupations and then apply the
-  **Euclidean** projection of the trial vector onto the closed convex set
-  $\mathcal{C}$ (box + one linear equality). This is the standard projected
-  gradient (PG) map $n \mapsto P_{\mathcal{C}}(n - \alpha \nabla E)$ and, for
-  smooth $E$ and convex $\mathcal{C}$, is supported by the usual PG
-  convergence theory.
-
-Basic iterate:
-
+**Classical PG (reference).**  The textbook iterate is a gradient step followed
+by projection:
 $$
 \mathbf{x} = \mathbf{n}^{(t)} - \alpha_t \, \nabla_{\mathbf{n}} E(\mathbf{n}^{(t)}),\qquad
-\mathbf{n}^{(t+1)} = P_{\mathcal{C}}(\mathbf{x})
+\mathbf{n}^{(t+1)} = P_{\mathcal{C}}(\mathbf{x}),
 $$
+i.e. the map $\mathbf{n} \mapsto P_{\mathcal{C}}(\mathbf{n} - \alpha \nabla E)$.
 
-where $P_{\mathcal{C}}$ denotes the **Euclidean** projection onto
-$$\mathcal{C} = \left\{\mathbf{n}:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\right\}.$$ 
+**ABACUS implementation (`rdmft_constraint = projected_gradient`).**  Each inner
+iteration uses a search direction $\mathbf{d}$ in occupation space from a
+configurable Euclidean optimizer (steepest descent, nonlinear conjugate
+gradient, L-BFGS, or Adam), controlled by INPUT `rdmft_occ_optimizer`.  If
+$\mathbf{d}^\top \mathbf{g} \ge 0$ with $\mathbf{g} = \nabla_{\mathbf{n}} E$,
+the code **replaces** $\mathbf{d}$ by $-\mathbf{g}$ (descent safeguard).  The
+trial is the **curvilinear** projected point
+$$
+\mathbf{n}'(\alpha) = P_{\mathcal{C}}\bigl(\mathbf{n} + \alpha \mathbf{d}\bigr),
+$$
+not only $P_{\mathcal{C}}(\mathbf{n} - \alpha \mathbf{g})$.  Classical PG is
+the special case $\mathbf{d} = -\mathbf{g}$.
+
+The projector $P_{\mathcal{C}}$ is the same for all variants; it maps onto
+$$\mathcal{C} = \left\{\mathbf{n}:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\right\}.$$
 
 **Closed form of $P_{\mathcal{C}}$.**  The projection is the unique minimizer
 $$
@@ -432,16 +438,6 @@ $\bigl[0,\; \sum_{\mathbf{k}} w_{\mathbf{k}} N_b\bigr]$
 with $N_b$ the number of bands per $\mathbf{k}$; if $N_e$ lies outside, the
 constraint set is empty and no exact projection exists.
 
-*Remark (implementation).*  The exact map uses the **raw** trial
-$\mathbf{x}$ in
-$y_{i\mathbf{k}}=\min(1,\max(0, x_{i\mathbf{k}} - \lambda w_{\mathbf{k}}))$.
-The helper `project` in `rdmft_occupation.h` first clips `occ` to $[0,1]$ and
-then solves for $\lambda$ with that clipped vector as the “shifted”
-reference.  If all components of $\mathbf{x}$ are already in $[0,1]$, the two
-agree; if not, a fully faithful PG should apply the single $\lambda$ rule to
-the **un**clipped step output first (then the trial already lies in
-$\mathcal{C}$ when feasible after backtracking).
-
 **Optional approximations (not the Euclidean projector):**
 
 - **Box only:**  $y_{i\mathbf{k}} = \min(1,\max(0, x_{i\mathbf{k}}))$ — does not
@@ -454,46 +450,103 @@ $\mathcal{C}$ when feasible after backtracking).
   per-dimension water-filling sort unless the problem is reparameterized
   accordingly.
 
-Step-size and line-search:
+**Step size and line search (ABACUS).**  The first trial step $\alpha_0$ for
+backtracking is chosen by INPUT `rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein
+(uses `rdmft_alm_bb_mode` and clamps `rdmft_alm_bb_alpha_min` /
+`rdmft_alm_bb_alpha_max`, with fallback to `rdmft_alpha_step`; unlike the ALM
+path this BB seed is **not** gated on `rdmft_alm_bb_enabled`), or a quadratic
+model from the previous inner iteration’s first energy trial (see
+`rdmft_usage.md`).  Monotone **Armijo**
+accepts $\alpha$ when
+$$
+E\bigl(\mathbf{n}'(\alpha)\bigr) \le E(\mathbf{n}) + c_1\, \mathbf{g}^\top \bigl(\mathbf{n}'(\alpha) - \mathbf{n}\bigr),
+$$
+with $c_1$ from INPUT `rdmft_line_search_c1` and geometric backtracking (multiply $\alpha$ by
+`line_search_rho`, default $0.5$ in `RDMFTConfig`; PG uses pure geometric shrink, not the polynomial
+Armijo refinements controlled by `rdmft_line_search_polynomial`).
+Trials with $\mathbf{g}^\top(\mathbf{n}'(\alpha)-\mathbf{n}) \ge 0$ are rejected
+(step not first-order descent along the projected segment).  If after
+projection the weighted electron sum differs from $N_e$ by more than $10^{-6}$,
+the trial is rejected (pathological / near-infeasible bracket).  **Special case
+(steepest descent):** $\mathbf{d}=-\mathbf{g}$ gives
+the familiar map $\phi(\alpha)=E(P_{\mathcal{C}}(\mathbf{n}-\alpha\mathbf{g}))$
+with the same Armijo inequality in terms of $\mathbf{n}'(\alpha)-\mathbf{n}$.
 
-- Use simple fixed step sizes for cheap iterations, or adaptively choose $\alpha_t$
-   with Barzilai–Borwein (BB) rules for acceleration.
-- For guaranteed decrease use Armijo backtracking on the composite map
-   $\phi(\alpha)=E(P_{\mathcal{C}}(n - \alpha\nabla E))$.
+**Line search failure recovery.**  If no Armijo step is found, the solver applies
+one **projected steepest** move $\mathbf{n} \leftarrow P_{\mathcal{C}}(\mathbf{n} - \tau_{\mathrm{ls}}\,\mathbf{g})$
+with $\tau_{\mathrm{ls}} =$ `rdmft_alpha_step`, resets the occupation optimizer
+curvature state (CG / L-BFGS history), and continues.
 
-Stopping criteria (recommended):
-
-- projected gradient norm: $\|n - P_{\mathcal{C}}(n - \tau \nabla E)\| < \varepsilon$;
-- change in objective $|E^{(t+1)}-E^{(t)}|<\varepsilon$;
-- maximum iterations or CPU/time budget.
+**Stopping criteria (ABACUS inner loop).**  Let $\mathbf{g}_{\mathrm{proj}} =
+\bigl(\mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \tau \mathbf{g})\bigr)/\tau$
+(Bertsekas projected-gradient vector).  **$\tau$ is taken from the occupation
+line search** so the stationarity measure uses the same scale as the step:
+**pre-step**, $\tau = \alpha_0$ (the first Armijo trial from
+`rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein, or quad, with fallback to
+`rdmft_alpha_step` if the estimate is non-positive or non-finite); **post-step**
+after a successful line search, $\tau = \alpha_{\mathrm{acc}}$ (accepted
+Armijo step along $\mathbf{d}$); after **SD fallback** (failed line search),
+$\tau =$ `rdmft_alpha_step` (same step length as the recovery move).  The inner
+loop stops when $\|\mathbf{g}_{\mathrm{proj}}\|_\infty <$ `rdmft_occ_grad_tol`,
+evaluated **after** an accepted or fallback step (post-step $\mathbf{n}$ and
+gradient).  On the first inner iteration, if the **pre-step**
+$\|\mathbf{g}_{\mathrm{proj}}\|_\infty$ is already below tolerance, the inner
+loop exits immediately without a line search.
+**`rdmft_occ_energy_tol` is not used** for the PG occupation inner (kept for INPUT
+compatibility).  The iteration cap is `rdmft_occ_maxiter`.
 
 Numerical tips and implementation notes:
 
 - Use analytic gradients $\partial E/\partial n$; finite differences are costly.
-- Implement the $\lambda$ subproblem in the shift–clip form above (bisection
-  on a monotone function of $\lambda$); the inner routine is
-  `OccupationConstraint::rescale_to_nel` in
-  `source/source_lcao/module_rdmft/rdmft_occupation.h`, and `project` first
-  clips the vector to the box then calls that routine.  PG/AS line searches in
-  `rdmft_solver.cpp` use `project` on the trial occupation vector; see the
-  remark in §6.2 if the raw trial can leave the box.
+- **INPUT keywords (PG, ABACUS):** `rdmft_occ_optimizer`, `rdmft_occ_ls_init_step`
+  (sets Bertsekas pre-step $\tau=\alpha_0$ together with BB/quad clamps),
+  `rdmft_alpha_step` (fallback for invalid $\alpha_0$ and SD-fallback step length),
+  `rdmft_occ_grad_tol`, `rdmft_occ_maxiter`, `rdmft_line_search_c1`, and for the
+  `bb` branch of `rdmft_occ_ls_init_step` also `rdmft_alm_bb_mode`,
+  `rdmft_alm_bb_alpha_min`, `rdmft_alm_bb_alpha_max`.  Defaults and semantics
+  are tabulated in [`rdmft_usage.md`](rdmft_usage.md).
+- In practice, $P_{\mathcal{C}}$ is evaluated by solving the scalar dual
+  $\lambda$ in the shift–clip form above (bisection on a monotone
+  piecewise-linear map).  PG and active-set occupation updates in the code apply
+  this projection to trial occupation vectors after each line-search step.
 - If many occupations are interior (not at bounds), projected gradient is efficient.
 - If orthonormal orbitals are optimized concurrently, use separate step sizes for
    orbitals and occupations or alternate updates (block coordinate style).
 - For orbital constraints (Stiefel), prefer Riemannian retraction (QR or polar)
    rather than Euclidean clipping; see §5.4.
 
-Pseudocode (projected gradient with Euclidean projection onto $\mathcal{C}$,
-neglecting spin labels):
+Pseudocode (ABACUS projected-gradient inner loop; `project` denotes
+$P_{\mathcal{C}}$; neglect spin labels):
 
 ```text
-initialize n with feasible guess
-for t = 0..maxiter:
+initialize n feasible; configure occ_optimizer, tol = rdmft_occ_grad_tol
+for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
-   y = n - alpha * g
-   n_next = euclidean_project_box_and_weighted_sum(y, w, N_e)   // clip + λ bisection
-   if ||n_next - n|| < tol: break
-   n = n_next
+   alpha0 = initial_step_from(rdmft_occ_ls_init_step, BB/quad, rdmft_alpha_step, clamps)
+   tau_pre = alpha0 if alpha0 > 0 else rdmft_alpha_step
+   g_proj_pre = (n - project(n - tau_pre * g)) / tau_pre
+   if inner == 0 and ||g_proj_pre||_inf < tol: break     // early exit
+   d = direction_from_optimizer(g, history)               // SD / CG / lbfgs / adam
+   if dot(d, g) >= 0: d = -g                              // descent safeguard
+   alpha = alpha0
+   n_save = n
+   success = false
+   alpha_acc = 0
+   for trial = 1 .. line_search_max_iter:
+      n_try = project(n + alpha * d)
+      if |sum(w*n_try) - N_e| > 1e-6: alpha *= rho; continue
+      delta = n_try - n
+      if dot(g, delta) >= 0: alpha *= rho; continue
+      if E(n_try) <= E(n) + c1 * dot(g, delta): success = true; n = n_try; alpha_acc = alpha; break
+      alpha *= rho
+   if not success:
+      n = project(n_save - rdmft_alpha_step * g)         // SD fallback
+      alpha_acc = rdmft_alpha_step
+      reset_optimizer_curvature_state()
+   recompute g at new n
+   tau_post = alpha_acc                                   // accepted α, or rdmft_alpha_step after fallback
+   g_proj_post = (n - project(n - tau_post * g)) / tau_post
+   if ||g_proj_post||_inf < tol: break
 end
 ```
 

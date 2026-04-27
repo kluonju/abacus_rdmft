@@ -1171,9 +1171,11 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Projected-gradient occupation inner loop converges when ||g_proj||_inf = ||n - P(n - "
-                           "τ∇E)||_inf/τ is below this (τ = rdmft_alpha_step; post-step, same τ as the PG map in "
-                           "the logs). If τ=1, this matches the map residual. Also used for ALM first-inner "
-                           "||dL/dp||, active set, joint, and other gradient checks as in the solver.";
+                           "τ∇E)||_inf/τ is below this. For PG, τ is tied to the occupation line search: the "
+                           "initial trial step α₀ (rdmft_occ_ls_init_step / BB / quad) at the pre-step map, and "
+                           "the accepted Armijo step after a successful line search (or rdmft_alpha_step after "
+                           "SD fallback) at the post-step map—see logs. Also used for ALM first-inner ||dL/dp||, "
+                           "active set, joint, and other gradient checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1186,8 +1188,9 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Not used when rdmft_constraint = projected_gradient: PG occupation inner loop "
-                           "always stops on ||g_proj||_inf < rdmft_occ_grad_tol (g_proj = (n - P(n - τ∇E))/τ, "
-                           "τ = rdmft_alpha_step). Kept for backward-compatible INPUT files.";
+                           "always stops on ||g_proj||_inf < rdmft_occ_grad_tol (g_proj = (n - P(n - τ∇E))/τ with "
+                           "τ from the occupation line search as for rdmft_occ_grad_tol). Kept for backward-compatible "
+                           "INPUT files.";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1326,7 +1329,10 @@ void ReadInput::item_others()
         item.annotation = "Initial line-search step length for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT.";
+        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. For "
+                           "projected_gradient occupations it also supplies the SD-fallback step and the fallback "
+                           "scale in the Bertsekas map when the line-search initial α₀ is invalid; otherwise PG "
+                           "Bertsekas τ follows the occupation line search (see rdmft_occ_grad_tol).";
         item.default_value = "1.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

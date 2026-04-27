@@ -51,6 +51,21 @@ inline double euclidean_norm(const std::vector<double>& v)
     return std::sqrt(s);
 }
 
+/// Positive τ for Bertsekas map n - P(n - τ g).  PG uses line-search scales
+/// (initial α₀ or accepted Armijo step); invalid α falls back to `fallback`.
+inline double pg_bertsekas_tau_from_line_search(const double alpha_line_search, const double fallback)
+{
+    if (alpha_line_search > 0.0 && std::isfinite(alpha_line_search))
+    {
+        return alpha_line_search;
+    }
+    if (fallback > 0.0 && std::isfinite(fallback))
+    {
+        return fallback;
+    }
+    return 1.0;
+}
+
 /// Bertsekas map residual r = n - P(n - τ g); projected gradient (same τ) is g_proj = r / τ.
 void projected_gradient_map_l2_linf(const std::vector<double>& occ,
                                   const std::vector<double>& grad,
@@ -2274,7 +2289,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
-            // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ).
+            // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ;
+            // τ = occupation line-search scale: α₀ pre-step, accepted α post-step, rdmft_alpha_step on SD fallback).
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
             GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
@@ -2305,19 +2321,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double dE = have_E_prev ? (E - E_prev) : 0.0;
                 E_prev = E;
                 have_E_prev = true;
+
+                // Bertsekas τ matches line-search scale: same α₀ as first Armijo trial.
+                const double alpha_pg0 = choose_occ_ls_alpha0(
+                    config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
+                const double tau_bert_pre
+                    = pg_bertsekas_tau_from_line_search(alpha_pg0, config_.line_search_alpha_init);
+
                 double pg_map_l2_pre = 0.0;
                 double pg_map_inf_pre = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
                     grad_occ,
                     *occ_constraint_,
-                    config_.line_search_alpha_init,
+                    tau_bert_pre,
                     pg_map_l2_pre,
                     pg_map_inf_pre);
 
-                const double tau_pg = (config_.line_search_alpha_init > 0.0) ? config_.line_search_alpha_init
-                                                                            : 1.0;
-                const double g_inf_pre = pg_map_inf_pre / tau_pg;
-                const double g_l2_pre = pg_map_l2_pre / tau_pg;
+                const double g_inf_pre = pg_map_inf_pre / tau_bert_pre;
+                const double g_l2_pre = pg_map_l2_pre / tau_bert_pre;
 
                 double grad_l2_pre = 0.0;
                 for (auto g : grad_occ)
@@ -2333,7 +2354,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                        << "  |c|=" << c_abs
                        << "  ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (pre-step)=" << g_inf_pre
                        << "  ||g_proj||_2=" << g_l2_pre
-                       << "  (diag map ||n-P||_inf=" << pg_map_inf_pre << "  τ=" << tau_pg << ")"
+                       << "  (diag map ||n-P||_inf=" << pg_map_inf_pre << "  τ=" << tau_bert_pre << ")"
                        << "  ||grad_n E||_2 (diag)=" << grad_l2_pre;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
@@ -2347,7 +2368,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
                     GlobalV::ofs_running << "      PG ||g_proj||_inf (pre-step) = " << std::scientific
                                          << g_inf_pre << "  (||n-P(n-τ∇E)||_inf=" << pg_map_inf_pre
-                                         << "  τ=" << tau_pg << ")  rdmft_occ_grad_tol=" << config_.occ_grad_tol
+                                         << "  τ=" << tau_bert_pre << ")  rdmft_occ_grad_tol=" << config_.occ_grad_tol
                                          << std::defaultfloat << std::endl;
                     GlobalV::ofs_running << "      occ inner PG: converged at first inner (||g_proj||_inf < "
                                             "rdmft_occ_grad_tol); skipping line search."
@@ -2376,10 +2397,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
 
                 // Line-search initial step: fixed 1, BB seed, or quadratic
-                // interpolation from the previous inner iteration.
+                // interpolation from the previous inner iteration (same α₀ as τ above).
                 const std::vector<double> occ_before_step(occ_flat);
-                const double alpha_pg0 = choose_occ_ls_alpha0(
-                    config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
                 double alpha = alpha_pg0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
@@ -2489,16 +2508,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     grad_l2_post += g * g;
                 }
                 grad_l2_post = std::sqrt(grad_l2_post);
+                const double tau_post = ls_success
+                    ? pg_bertsekas_tau_from_line_search(pg_step_acc, config_.line_search_alpha_init)
+                    : pg_bertsekas_tau_from_line_search(config_.line_search_alpha_init, 1.0);
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
                     new_grad_occ,
                     *occ_constraint_,
-                    config_.line_search_alpha_init,
+                    tau_post,
                     pg_map_l2_post,
                     pg_map_inf_post);
-                const double g_inf_post = pg_map_inf_post / tau_pg;
-                const double g_l2_post = pg_map_l2_post / tau_pg;
+                const double g_inf_post = pg_map_inf_post / tau_post;
+                const double g_l2_post = pg_map_l2_post / tau_post;
                 result.grad_norm = g_inf_post;
                 pg_opt.update(new_grad_occ, step_vec);
                 if (ls_success)
@@ -2518,7 +2540,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double dE_occ_step = std::abs(E_post - E);
                 GlobalV::ofs_running
                     << "      PG ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (post-step) = " << std::scientific
-                    << g_inf_post << "  (map ||n-P||_inf=" << pg_map_inf_post << "  τ=" << tau_pg << ")"
+                    << g_inf_post << "  (map ||n-P||_inf=" << pg_map_inf_post << "  τ=" << tau_post << ")"
                     << "  rdmft_occ_grad_tol=" << config_.occ_grad_tol << std::defaultfloat << std::endl;
                 GlobalV::ofs_running << "      PG diagnostic: |E_post-E|=" << std::scientific << dE_occ_step
                                      << std::defaultfloat << std::endl;
