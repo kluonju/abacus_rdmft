@@ -1152,7 +1152,8 @@ void ReadInput::item_others()
         item.type = "Real";
         item.description = "Augmented Lagrangian occupation inner: stop a step when "
                            "sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this. "
-                           "Projected gradient uses rdmft_occ_grad_tol on ||grad_n E|| instead.";
+                           "Projected gradient uses rdmft_occ_energy_tol (or legacy rdmft_occ_grad_tol "
+                           "when rdmft_occ_energy_tol <= 0).";
         item.default_value = "1e-8";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1164,14 +1165,29 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Projected gradient: occupation inner loop converges when the infinity norm of the "
-                           "projected-gradient map residual ||n - P(n - τ∇E)||_inf is below this (τ = "
-                           "rdmft_alpha_step; checked after each inner step). Also used for ALM first-inner, "
-                           "active set, joint, and other gradient checks as in the solver.";
+        item.description = "When rdmft_occ_energy_tol <= 0, projected-gradient occupation inner loop converges "
+                           "when ||n - P(n - τ∇E)||_inf is below this (τ = rdmft_alpha_step; post-step). "
+                           "Also used for ALM first-inner ||dL/dp||, active set, joint, and other gradient "
+                           "checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_occ_grad_tol);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_energy_tol");
+        item.annotation = "RDMFT PG occupation inner: |E_post - E| convergence (Ry)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Projected-gradient occupation inner: when > 0, stop when the energy change in "
+                           "one inner iteration |E_post - E| is below this (Ry), with E before the line-search "
+                           "step and E_post after the accepted update. When <= 0, use legacy stopping on "
+                           "||n - P(n - τ∇E)||_inf vs rdmft_occ_grad_tol instead.";
+        item.default_value = "1e-8";
+        item.unit = "Ry";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_energy_tol);
         this->add_item(item);
     }
     {

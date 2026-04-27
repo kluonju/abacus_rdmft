@@ -158,8 +158,12 @@ struct RDMFTConfig
     double orb_energy_tol = 1e-8;
     /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
     double rdmft_occ_tol = 1e-8;
-    /// Projected gradient: stop when ||n - P(n - τ∇E)||_inf < this (τ = line_search_alpha_init), post-step.
-    /// Other paths: ALM / active set / joint gradient criteria as implemented in the solver.
+    /// Projected gradient occupation inner: when > 0, converge when |E_post - E| < this after each inner step
+    /// (Ry), where E is the pre-step energy and E_post after the update. Set <= 0 to use the legacy criterion
+    /// occ_grad_tol on the PG map ||n - P(n - τ∇E)||_inf (τ = line_search_alpha_init).
+    double occ_energy_tol = 1e-8;
+    /// Legacy PG stopping (used only if occ_energy_tol <= 0): ||n - P(n - τ∇E)||_inf < this, post-step.
+    /// Also used for ALM first-inner gradient norm, joint, and other checks as implemented in the solver.
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;

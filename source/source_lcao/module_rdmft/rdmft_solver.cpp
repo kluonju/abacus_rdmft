@@ -542,6 +542,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
     add_kv("rdmft_orb_grad_tol", as_sci(cfg.orb_grad_tol));
     add_kv("rdmft_orb_energy_tol", as_sci(cfg.orb_energy_tol));
     add_kv("rdmft_occ_tol", as_sci(cfg.rdmft_occ_tol));
+    add_kv("rdmft_occ_energy_tol", as_sci(cfg.occ_energy_tol));
     add_kv("rdmft_occ_grad_tol", as_sci(cfg.occ_grad_tol));
     add_kv("rdmft_occ_entropy_gamma", as_sci(cfg.occ_entropy_gamma));
     add_kv("rdmft_occ_param", occ_param_to_string(cfg.occ_param));
@@ -2229,7 +2230,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (inner == 0 && pg_map_inf_pre < config_.occ_grad_tol)
+                if (inner == 0 && config_.occ_energy_tol <= 0.0 && pg_map_inf_pre < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = 1;
@@ -2240,8 +2241,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                             "(pre-step) = "
                                          << std::scientific << pg_map_inf_pre << "  rdmft_occ_grad_tol="
                                          << config_.occ_grad_tol << std::defaultfloat << std::endl;
-                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (PG map inf-norm < "
-                                             "rdmft_occ_grad_tol); skipping line search."
+                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (legacy PG map < "
+                                             "rdmft_occ_grad_tol; rdmft_occ_energy_tol<=0); skipping line search."
                                          << std::endl;
                     break;
                 }
@@ -2404,15 +2405,26 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
                     << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
                     << "  N_e=" << n_electrons_ << std::endl;
-                GlobalV::ofs_running << "      PG projected-gradient map infinity norm ||n-P(n-τ∇E)||_inf "
-                                        "(post-step) = "
-                                     << std::scientific << pg_map_inf_post << "  rdmft_occ_grad_tol="
-                                     << config_.occ_grad_tol
-                                     << "  (converged when inf-norm < tol)" << std::defaultfloat << std::endl;
+                const double dE_occ_step = std::abs(E_post - E);
+                GlobalV::ofs_running << "      PG projected-gradient map ||n-P(n-τ∇E)||_inf (post-step) = "
+                                     << std::scientific << pg_map_inf_post << "  (diagnostic)"
+                                     << std::defaultfloat << std::endl;
+                GlobalV::ofs_running << "      PG stop-check: |E_post-E|=" << std::scientific << dE_occ_step
+                                     << "  rdmft_occ_energy_tol=" << config_.occ_energy_tol << std::defaultfloat;
+                if (config_.occ_energy_tol <= 0.0)
+                {
+                    GlobalV::ofs_running << "  [using legacy: PG map vs rdmft_occ_grad_tol=" << config_.occ_grad_tol
+                                         << "]";
+                }
+                GlobalV::ofs_running << std::endl;
                 GlobalV::ofs_running << "      PG diagnostics: sum|dn|=" << std::scientific << sum_abs_dn
                                      << "  ||n-P||_2=" << pg_map_l2_post
                                      << "  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
-                if (pg_map_inf_post < config_.occ_grad_tol)
+                const bool occ_pg_energy_stop
+                    = (config_.occ_energy_tol > 0.0) && (dE_occ_step < config_.occ_energy_tol);
+                const bool occ_pg_map_stop
+                    = (config_.occ_energy_tol <= 0.0) && (pg_map_inf_post < config_.occ_grad_tol);
+                if (occ_pg_energy_stop || occ_pg_map_stop)
                 {
                     result.converged = true;
                     break;
