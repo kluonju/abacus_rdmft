@@ -106,6 +106,9 @@ class RDMFTSolver
     std::vector<StiefelManifold<TK>> stiefel_;
 
     OptResult last_result_;
+
+    /// Cleared in solve(); set after logging once so the first occ-gradient evaluation point is printed.
+    bool logged_initial_occ_for_first_occ_gradient_ = false;
 };
 
 } // namespace rdmft

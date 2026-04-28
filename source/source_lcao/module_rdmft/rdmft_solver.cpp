@@ -199,6 +199,60 @@ int find_fermi_boundary_index(const std::vector<double>& occ_flat,
     return last_occ;
 }
 
+/// Last band index ib with cumulative \(\sum_{jb\le ib} w_k n_{\mathrm{KS}}(jb) < n_{\mathrm{target},k}\).
+/// Used when all KS occupations at this k are \(\ge 0.5\) so the 0.5 rule gives no gap (e.g. nelec_delta).
+int find_fermi_boundary_from_electron_target(const std::vector<double>& occ_ks,
+                                             int ik,
+                                             int nbands,
+                                             double wk,
+                                             double n_target_k)
+{
+    if (n_target_k <= 0.0)
+    {
+        return -1;
+    }
+    double acc = 0.0;
+    int ib_last = -1;
+    for (int ib = 0; ib < nbands; ++ib)
+    {
+        const double n = std::max(0.0, std::min(1.0, occ_ks[ik * nbands + ib]));
+        const double contrib = wk * n;
+        if (acc + contrib < n_target_k - 1e-10)
+        {
+            ib_last = ib;
+            acc += contrib;
+        }
+        else
+        {
+            break;
+        }
+    }
+    return ib_last;
+}
+
+/// Prefer the 0.5-gap Fermi index for metallic KS; otherwise use the electron-target boundary.
+int find_init_fermi_boundary(const std::vector<double>& occ_ks,
+                           int ik,
+                           int nbands,
+                           double wk,
+                           double n_target_k)
+{
+    bool has_below_half = false;
+    for (int ib = 0; ib < nbands; ++ib)
+    {
+        if (occ_ks[ik * nbands + ib] < 0.5)
+        {
+            has_below_half = true;
+            break;
+        }
+    }
+    if (has_below_half)
+    {
+        return find_fermi_boundary_index(occ_ks, ik, nbands);
+    }
+    return find_fermi_boundary_from_electron_target(occ_ks, ik, nbands, wk, n_target_k);
+}
+
 void log_occ_inner_line(const std::string& line)
 {
     GlobalV::ofs_running << line << std::endl;
@@ -941,11 +995,18 @@ double RDMFTSolver<TK, TR>::solve(
 {
     ModuleBase::timer::start("RDMFT", "solve");
     last_result_ = {};
+    logged_initial_occ_for_first_occ_gradient_ = false;
 
     print_rdmft_run_config(config_, nk_, nbands_, n_electrons_, nelec_meta_);
 
     // occ_flat on entry is the KS occupation seed from pelec->wg.
     const std::vector<double> occ_ks_seed = occ_flat;
+    double sum_k_weights = 0.0;
+    for (int jk = 0; jk < nk_; ++jk)
+    {
+        sum_k_weights += occ_constraint_->kweights()[jk];
+    }
+    sum_k_weights = std::max(sum_k_weights, 1e-20);
     const double c_ks_seed = occ_constraint_->constraint_violation(occ_ks_seed);
 
     auto log_init_common = [&](const std::string& mode_name,
@@ -975,47 +1036,36 @@ double RDMFTSolver<TK, TR>::solve(
         {
             int n_plus = 0;
             int n_minus = 0;
+            std::vector<bool> touched(static_cast<size_t>(nk_ * nbands_), false);
             for (int ik = 0; ik < nk_; ++ik)
             {
-                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                const double wk = occ_constraint_->kweights()[ik];
+                const double n_target_k = n_electrons_ * wk / sum_k_weights;
+                const int ib_fermi = find_init_fermi_boundary(occ_ks_seed, ik, nbands_, wk, n_target_k);
                 for (int t = 0; t < K; ++t)
                 {
                     const int ib_above = ib_fermi + 1 + t;
                     if (ib_above >= 0 && ib_above < nbands_)
                     {
                         const int idx = ik * nbands_ + ib_above;
-                        if (occ_ks_seed[idx] < 0.5)
-                        {
-                            occ_flat[idx] += delta;
-                            ++n_plus;
-                        }
-                        else
-                        {
-                            occ_flat[idx] -= delta;
-                            ++n_minus;
-                        }
+                        occ_flat[idx] = occ_ks_seed[idx] + delta;
+                        touched[idx] = true;
+                        ++n_plus;
                     }
 
                     const int ib_below = ib_fermi - t;
                     if (ib_below >= 0 && ib_below < nbands_)
                     {
                         const int idx = ik * nbands_ + ib_below;
-                        if (occ_ks_seed[idx] < 0.5)
-                        {
-                            occ_flat[idx] += delta;
-                            ++n_plus;
-                        }
-                        else
-                        {
-                            occ_flat[idx] -= delta;
-                            ++n_minus;
-                        }
+                        occ_flat[idx] = occ_ks_seed[idx] - delta;
+                        touched[idx] = true;
+                        ++n_minus;
                     }
                 }
             }
 
             const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
-            occ_constraint_->project(occ_flat);
+            occ_constraint_->project_preserving_ks_on_fixed(occ_flat, occ_ks_seed, touched);
             const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
             const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
@@ -1045,47 +1095,36 @@ double RDMFTSolver<TK, TR>::solve(
         {
             int n_high = 0;
             int n_low = 0;
+            std::vector<bool> touched(static_cast<size_t>(nk_ * nbands_), false);
             for (int ik = 0; ik < nk_; ++ik)
             {
-                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                const double wk = occ_constraint_->kweights()[ik];
+                const double n_target_k = n_electrons_ * wk / sum_k_weights;
+                const int ib_fermi = find_init_fermi_boundary(occ_ks_seed, ik, nbands_, wk, n_target_k);
                 for (int t = 0; t < K; ++t)
                 {
                     const int ib_above = ib_fermi + 1 + t;
                     if (ib_above >= 0 && ib_above < nbands_)
                     {
                         const int idx = ik * nbands_ + ib_above;
-                        if (occ_ks_seed[idx] < 0.5)
-                        {
-                            occ_flat[idx] = delta;
-                            ++n_low;
-                        }
-                        else
-                        {
-                            occ_flat[idx] = 1.0 - delta;
-                            ++n_high;
-                        }
+                        occ_flat[idx] = delta;
+                        touched[idx] = true;
+                        ++n_low;
                     }
 
                     const int ib_below = ib_fermi - t;
                     if (ib_below >= 0 && ib_below < nbands_)
                     {
                         const int idx = ik * nbands_ + ib_below;
-                        if (occ_ks_seed[idx] < 0.5)
-                        {
-                            occ_flat[idx] = delta;
-                            ++n_low;
-                        }
-                        else
-                        {
-                            occ_flat[idx] = 1.0 - delta;
-                            ++n_high;
-                        }
+                        occ_flat[idx] = 1.0 - delta;
+                        touched[idx] = true;
+                        ++n_high;
                     }
                 }
             }
 
             const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
-            occ_constraint_->project(occ_flat);
+            occ_constraint_->project_preserving_ks_on_fixed(occ_flat, occ_ks_seed, touched);
             const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
             const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
@@ -1113,9 +1152,12 @@ double RDMFTSolver<TK, TR>::solve(
         else
         {
             int n_uniformized = 0;
+            std::vector<bool> touched(static_cast<size_t>(nk_ * nbands_), false);
             for (int ik = 0; ik < nk_; ++ik)
             {
-                const int ib_fermi = find_fermi_boundary_index(occ_ks_seed, ik, nbands_);
+                const double wk = occ_constraint_->kweights()[ik];
+                const double n_target_k = n_electrons_ * wk / sum_k_weights;
+                const int ib_fermi = find_init_fermi_boundary(occ_ks_seed, ik, nbands_, wk, n_target_k);
                 std::vector<int> selected;
                 selected.reserve(2 * K);
 
@@ -1146,13 +1188,15 @@ double RDMFTSolver<TK, TR>::solve(
                 const double n_uniform = n_top / static_cast<double>(selected.size());
                 for (const int ib : selected)
                 {
-                    occ_flat[ik * nbands_ + ib] = n_uniform;
+                    const int idx = ik * nbands_ + ib;
+                    occ_flat[idx] = n_uniform;
+                    touched[idx] = true;
                 }
                 n_uniformized += static_cast<int>(selected.size());
             }
 
             const double c_before_project = occ_constraint_->constraint_violation(occ_flat);
-            occ_constraint_->project(occ_flat);
+            occ_constraint_->project_preserving_ks_on_fixed(occ_flat, occ_ks_seed, touched);
             const double c_after_project = occ_constraint_->constraint_violation(occ_flat);
             const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
@@ -1455,6 +1499,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     else
     {
         occ_param_->occ_to_params(occ_flat, params);
+        occ_param_->params_to_occ(params, occ_flat);
     }
 
     const int n_occ_params = static_cast<int>(params.size());
@@ -1531,6 +1576,13 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // SCF stdout / running: occupations at the beginning of this joint outer iteration.
         {
             std::ostringstream hdr_start;
+            if (iter == 0 && !logged_initial_occ_for_first_occ_gradient_)
+            {
+                GlobalV::ofs_running << "\n  RDMFT joint: first ∂E/∂n is evaluated at the occupations in this table "
+                                        "(fractional n after init / param sync)."
+                                     << std::endl;
+                logged_initial_occ_for_first_occ_gradient_ = true;
+            }
             hdr_start << std::fixed << std::setprecision(10)
                       << "  RDMFT joint iter " << (iter + 1)
                       << "  occupations n(ik,ib) at iteration START"
@@ -2140,6 +2192,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 {
     OptResult result;
 
+    if (!logged_initial_occ_for_first_occ_gradient_)
+    {
+        GlobalV::ofs_running << "\n  RDMFT: initial occupations for the first occupation-gradient (∂E/∂n) step"
+                             << "\n     (fractional n after init mode / projection; energy uses this same n)"
+                             << "\n     sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
+                             << "  N_e=" << n_electrons_ << std::endl;
+        print_occ_table_to_stream(GlobalV::ofs_running, occ_flat, nk_, nbands_, "     n(ik,ib):", 3);
+        logged_initial_occ_for_first_occ_gradient_ = true;
+    }
+
     switch (config_.constraint_method)
     {
         case ConstraintMethod::AugmentedLagrangian:
@@ -2147,6 +2209,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             // Convert to unconstrained parameters
             std::vector<double> params;
             occ_param_->occ_to_params(occ_flat, params);
+            // Commit n ≡ chart(params) so the first ∂E/∂n is evaluated at the same fractional occupations
+            // as the unconstrained parameters (avoids navigating from a mismatched (p, n) pair).
+            occ_param_->params_to_occ(params, occ_flat);
 
             BarzilaiBorweinStep bb_step;
             bb_step.set_mode(config_.alm_bb_mode);
