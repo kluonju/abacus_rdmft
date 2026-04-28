@@ -40,6 +40,8 @@ class XCFunctional
     {
         if (type == XCFunctionalType::HF) alpha_ = 1.0;
         else if (type == XCFunctionalType::Muller) alpha_ = 0.5;
+        else if (type == XCFunctionalType::GU) alpha_ = 0.5; // Müller sqrt(n) for RI DM; GU SIC added in engine
+        else if (type == XCFunctionalType::BBC3) alpha_ = 0.5; // Müller-like power for fallback g
     }
 
     XCFunctionalType type() const { return type_; }
@@ -78,7 +80,7 @@ class XCFunctional
     /// Whether the functional is separable: f(n_i, n_j) = g(n_i)*g(n_j) for all i,j
     bool is_separable() const
     {
-        return type_ != XCFunctionalType::GU;
+        return type_ != XCFunctionalType::GU && type_ != XCFunctionalType::BBC3;
     }
 
     /// Full coupling f(n_i, n_j) for the GU functional (non-separable).

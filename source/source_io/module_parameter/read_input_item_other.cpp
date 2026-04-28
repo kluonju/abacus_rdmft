@@ -888,10 +888,10 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& f = para.input.rdmft_functional;
-                if (f != "hf" && f != "muller" && f != "power" && f != "gu")
+                if (f != "hf" && f != "muller" && f != "power" && f != "gu" && f != "bbc3")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_functional must be one of: hf, muller, power, gu");
+                        "rdmft_functional must be one of: hf, muller, power, gu, bbc3");
                 }
             }
         };
@@ -1640,6 +1640,45 @@ void ReadInput::item_others()
                 if (!std::isfinite(d))
                 {
                     ModuleBase::WARNING_QUIT("ReadInput", "rdmft_nelec_delta must be finite");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_hybrid_dft_xc");
+        item.annotation = "Add semilocal DFT XC on RDMFT density to RDMFT total energy";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "When true, after building rho from natural orbitals and occupations, "
+                           "evaluate semilocal XC via the same PotXC path as LCAO-DFT (dft_functional) "
+                           "and add λ·E_xc[ρ] to the energy with V_xc in the one-body Hamiltonian; "
+                           "the RI RDMFT exchange contribution is scaled by (1−λ). Requires LIBXC when "
+                           "the chosen dft_functional needs it.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_hybrid_dft_xc);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_hybrid_dft_xc_lambda");
+        item.annotation = "Weight λ for semilocal DFT XC vs RDMFT RI exchange (0 to 1)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "E += λ·E_xc^DFT[ρ]; RDMFT exchange energy and occupation/orbital exchange "
+                           "gradients use coupling scaled by (1−λ). Ignored when rdmft_hybrid_dft_xc is false.";
+        item.default_value = "0.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_hybrid_dft_xc_lambda);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty() && para.input.rdmft_hybrid_dft_xc)
+            {
+                const double x = para.input.rdmft_hybrid_dft_xc_lambda;
+                if (x < 0.0 || x > 1.0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_hybrid_dft_xc_lambda must be in [0, 1]");
                 }
             }
         };

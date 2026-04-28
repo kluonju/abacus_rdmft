@@ -15,7 +15,11 @@ enum class XCFunctionalType
     HF,
     Muller,
     Power,
-    GU
+    GU,
+    /// BBC3-inspired rank-separated coupling: per k, bands sorted by decreasing
+    /// occupation; strongly occupied use Müller sqrt(n), weakly use HF-like n.
+    /// See module doc / code comments; not identical to every literature BBC3 variant.
+    BBC3
 };
 
 enum class OccParamType
@@ -107,6 +111,7 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "muller") return XCFunctionalType::Muller;
     if (name == "power") return XCFunctionalType::Power;
     if (name == "gu") return XCFunctionalType::GU;
+    if (name == "bbc3") return XCFunctionalType::BBC3;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -118,6 +123,7 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::Muller: return "muller";
         case XCFunctionalType::Power: return "power";
         case XCFunctionalType::GU: return "gu";
+        case XCFunctionalType::BBC3: return "bbc3";
     }
     return "unknown";
 }

@@ -1,4 +1,5 @@
 #include "gtest/gtest.h"
+#include "source_lcao/module_rdmft/rdmft_type.h"
 #include "source_lcao/module_rdmft/rdmft_xc_functional.h"
 #include <cmath>
 
@@ -97,6 +98,32 @@ TEST_F(XCFunctionalTest, GU_diag_factor)
     XCFunctional xc(XCFunctionalType::GU);
     double n = 0.7;
     EXPECT_NEAR(xc.gu_diag_factor(n), n * n - n, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, GU_diag_factor_deriv)
+{
+    XCFunctional xc(XCFunctionalType::GU);
+    double n = 0.35;
+    EXPECT_NEAR(xc.gu_diag_factor_deriv(n), 2.0 * n - 1.0, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, GU_uses_muller_alpha_for_g)
+{
+    XCFunctional xc(XCFunctionalType::GU);
+    EXPECT_NEAR(xc.alpha(), 0.5, 1e-12);
+    EXPECT_NEAR(xc.g(0.25), 0.5, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, BBC3_parse_and_string)
+{
+    EXPECT_EQ(parse_xc_type("bbc3"), XCFunctionalType::BBC3);
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::BBC3), "bbc3");
+}
+
+TEST_F(XCFunctionalTest, BBC3_is_nonseparable)
+{
+    XCFunctional xc(XCFunctionalType::BBC3);
+    EXPECT_FALSE(xc.is_separable());
 }
 
 TEST_F(XCFunctionalTest, gradient_consistency_numerical)

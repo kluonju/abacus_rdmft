@@ -721,6 +721,10 @@ struct Input_para
     bool rdmft_nelec_use_input = false;
     /// Added to that base: N_e = base + rdmft_nelec_delta.
     double rdmft_nelec_delta = 0.0;
+    /// Add semilocal DFT XC energy/PotXC on the RDMFT density (uses dft_functional / LibXC path).
+    bool rdmft_hybrid_dft_xc = false;
+    /// Weight λ in [0,1]: total E += λ·E_xc^DFT[ρ]; RDMFT RI exchange energy/grad scaled by (1−λ).
+    double rdmft_hybrid_dft_xc_lambda = 0.0;
 
     // ==============   #Parameters (22.EXX PW) =====================
     // EXX for planewave basis, rhx0820 2025-03-10

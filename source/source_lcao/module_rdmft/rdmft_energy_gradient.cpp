@@ -64,6 +64,7 @@ extern "C" {
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
+#include <numeric>
 #include <iostream>
 #include <iomanip>
 #include <memory>
@@ -241,6 +242,41 @@ constexpr double rdmft_occ_weight_eps = 1e-12;
 inline bool rdmft_skip_occ_weight(double x)
 {
     return std::fabs(x) < rdmft_occ_weight_eps;
+}
+
+/// Semilocal DFT XC hybrid: λ·E_xc[ρ] and (1−λ) on RI RDMFT exchange (INPUT).
+inline bool rdmft_hybrid_dft_xc_active()
+{
+    return PARAM.inp.rdmft_hybrid_dft_xc && PARAM.inp.rdmft_hybrid_dft_xc_lambda > 0.0;
+}
+
+inline double rdmft_hybrid_exchange_scale()
+{
+    return rdmft_hybrid_dft_xc_active() ? (1.0 - PARAM.inp.rdmft_hybrid_dft_xc_lambda) : 1.0;
+}
+
+/// Per-k descending occupation order: rank_out[ib] = 0 for highest n (ties: lower ib first).
+inline void rdmft_bbc3_band_ranks(int nbands, const double* occ_k, std::vector<int>& rank_out)
+{
+    rank_out.resize(nbands);
+    std::vector<int> ord(nbands);
+    std::iota(ord.begin(), ord.end(), 0);
+    std::stable_sort(ord.begin(), ord.end(),
+                     [&](int a, int b) { return occ_k[a] > occ_k[b]; });
+    for (int r = 0; r < nbands; ++r)
+    {
+        rank_out[ord[r]] = r;
+    }
+}
+
+/// Number of "strongly" occupied bands per k (BBC3-inspired): align with PARAM.inp.nelec / nspin.
+inline int rdmft_bbc3_n_strong_bands()
+{
+    const double ne = PARAM.inp.nelec;
+    int n_target = (PARAM.inp.nspin == 2) ? static_cast<int>(std::lround(0.5 * ne))
+                                          : static_cast<int>(std::lround(ne));
+    n_target = std::max(1, n_target);
+    return std::min(n_target, PARAM.inp.nbands);
 }
 } // namespace
 
@@ -457,11 +493,13 @@ void EnergyGradient<TK, TR>::init(
     HR_one_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     HR_hartree_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     HR_exx_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
+    HR_xc_dft_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     SR_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
 
     hsk_one_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     hsk_hartree_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     hsk_exx_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
+    hsk_xc_dft_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     // The overlap operator writes S(k) into hsk->sk via hsk->get_sk(),
     // so we must allocate sk (second arg false -> no_s==false)
     hsk_overlap_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, false);
@@ -471,6 +509,7 @@ void EnergyGradient<TK, TR>::init(
         HR_one_->fix_gamma();
         HR_hartree_->fix_gamma();
         HR_exx_->fix_gamma();
+        HR_xc_dft_->fix_gamma();
         SR_->fix_gamma();
     }
 
@@ -638,13 +677,39 @@ void EnergyGradient<TK, TR>::build_DM_xc(
     DM_XC.resize(nk_, std::vector<TK>(ParaV_->nloc, TK(0)));
 
     // Build wk_g matrix: wk[ik] * g(n(ik, ib)). Bands with g(n)=0 do not enter the XC density matrix.
+    // BBC3-inspired (separable RI DM only; not full non-separable BBC3): natural orbitals sorted
+    // by decreasing n at each k (ties: lower band index first). Reference: K. Pernal, Phys. Rev. Lett.
+    // 94, 022002 (2005); BBC3 / BBC family in Baerends et al. Strong bands: Müller sqrt(n); weak: HF n.
+    // Permutation is fixed for the current n (piecewise constant w.r.t. small perturbations).
     ModuleBase::matrix wk_g(nk_, nbands_);
+    const bool bbc3 = (xc_func_.type() == XCFunctionalType::BBC3);
+    const int n_strong = bbc3 ? rdmft_bbc3_n_strong_bands() : 0;
+    std::vector<int> rank_ib;
     for (int ik = 0; ik < nk_; ++ik)
     {
+        const double wk = kv_->wk[ik];
+        const double* occ_k = &occ_flat[ik * nbands_];
+        if (bbc3)
+        {
+            rdmft_bbc3_band_ranks(nbands_, occ_k, rank_ib);
+        }
         for (int ib = 0; ib < nbands_; ++ib)
         {
-            const double gn = xc_func_.g(occ_flat[ik * nbands_ + ib]);
-            wk_g(ik, ib) = rdmft_skip_occ_weight(gn) ? 0.0 : kv_->wk[ik] * gn;
+            const double n = occ_k[ib];
+            double eff_g = 0.0;
+            if (!bbc3)
+            {
+                eff_g = xc_func_.g(n);
+            }
+            else if (rank_ib[ib] < n_strong)
+            {
+                eff_g = xc_func_.g(n);
+            }
+            else
+            {
+                eff_g = n;
+            }
+            wk_g(ik, ib) = rdmft_skip_occ_weight(eff_g) ? 0.0 : wk * eff_g;
         }
     }
 
@@ -1204,6 +1269,16 @@ double EnergyGradient<TK, TR>::compute(
 
     build_charge(occ_flat, wfc_eval);
 
+    if (rdmft_hybrid_dft_xc_active() && nspin_ == 4 && std::is_same<TR, std::complex<double>>::value)
+    {
+        ModuleBase::WARNING_QUIT("RDMFT_EG",
+                                 "rdmft_hybrid_dft_xc is not implemented for nspin=4 with TR=complex LCAO.");
+    }
+
+    etxc_ = 0.0;
+    vtxc_ = 0.0;
+    E_xc_dft_semilocal_ = 0.0;
+
     // 2. Build Hartree potential
     HR_hartree_->set_zero();
     if (!op_hartree_)
@@ -1213,6 +1288,20 @@ double EnergyGradient<TK, TR>::compute(
             orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     }
     op_hartree_->contributeHR();
+
+    // Semilocal DFT XC on the RDMFT density (PotXC); energy uses λ·etxc, gradients use V_xc separately.
+    if (rdmft_hybrid_dft_xc_active())
+    {
+        HR_xc_dft_->set_zero();
+        if (!op_xc_dft_)
+        {
+            op_xc_dft_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
+                hsk_xc_dft_.get(), kv_->kvec_d, pelec_->pot, HR_xc_dft_.get(), ucell_,
+                orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "xc", &etxc_, &vtxc_);
+        }
+        op_xc_dft_->contributeHR();
+        E_xc_dft_semilocal_ = PARAM.inp.rdmft_hybrid_dft_xc_lambda * etxc_;
+    }
 
     // 3. Build exchange from modified DM (RDMFT's private EXX)
 #ifdef __EXX
@@ -1274,13 +1363,20 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<double> h_one_diag(nbands_, 0.0);
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
+    std::vector<double> vxc_diag(nbands_, 0.0);
 
     const std::int64_t hpsi_alloc
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     std::vector<TK> Hpsi_one(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_h(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_x(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<TK> Hpsi_xc(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> psi_dummy(1, TK(0));
+
+    const double ex_scale = rdmft_hybrid_exchange_scale();
+    const bool is_bbc3 = (xc_func_.type() == XCFunctionalType::BBC3);
+    const int n_strong_bbc3 = is_bbc3 ? rdmft_bbc3_n_strong_bands() : 0;
+    std::vector<int> rank_bbc3;
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -1331,7 +1427,21 @@ double EnergyGradient<TK, TR>::compute(
         }
 #endif
 
+        std::fill(vxc_diag.begin(), vxc_diag.end(), 0.0);
+        std::fill(Hpsi_xc.begin(), Hpsi_xc.end(), TK(0));
+        if (rdmft_hybrid_dft_xc_active())
+        {
+            hsk_xc_dft_->set_zero_hk();
+            op_xc_dft_->contributeHk(ik);
+            apply_Hk(hsk_xc_dft_->get_hk(), psi_k, Hpsi_xc.data());
+            compute_diagonal(psi_k, Hpsi_xc.data(), vxc_diag.data(), ik);
+        }
+
         double wk = kv_->wk[ik];
+        if (is_bbc3)
+        {
+            rdmft_bbc3_band_ranks(nbands_, &occ_flat[ik * nbands_], rank_bbc3);
+        }
 
         // Accumulate energies (skip terms that are identically zero when n=0 or g(n)=0)
         for (int ib = 0; ib < nbands_; ++ib)
@@ -1345,17 +1455,57 @@ double EnergyGradient<TK, TR>::compute(
             }
             if (!rdmft_skip_occ_weight(gn))
             {
-                E_xc_ += wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
+                E_xc_ += ex_scale * wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
             }
         }
+
+        // Goedecker–Umrigar diagonal self-exchange correction (J_ii via Muller DM proxy).
+        if (xc_func_.type() == XCFunctionalType::GU)
+        {
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                const double gn = xc_func_.g(n);
+                if (rdmft_skip_occ_weight(gn))
+                {
+                    continue;
+                }
+                const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
+                const double fac = xc_func_.gu_diag_factor(n);
+                if (std::fabs(fac) < 1e-40)
+                {
+                    continue;
+                }
+                E_xc_ += 0.5 * wk * wk * fac * Jii;
+            }
+        }
+
+        const double lam_h = PARAM.inp.rdmft_hybrid_dft_xc_lambda;
 
         // Occupation gradient: dE/dn_ik
         for (int ib = 0; ib < nbands_; ++ib)
         {
             double n = occ_flat[ik * nbands_ + ib];
-            double dgn = xc_func_.dg(n);
+            double d_exx_dn = xc_func_.dg(n);
+            if (is_bbc3)
+            {
+                d_exx_dn = (rank_bbc3[ib] < n_strong_bbc3) ? xc_func_.dg(n) : 1.0;
+            }
             grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib])
-                                          + wk * dgn * vx_diag[ib];
+                                          + ex_scale * wk * d_exx_dn * vx_diag[ib];
+            if (xc_func_.type() == XCFunctionalType::GU)
+            {
+                const double gn = xc_func_.g(n);
+                if (!rdmft_skip_occ_weight(gn))
+                {
+                    const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
+                    grad_occ[ik * nbands_ + ib] += 0.5 * wk * wk * xc_func_.gu_diag_factor_deriv(n) * Jii;
+                }
+            }
+            if (rdmft_hybrid_dft_xc_active())
+            {
+                grad_occ[ik * nbands_ + ib] += lam_h * wk * vxc_diag[ib];
+            }
         }
 
         // Orbital gradient w.r.t. LCAO coefficients (before X transform):
@@ -1363,6 +1513,7 @@ double EnergyGradient<TK, TR>::compute(
         //   TK = double (real gamma-only LCAO): for n * C^T H C with symmetric H,
         //   ∂E/∂C_μ = 2 wk n (H C)_μ (same H·C factors); apply the factor below.
         // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
+        // GU: ∂J_ii/∂C is omitted here (would require RI response); see rdmft_derivation.md.
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {
             int ib_global = ParaV_->local2global_col(ib_local);
@@ -1372,7 +1523,8 @@ double EnergyGradient<TK, TR>::compute(
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
             const bool use_exx = !rdmft_skip_occ_weight(gn);
-            if (!use_one_hart && !use_exx)
+            const bool use_xc_dft = rdmft_hybrid_dft_xc_active() && !rdmft_skip_occ_weight(n);
+            if (!use_one_hart && !use_exx && !use_xc_dft)
             {
                 continue;
             }
@@ -1381,6 +1533,7 @@ double EnergyGradient<TK, TR>::compute(
             const TK* hone_ptr = &Hpsi_one[ib_local * nbs_local];
             const TK* hh_ptr = &Hpsi_h[ib_local * nbs_local];
             const TK* hx_ptr = &Hpsi_x[ib_local * nbs_local];
+            const TK* hxc_ptr = &Hpsi_xc[ib_local * nbs_local];
 
             for (int mu = 0; mu < nbs_local; ++mu)
             {
@@ -1389,9 +1542,13 @@ double EnergyGradient<TK, TR>::compute(
                 {
                     acc += TK(n) * (hone_ptr[mu] + hh_ptr[mu]);
                 }
+                if (use_xc_dft)
+                {
+                    acc += TK(lam_h * n) * hxc_ptr[mu];
+                }
                 if (use_exx)
                 {
-                    acc += TK(gn) * hx_ptr[mu];
+                    acc += TK(ex_scale * gn) * hx_ptr[mu];
                 }
                 grad_ptr[mu] = wk * acc;
             }
@@ -1418,7 +1575,7 @@ double EnergyGradient<TK, TR>::compute(
     // count). The same is true for grad_occ.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_ + E_xc_dft_semilocal_;
 
     // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
     grad_C_to_X(grad_wfc);
@@ -1444,6 +1601,20 @@ double EnergyGradient<TK, TR>::compute_energy(
     // Rebuild charge and Hartree (these always depend on occupations)
     build_charge(occ_flat, wfc_eval);
 
+    if (rdmft_hybrid_dft_xc_active() && nspin_ == 4 && std::is_same<TR, std::complex<double>>::value)
+    {
+        ModuleBase::WARNING_QUIT("RDMFT_EG",
+                                 "rdmft_hybrid_dft_xc is not implemented for nspin=4 with TR=complex LCAO.");
+    }
+    if (rdmft_hybrid_dft_xc_active())
+    {
+        hone_cache_valid_ = false;
+    }
+
+    etxc_ = 0.0;
+    vtxc_ = 0.0;
+    E_xc_dft_semilocal_ = 0.0;
+
     HR_hartree_->set_zero();
     if (!op_hartree_)
     {
@@ -1452,6 +1623,19 @@ double EnergyGradient<TK, TR>::compute_energy(
             orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     }
     op_hartree_->contributeHR();
+
+    if (rdmft_hybrid_dft_xc_active())
+    {
+        HR_xc_dft_->set_zero();
+        if (!op_xc_dft_)
+        {
+            op_xc_dft_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
+                hsk_xc_dft_.get(), kv_->kvec_d, pelec_->pot, HR_xc_dft_.get(), ucell_,
+                orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "xc", &etxc_, &vtxc_);
+        }
+        op_xc_dft_->contributeHR();
+        E_xc_dft_semilocal_ = PARAM.inp.rdmft_hybrid_dft_xc_lambda * etxc_;
+    }
 
     // Exchange must also be rebuilt because the modified DM gamma_xc depends
     // on occupations (and on orbitals, but those are fixed for compute_energy
@@ -1538,6 +1722,8 @@ double EnergyGradient<TK, TR>::compute_energy(
     E_xc_ = 0.0;
     E_entropy_ = 0.0;
 
+    const double ex_scale_ce = rdmft_hybrid_exchange_scale();
+
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
@@ -1584,7 +1770,26 @@ double EnergyGradient<TK, TR>::compute_energy(
             }
             if (!rdmft_skip_occ_weight(gn))
             {
-                E_xc_ += wk * gn * vx_diag[ib] * 0.5;
+                E_xc_ += ex_scale_ce * wk * gn * vx_diag[ib] * 0.5;
+            }
+        }
+        if (xc_func_.type() == XCFunctionalType::GU)
+        {
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                const double gn = xc_func_.g(n);
+                if (rdmft_skip_occ_weight(gn))
+                {
+                    continue;
+                }
+                const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
+                const double fac = xc_func_.gu_diag_factor(n);
+                if (std::fabs(fac) < 1e-40)
+                {
+                    continue;
+                }
+                E_xc_ += 0.5 * wk * wk * fac * Jii;
             }
         }
     }
@@ -1606,7 +1811,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     // reduction of E_* is needed here.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_ + E_xc_dft_semilocal_;
 
     ModuleBase::timer::end("RDMFT_EG", "compute_energy");
     return E_total_;

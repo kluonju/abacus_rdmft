@@ -86,6 +86,7 @@ class EnergyGradient
     double E_one_body() const { return E_one_; }
     double E_hartree() const { return E_hartree_; }
     double E_xc() const { return E_xc_; }
+    double E_xc_dft_semilocal() const { return E_xc_dft_semilocal_; }
     double E_ewald() const { return E_ewald_; }
     double E_total() const { return E_total_; }
     /// Binary-entropy regularization energy γ·Σ w_k f(n) from last compute / compute_energy.
@@ -218,17 +219,21 @@ class EnergyGradient
     std::unique_ptr<hamilt::HContainer<TR>> HR_one_;
     std::unique_ptr<hamilt::HContainer<TR>> HR_hartree_;
     std::unique_ptr<hamilt::HContainer<TR>> HR_exx_;
+    /// Semilocal DFT XC (PotXC on RDMFT rho); used when rdmft_hybrid_dft_xc is enabled.
+    std::unique_ptr<hamilt::HContainer<TR>> HR_xc_dft_;
     std::unique_ptr<hamilt::HContainer<TR>> SR_;
 
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_one_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_hartree_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_exx_;
+    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_xc_dft_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_overlap_;
 
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_ekinetic_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_nonlocal_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_local_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_hartree_;
+    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_xc_dft_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_exx_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_overlap_;
 
@@ -245,6 +250,8 @@ class EnergyGradient
     double E_one_ = 0.0;
     double E_hartree_ = 0.0;
     double E_xc_ = 0.0;
+    /// Last compute: λ·E_xc^DFT[ρ] from PotXC when hybrid semilocal XC is active.
+    double E_xc_dft_semilocal_ = 0.0;
     double E_ewald_ = 0.0;
     double E_entropy_ = 0.0;
     double E_total_ = 0.0;
