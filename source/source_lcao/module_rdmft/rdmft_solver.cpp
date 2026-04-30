@@ -2611,25 +2611,122 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_line(pg_ls.str());
                 }
 
+                bool sd_ls_success = false;
+                double sd_step_acc = 0.0;
+                double sd_dd_proj_acc = 0.0;
+                int pg_sd_ls_trial = 0;
+                double E_sd_last_trial = E;
                 if (ls_success)
                 {
                     occ_flat = occ_trial;
                 }
                 else
                 {
-                    // Same recovery as active_set: one projected steepest step, then
-                    // reset curvature state (CG/L-BFGS history is unreliable here).
-                    occ_flat = occ_before_step;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
+                    // Optimizer-direction Armijo failed. Try the SD direction d = -grad
+                    // with backtracking, *without* discarding the CG/L-BFGS curvature
+                    // history.  Resetting the optimizer here was disruptive: the next
+                    // iterate would be a zero-history SD step starting from the
+                    // (clipped + electron-rescaled) projection of n - α₀ ∇E, which can
+                    // collapse to a uniform occupation pattern when α₀ is much larger
+                    // than the local descent step (rdmft_nelec_delta != 0 examples).
+                    //
+                    // Strategy: same Armijo backtracking schedule as above but with
+                    // dir = -grad.  If SD also fails, accept zero step (don't move).
+                    std::vector<double> dir_sd(grad_occ.size());
+                    for (size_t i = 0; i < dir_sd.size(); ++i)
                     {
-                        occ_flat[i] -= config_.line_search_alpha_init * grad_occ[i];
+                        dir_sd[i] = -grad_occ[i];
                     }
-                    occ_constraint_->project(occ_flat);
-                    pg_opt.init(static_cast<int>(occ_flat.size()));
-                    bb_step.reset();
-                    pg_ls_qhist = {};
-                    GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << ", applied SD fallback and reset optimizer" << std::endl;
+                    double alpha_sd = alpha_pg0;
+                    bool pg_sd_first_ls_recorded = false;
+                    for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                    {
+                        pg_sd_ls_trial = ls + 1;
+                        const double alpha_try = alpha_sd;
+                        occ_trial = occ_before_step;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                        {
+                            occ_trial[i] += alpha_sd * dir_sd[i];
+                        }
+                        occ_constraint_->project(occ_trial);
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            alpha_sd *= config_.line_search_rho;
+                            continue;
+                        }
+                        double dd_proj = 0.0;
+                        for (size_t i = 0; i < occ_before_step.size(); ++i)
+                        {
+                            dd_proj += grad_occ[i] * (occ_trial[i] - occ_before_step[i]);
+                        }
+                        if (dd_proj >= 0.0)
+                        {
+                            alpha_sd *= config_.line_search_rho;
+                            continue;
+                        }
+                        const double E_trial = energy_grad_->compute_energy(
+                            occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                        E_sd_last_trial = E_trial;
+                        if (!pg_sd_first_ls_recorded)
+                        {
+                            pg_sd_first_ls_recorded = true;
+                        }
+                        if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                        {
+                            sd_step_acc = alpha_try;
+                            sd_dd_proj_acc = dd_proj;
+                            sd_ls_success = true;
+                            break;
+                        }
+                        alpha_sd *= config_.line_search_rho;
+                    }
+
+                    {
+                        std::ostringstream pg_sd_ls;
+                        pg_sd_ls << "      occ line search (PG SD-direction Armijo): alpha_init="
+                                 << std::scientific << alpha_pg0
+                                 << " step=" << (sd_ls_success ? sd_step_acc : 0.0)
+                                 << " n_trial=" << pg_sd_ls_trial
+                                 << " E0=" << E << " E_trial=" << E_sd_last_trial;
+                        if (sd_ls_success)
+                        {
+                            pg_sd_ls << " dTw=" << sd_dd_proj_acc
+                                     << " E0+c1*dTw=" << E + config_.line_search_c1 * sd_dd_proj_acc;
+                        }
+                        pg_sd_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
+                                 << "  rho=" << config_.line_search_rho
+                                 << (sd_ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(pg_sd_ls.str());
+                    }
+
+                    if (sd_ls_success)
+                    {
+                        occ_flat = occ_trial;
+                        // Reflect the SD-direction successful step in the quadratic-init
+                        // history so the next inner step seeds α₀ from a feasible move.
+                        pg_ls_qhist
+                            = {true, sd_step_acc, E, E_sd_last_trial, sd_dd_proj_acc};
+                        GlobalV::ofs_running
+                            << "      PG line search failed at inner=" << (inner + 1)
+                            << " (optimizer direction); accepted SD-direction Armijo step="
+                            << std::scientific << sd_step_acc << std::defaultfloat
+                            << " (CG/L-BFGS history preserved)" << std::endl;
+                    }
+                    else
+                    {
+                        // Both line searches failed.  Accept zero step (do not move) to
+                        // avoid the disruptive global SD projection that previously
+                        // washed out occupations when alpha_init was too large.  The
+                        // outer loop will detect lack of progress and either trigger
+                        // additional outer iterations or stop based on convergence
+                        // criteria.
+                        occ_flat = occ_before_step;
+                        pg_ls_qhist = {};
+                        GlobalV::ofs_running
+                            << "      PG line search failed at inner=" << (inner + 1)
+                            << " (both optimizer and SD directions); accepting zero step"
+                            << " (CG/L-BFGS history preserved)" << std::endl;
+                    }
                 }
 
                 // Update the optimizer with the actual step taken.
@@ -2648,7 +2745,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 grad_l2_post = std::sqrt(grad_l2_post);
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, config_.line_search_alpha_init)
-                    : pg_bertsekas_tau_from_line_search(config_.line_search_alpha_init, 1.0);
+                    : (sd_ls_success
+                          ? pg_bertsekas_tau_from_line_search(sd_step_acc, config_.line_search_alpha_init)
+                          : pg_bertsekas_tau_from_line_search(config_.line_search_alpha_init, 1.0));
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
@@ -2661,7 +2760,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double g_l2_post = pg_map_l2_post / tau_post;
                 result.grad_norm = g_inf_post;
                 pg_opt.update(new_grad_occ, step_vec);
-                if (ls_success)
+                if (ls_success || sd_ls_success)
                 {
                     bb_step.record_state(occ_flat, new_grad_occ);
                 }
@@ -2921,25 +3020,117 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_line(as_ls.str());
                 }
 
+                bool sd_ls_success = false;
+                double sd_step_acc = 0.0;
+                double sd_dd_proj_acc = 0.0;
+                int as_sd_ls_trial = 0;
+                double E_sd_last_trial = E;
                 if (ls_success)
                 {
                     occ_flat = occ_trial;
                 }
                 else
                 {
-                    // Fallback: single steepest-descent step on free variables.
-                    occ_flat = occ_before_step;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                        occ_flat[i] -= config_.line_search_alpha_init * grad_mod[i];
-                    for (auto& n : occ_flat)
-                        n = std::max(0.0, std::min(1.0, n));
-                    occ_constraint_->project(occ_flat);
-                    as_opt.init(static_cast<int>(occ_flat.size()));
-                    as_bb_step.reset();
-                    as_ls_qhist = {};
-                    prev_n_active = -1;
-                    GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)
-                                         << ", reset optimizer" << std::endl;
+                    // Optimizer-direction Armijo failed.  Try the SD direction
+                    // d = -grad_mod (modified gradient projected to free set) with
+                    // backtracking, *without* discarding curvature history or
+                    // resetting the active set tracker.  This avoids the disruptive
+                    // global SD-+-projection fallback that previously could collapse
+                    // occupations to a uniform pattern (notably with rdmft_nelec_delta
+                    // != 0).
+                    std::vector<double> dir_sd(grad_mod.size());
+                    for (size_t i = 0; i < dir_sd.size(); ++i)
+                    {
+                        dir_sd[i] = -grad_mod[i];
+                    }
+                    for (size_t idx = 0; idx < dir_sd.size(); ++idx)
+                    {
+                        if (!as_info.is_free[idx]) dir_sd[idx] = 0.0;
+                    }
+                    double alpha_sd = as_alpha0;
+                    for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                    {
+                        as_sd_ls_trial = ls + 1;
+                        const double alpha_try = alpha_sd;
+                        occ_trial = occ_before_step;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                        {
+                            occ_trial[i] += alpha_sd * dir_sd[i];
+                        }
+                        for (auto& n : occ_trial)
+                        {
+                            n = std::max(0.0, std::min(1.0, n));
+                        }
+                        occ_constraint_->project(occ_trial);
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            alpha_sd *= config_.line_search_rho;
+                            continue;
+                        }
+                        double dd_proj = 0.0;
+                        for (size_t i = 0; i < occ_before_step.size(); ++i)
+                        {
+                            dd_proj += grad_mod[i] * (occ_trial[i] - occ_before_step[i]);
+                        }
+                        if (dd_proj >= 0.0)
+                        {
+                            alpha_sd *= config_.line_search_rho;
+                            continue;
+                        }
+                        const double E_trial = energy_grad_->compute_energy(
+                            occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                        E_sd_last_trial = E_trial;
+                        if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                        {
+                            sd_step_acc = alpha_try;
+                            sd_dd_proj_acc = dd_proj;
+                            sd_ls_success = true;
+                            E_after = E_trial;
+                            break;
+                        }
+                        alpha_sd *= config_.line_search_rho;
+                    }
+
+                    {
+                        std::ostringstream as_sd_ls;
+                        as_sd_ls << "      occ line search (AS SD-direction Armijo): alpha_init="
+                                 << std::scientific << as_alpha0
+                                 << " step=" << (sd_ls_success ? sd_step_acc : 0.0)
+                                 << " n_trial=" << as_sd_ls_trial
+                                 << " E0=" << E << " E_trial=" << E_sd_last_trial;
+                        if (sd_ls_success)
+                        {
+                            as_sd_ls << " dTw=" << sd_dd_proj_acc
+                                     << " E0+c1*dTw=" << E + config_.line_search_c1 * sd_dd_proj_acc;
+                        }
+                        as_sd_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
+                                 << "  rho=" << config_.line_search_rho
+                                 << (sd_ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(as_sd_ls.str());
+                    }
+
+                    if (sd_ls_success)
+                    {
+                        occ_flat = occ_trial;
+                        as_ls_qhist
+                            = {true, sd_step_acc, E, E_sd_last_trial, sd_dd_proj_acc};
+                        GlobalV::ofs_running
+                            << "      AS line search failed at inner=" << (inner + 1)
+                            << " (optimizer direction); accepted SD-direction Armijo step="
+                            << std::scientific << sd_step_acc << std::defaultfloat
+                            << " (CG/L-BFGS history preserved)" << std::endl;
+                    }
+                    else
+                    {
+                        // Both line searches failed.  Accept zero step (do not move).
+                        occ_flat = occ_before_step;
+                        as_ls_qhist = {};
+                        E_after = E;
+                        GlobalV::ofs_running
+                            << "      AS line search failed at inner=" << (inner + 1)
+                            << " (both optimizer and SD directions); accepting zero step"
+                            << " (CG/L-BFGS history preserved)" << std::endl;
+                    }
                 }
 
                 // Update the optimizer with (step, new modified gradient).
@@ -2959,7 +3150,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     if (!new_as_info.is_free[idx]) new_grad_mod[idx] = 0.0;
 
                 as_opt.update(new_grad_mod, step_vec);
-                if (ls_success)
+                if (ls_success || sd_ls_success)
                 {
                     as_bb_step.record_state(occ_flat, new_grad_mod);
                 }
