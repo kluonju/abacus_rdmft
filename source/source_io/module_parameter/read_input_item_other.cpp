@@ -873,12 +873,14 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_functional");
-        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu";
+        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu, bbc3, geo";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "RDMFT XC functional used for the RDMFT optimisation stage. "
                            "Supported values: hf (Hartree-Fock), muller (Muller/BBC1), "
-                           "power (power functional, uses rdmft_power_alpha), gu (Goedecker-Umrigar). "
+                           "power (power functional, uses rdmft_power_alpha), gu (Goedecker-Umrigar), "
+                           "bbc3 (BBC3-inspired rank-separated), geo "
+                           "(f(n_p, n_q) = [n_p n_q + sqrt(n_p n_q) + 2 (n_p n_q)^{3/4}]/4). "
                            "If empty, the old single-step RDMFT code path is used.";
         item.default_value = "";
         item.unit = "";
@@ -888,10 +890,11 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& f = para.input.rdmft_functional;
-                if (f != "hf" && f != "muller" && f != "power" && f != "gu" && f != "bbc3")
+                if (f != "hf" && f != "muller" && f != "power" && f != "gu"
+                    && f != "bbc3" && f != "geo")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_functional must be one of: hf, muller, power, gu, bbc3");
+                        "rdmft_functional must be one of: hf, muller, power, gu, bbc3, geo");
                 }
             }
         };

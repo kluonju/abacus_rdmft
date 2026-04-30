@@ -134,6 +134,35 @@ $$
 The diagonal modification ensures correct self-interaction cancellation.
 The off-diagonal part uses the Müller form.
 
+#### 2.3.5 GEO Functional
+
+$$
+f^{\mathrm{GEO}}(n_p, n_q) = \frac{1}{4}\Bigl[ n_p n_q + (n_p n_q)^{1/2} + 2 (n_p n_q)^{3/4} \Bigr]
+$$
+
+This is **non-separable in the single-$g$ sense** but decomposes as a weighted sum
+of three separable Power-like terms:
+
+$$
+f^{\mathrm{GEO}}(n_p, n_q) = \frac{1}{4} g_1(n_p) g_1(n_q)
+                          + \frac{1}{4} g_{1/2}(n_p) g_{1/2}(n_q)
+                          + \frac{1}{2} g_{3/4}(n_p) g_{3/4}(n_q),
+\qquad g_\alpha(n) = n^{\alpha}.
+$$
+
+The triplet $\{(c_t, \alpha_t)\} = \{(1/4, 1), (1/4, 1/2), (1/2, 3/4)\}$ is the
+constructive recipe used by the implementation: at each energy / gradient
+evaluation, the three modified density matrices
+$\gamma^{(t)}_{\mathrm{xc}} = \sum_i w_{\mathbf{k}} n_{i\mathbf{k}}^{\alpha_t}
+C_{\mu i}^{\mathbf{k}}(C_{\nu i}^{\mathbf{k}})^*$ are built and three EXX
+evaluations are performed; energies, occupation gradients, and orbital
+gradients are accumulated weighted by $c_t$ and the appropriate
+$g_{\alpha_t}(n)$ or $g'_{\alpha_t}(n)$.
+
+By construction $f^{\mathrm{GEO}}(1,1) = 1$ (the coefficients
+$1/4 + 1/4 + 1/2 = 1$) and $f^{\mathrm{GEO}}(0, n_q) = 0$ analytically,
+matching the HF/Müller/Power behaviour at the $n=0$ and $n=1$ extremes.
+
 ### 2.4 Unified Exchange via Modified Density Matrix
 
 For the separable functionals (HF, Müller, Power), we can write
