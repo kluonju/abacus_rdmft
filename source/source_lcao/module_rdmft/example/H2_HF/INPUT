@@ -47,7 +47,13 @@ rdmft_functional       hf
 
 #rdmft_occ_init_perturb   1e-3
 rdmft_occ_init_perturb   1e-1
-# Default: perturb all bands (rdmft_occ_init_nbands_top = 0)
+# rdmft_occ_init_mode = perturbed requires rdmft_occ_init_nbands_top > 0:
+# K bands above and K bands below the Fermi level are perturbed by ±delta.
+# When rdmft_occ_init_nbands_top = 0 (default), the perturbed mode falls back
+# to ks (no perturbation); see rdmft_solver.cpp init log "K<=0 or delta<=0,
+# fallback=ks".
+rdmft_occ_init_mode      perturbed
+rdmft_occ_init_nbands_top 4
 
 # 6.4 Solver / optimiser configuration. Defaults shown; tweak as needed.
 rdmft_solver_strategy  alternating

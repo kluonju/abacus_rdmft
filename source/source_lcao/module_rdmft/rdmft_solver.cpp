@@ -173,6 +173,51 @@ double choose_occ_ls_alpha0(const RDMFTConfig& cfg,
     return cfg.line_search_alpha_init;
 }
 
+/// Trust-region cap on the projected-gradient line-search initial step so that
+/// the un-projected first trial move \f$\alpha\,d\f$ has \f$L^\infty\f$ size
+/// at most `max_dn_linf` in occupation space.
+///
+/// Why this is needed: regularised separable functionals (Müller, Power, GEO)
+/// have bounded but very large \f$\partial E/\partial n\f$ for occupations
+/// near the regularisation cutoff (e.g. \f$\alpha\,\varepsilon^{\alpha-1}\f$
+/// with \f$\varepsilon=10^{-8},\alpha=\tfrac12\f$ gives \f$\sim 5\times10^3\f$).
+/// Combined with `alpha_init = 1` this clips/saturates almost every band to
+/// the box boundary in a single step, after which monotone Armijo
+/// backtracking cannot recover (the projection lands at the same saturated
+/// state for every \f$\alpha\f$ in the backtracking schedule, so all trials
+/// share an identical \f$E_{trial}\f$ and the line search fails permanently).
+///
+/// Capping by the largest direction component bounds the *un-projected* trial
+/// move to `max_dn_linf` per occupation, which keeps the projection in a
+/// neighbourhood where Armijo backtracking can refine the step.  When
+/// `dir_inf` is small (e.g. CG step in a flat region), the cap is inactive
+/// and the original `alpha0` is returned.
+inline double trust_region_cap_alpha(double alpha0,
+                                     const std::vector<double>& dir,
+                                     double max_dn_linf)
+{
+    if (!(max_dn_linf > 0.0) || !std::isfinite(alpha0) || alpha0 <= 0.0)
+    {
+        return alpha0;
+    }
+    double dir_inf = 0.0;
+    for (double d : dir)
+    {
+        const double a = std::abs(d);
+        if (a > dir_inf) dir_inf = a;
+    }
+    if (!(dir_inf > 0.0) || !std::isfinite(dir_inf))
+    {
+        return alpha0;
+    }
+    const double alpha_cap = max_dn_linf / dir_inf;
+    if (alpha_cap < alpha0)
+    {
+        return alpha_cap;
+    }
+    return alpha0;
+}
+
 int find_fermi_boundary_index(const std::vector<double>& occ_flat,
                               const int ik,
                               const int nbands)
@@ -2535,9 +2580,18 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
 
                 // Line-search initial step: fixed 1, BB seed, or quadratic
-                // interpolation from the previous inner iteration (same α₀ as τ above).
+                // interpolation from the previous inner iteration (same α₀ as τ above),
+                // then capped so that |α·d|_∞ ≤ pg_trust_dn so the first trial does
+                // not saturate every component to the {0,1} box boundary in one shot.
+                // Without this cap, regularised separable functionals (Müller / Power /
+                // GEO) starting at |∂E/∂n| ~ α/eps^(1-α) ≈ 10^3–10^4 produce a single
+                // trial that lands at the boundary and Armijo backtracking can never
+                // descend (every backtracking step lands at the same projected point).
+                const double pg_trust_dn = 0.25;
+                const double alpha_pg0_capped
+                    = trust_region_cap_alpha(alpha_pg0, dir, pg_trust_dn);
                 const std::vector<double> occ_before_step(occ_flat);
-                double alpha = alpha_pg0;
+                double alpha = alpha_pg0_capped;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 int pg_ls_trial = 0;
@@ -2598,7 +2652,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 {
                     std::ostringstream pg_ls;
-                    pg_ls << "      occ line search (PG Armijo): alpha_init=" << std::scientific << alpha_pg0
+                    pg_ls << "      occ line search (PG Armijo): alpha_init=" << std::scientific << alpha_pg0_capped
+                          << " (uncapped=" << alpha_pg0 << ", cap_dn_inf=" << pg_trust_dn << ")"
                           << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
                           << " E0=" << E << " E_trial=" << E_last_trial;
                     if (ls_success)
@@ -2637,7 +2692,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     {
                         dir_sd[i] = -grad_occ[i];
                     }
-                    double alpha_sd = alpha_pg0;
+                    // Same trust-region cap as the optimizer-direction Armijo above:
+                    // bound |α·d_SD|_∞ ≤ pg_trust_dn so the projected first trial stays
+                    // within a neighbourhood that backtracking can refine.
+                    const double alpha_sd_init = trust_region_cap_alpha(alpha_pg0, dir_sd, pg_trust_dn);
+                    double alpha_sd = alpha_sd_init;
                     bool pg_sd_first_ls_recorded = false;
                     for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                     {
@@ -2684,7 +2743,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     {
                         std::ostringstream pg_sd_ls;
                         pg_sd_ls << "      occ line search (PG SD-direction Armijo): alpha_init="
-                                 << std::scientific << alpha_pg0
+                                 << std::scientific << alpha_sd_init
+                                 << " (uncapped=" << alpha_pg0 << ", cap_dn_inf=" << pg_trust_dn << ")"
                                  << " step=" << (sd_ls_success ? sd_step_acc : 0.0)
                                  << " n_trial=" << pg_sd_ls_trial
                                  << " E0=" << E << " E_trial=" << E_sd_last_trial;
@@ -2943,7 +3003,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const std::vector<double> occ_before_step(occ_flat);
                 const double as_alpha0 = choose_occ_ls_alpha0(
                     config_, occ_flat, grad_mod, &as_bb_step, as_ls_qhist);
-                double alpha = as_alpha0;
+                // Trust-region cap: bound |α·d|_∞ ≤ as_trust_dn so the first trial
+                // does not saturate every free band to a {0,1} bound when the
+                // (regularised) gradient at near-zero occupations is large
+                // (Müller / Power / GEO; cf. PG path comment for details).
+                const double as_trust_dn = 0.25;
+                const double as_alpha0_capped
+                    = trust_region_cap_alpha(as_alpha0, dir, as_trust_dn);
+                double alpha = as_alpha0_capped;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 double E_after = E;
@@ -3007,7 +3074,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 {
                     std::ostringstream as_ls;
-                    as_ls << "      occ line search (AS Armijo): alpha_init=" << std::scientific << as_alpha0
+                    as_ls << "      occ line search (AS Armijo): alpha_init=" << std::scientific << as_alpha0_capped
+                          << " (uncapped=" << as_alpha0 << ", cap_dn_inf=" << as_trust_dn << ")"
                           << " step=" << (ls_success ? as_step_acc : 0.0) << " n_trial=" << as_ls_trial
                           << " E0=" << E << " E_trial=" << E_last_trial;
                     if (ls_success)
@@ -3047,7 +3115,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     {
                         if (!as_info.is_free[idx]) dir_sd[idx] = 0.0;
                     }
-                    double alpha_sd = as_alpha0;
+                    // Same trust-region cap as the optimizer-direction Armijo above.
+                    const double as_sd_alpha_init
+                        = trust_region_cap_alpha(as_alpha0, dir_sd, as_trust_dn);
+                    double alpha_sd = as_sd_alpha_init;
                     for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                     {
                         as_sd_ls_trial = ls + 1;
@@ -3094,7 +3165,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     {
                         std::ostringstream as_sd_ls;
                         as_sd_ls << "      occ line search (AS SD-direction Armijo): alpha_init="
-                                 << std::scientific << as_alpha0
+                                 << std::scientific << as_sd_alpha_init
+                                 << " (uncapped=" << as_alpha0 << ", cap_dn_inf=" << as_trust_dn << ")"
                                  << " step=" << (sd_ls_success ? sd_step_acc : 0.0)
                                  << " n_trial=" << as_sd_ls_trial
                                  << " E0=" << E << " E_trial=" << E_sd_last_trial;
