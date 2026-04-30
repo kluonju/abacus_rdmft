@@ -188,8 +188,10 @@ struct RDMFTConfig
     /// |E_k - E_{k-1}| before the step and |E_new - E| after an accepted line search
     /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
     double orb_energy_tol = 1e-8;
-    /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
-    double rdmft_occ_tol = 1e-8;
+    /// Occupation inner: stop the inner loop when sum_i |Δn_i| in one iteration is below this
+    /// (Augmented Lagrangian, projected_gradient, and active_set; same convergence criterion as
+    /// the orbital inner energy/gradient pair).
+    double rdmft_occ_tol = 1e-6;
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-8;
     /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:

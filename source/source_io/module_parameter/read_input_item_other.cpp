@@ -1160,10 +1160,11 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Augmented Lagrangian occupation inner: stop a step when "
-                           "sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this. "
-                           "Projected gradient inner stopping uses rdmft_occ_grad_tol vs ||g_proj||_inf only.";
-        item.default_value = "1e-8";
+        item.description = "Occupation inner: stop a step when sum_i |n_i^{new}-n_i^{old}| in "
+                           "one inner iteration is below this. Used by augmented_lagrangian, "
+                           "projected_gradient, and active_set paths (PG / AS additionally exit "
+                           "the inner loop on rdmft_occ_grad_tol vs ||g_proj||_inf).";
+        item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_occ_tol);

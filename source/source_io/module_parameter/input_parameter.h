@@ -685,7 +685,7 @@ struct Input_para
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
     double rdmft_orb_energy_tol = 1e-8;
-    double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
+    double rdmft_occ_tol = 1e-6;                 // ALM/PG/AS occupation inner: sum|Δn| per inner iter
     /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
     double rdmft_occ_energy_tol = 1e-8;
     /// PG: ||(n-P(n-τ∇E))/τ||_inf; also ALM/AS/joint thresholds as in solver

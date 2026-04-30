@@ -2849,6 +2849,20 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     result.converged = true;
                     break;
                 }
+                // Mirror the orbital inner loop: a sufficiently small step indicates the
+                // occupation block has stopped progressing for this outer iteration. Exit
+                // here so the alternating loop can proceed to the orbital block instead of
+                // burning the remaining occ_maxiter inner steps in a near-flat region.
+                // Triggers after a successful (or zero) line-search step. The outer loop's
+                // own convergence test (energy + occ block + orb block) still applies.
+                if (occ_inner_should_stop(sum_abs_dn, config_.rdmft_occ_tol))
+                {
+                    result.converged = true;
+                    GlobalV::ofs_running
+                        << "      occ inner PG: converged on sum|dn|=" << std::scientific << sum_abs_dn
+                        << " < rdmft_occ_tol=" << config_.rdmft_occ_tol << std::defaultfloat << std::endl;
+                    break;
+                }
             }
             break;
         }
