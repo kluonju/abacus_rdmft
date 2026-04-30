@@ -616,10 +616,31 @@ void EnergyGradient<TK, TR>::update_ion(
 #ifdef __EXX
     if (exx_enabled_)
     {
-        if (GlobalC::exx_info.info_ri.real_number)
-            exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
-        else
-            exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+        try
+        {
+            if (GlobalC::exx_info.info_ri.real_number)
+                exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+            else
+                exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+        }
+        catch (const std::bad_alloc& e)
+        {
+            // The EXX RI tensor build (Cs / Vs) is the dominant memory user in RDMFT
+            // setup.  When per-rank memory is insufficient a bare std::bad_alloc with
+            // no location is thrown, which confuses end users.  Wrap with a hint that
+            // points at the standard EXX memory knobs.
+            std::ostringstream msg;
+            msg << "RDMFT EXX RI tensor build (Exx_LRI::cal_exx_ions) ran out of memory: "
+                << e.what()
+                << ". Reduce per-rank memory by tightening EXX thresholds "
+                   "(exx_pca_threshold, exx_c_threshold, exx_v_threshold, "
+                   "exx_dm_threshold), reducing exx_ccp_rmesh_times, or increasing "
+                   "the number of MPI ranks / memory per rank.  See "
+                   "docs/CONTRIBUTING.md and source/source_lcao/module_rdmft/doc/"
+                   "rdmft_usage.md for guidance.";
+            GlobalV::ofs_running << msg.str() << std::endl;
+            throw std::runtime_error(msg.str());
+        }
     }
 #endif
 
@@ -2026,7 +2047,13 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
     }
 
     Uk_.resize(nk_);
-    Uk_inv_.resize(nk_);
+    // NOTE: Uk_inv_ is intentionally NOT allocated.  All transforms that
+    // previously used U^{-1} (wfc_X_to_C, grad_C_to_X) now use the upper
+    // triangular Cholesky factor Uk_ + a triangular solve (pdtrsm_) instead
+    // of an explicit inverse.  Halving the per-k Cholesky storage matters on
+    // memory-tight runs (large LCAO bases × many k-points), e.g. magnetic
+    // NiO with 16 MPI ranks where the previous code path could crash with
+    // std::bad_alloc inside RDMFT setup.
 
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
@@ -2075,33 +2102,6 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
                                          + std::to_string(ik) + " info=" + std::to_string(info));
             }
         }
-
-        // Compute U^{-1} by inverting the upper triangular factor
-        Uk_inv_[ik] = Uk_[ik];
-        {
-            int info = 0;
-            int one_int = 1;
-            char uplo = 'U';
-            char diag = 'N';
-            if (std::is_same<TK, double>::value)
-            {
-                pdtrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
-                    reinterpret_cast<double*>(Uk_inv_[ik].data()),
-                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
-            }
-            else
-            {
-                pztrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
-                    reinterpret_cast<std::complex<double>*>(Uk_inv_[ik].data()),
-                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
-            }
-            if (info != 0)
-            {
-                ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-                throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
-                                         + std::to_string(ik) + " info=" + std::to_string(info));
-            }
-        }
     }
 #else
     // Non-MPI: nbs_local == nbasis
@@ -2126,16 +2126,6 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         {
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
             throw std::runtime_error("RDMFT X-space setup failed: Cholesky factorisation of S_k failed at ik="
-                                     + std::to_string(ik) + " info=" + std::to_string(info));
-        }
-
-        // Compute U^{-1}
-        Uk_inv_[ik] = Uk_[ik];
-        info = detail::trtri_upper(Uk_inv_[ik].data(), nbasis);
-        if (info != 0)
-        {
-            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-            throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
                                      + std::to_string(ik) + " info=" + std::to_string(info));
         }
     }

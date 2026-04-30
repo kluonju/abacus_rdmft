@@ -293,9 +293,11 @@ class EnergyGradient
     /// Stored in column-major format. Only the upper triangle is meaningful;
     /// the lower triangle may contain arbitrary values after the factorisation.
     /// Size is nbasis_local * nbasis_local (non-MPI) or ParaV_->nloc (MPI).
+    /// All X-space transforms that conceptually need U_k^{-1} (wfc_X_to_C,
+    /// grad_C_to_X) implement that as a triangular solve against U_k via
+    /// pdtrsm_, so we never store the explicit inverse — this halves the
+    /// per-k Cholesky memory footprint.
     std::vector<std::vector<TK>> Uk_;
-    /// U_k^{-1} for each k-point, same upper-triangular column-major layout.
-    std::vector<std::vector<TK>> Uk_inv_;
 };
 
 } // namespace rdmft
