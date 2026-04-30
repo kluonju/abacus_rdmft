@@ -19,7 +19,12 @@ enum class XCFunctionalType
     /// BBC3-inspired rank-separated coupling: per k, bands sorted by decreasing
     /// occupation; strongly occupied use Müller sqrt(n), weakly use HF-like n.
     /// See module doc / code comments; not identical to every literature BBC3 variant.
-    BBC3
+    BBC3,
+    /// GEO functional: f(n_p, n_q) = [n_p n_q + (n_p n_q)^(1/2) + 2 (n_p n_q)^(3/4)] / 4.
+    /// Decomposes as a sum of three separable terms with coefficients (1/4, 1/4, 1/2)
+    /// and powers (1, 1/2, 3/4).  Non-separable in the single-g(n) sense; evaluated as
+    /// a sum of three Power-like exchange contributions.
+    GEO
 };
 
 enum class OccParamType
@@ -112,6 +117,7 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "power") return XCFunctionalType::Power;
     if (name == "gu") return XCFunctionalType::GU;
     if (name == "bbc3") return XCFunctionalType::BBC3;
+    if (name == "geo") return XCFunctionalType::GEO;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -124,6 +130,7 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::Power: return "power";
         case XCFunctionalType::GU: return "gu";
         case XCFunctionalType::BBC3: return "bbc3";
+        case XCFunctionalType::GEO: return "geo";
     }
     return "unknown";
 }

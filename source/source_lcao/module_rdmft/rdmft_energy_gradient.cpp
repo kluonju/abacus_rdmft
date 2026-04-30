@@ -616,10 +616,31 @@ void EnergyGradient<TK, TR>::update_ion(
 #ifdef __EXX
     if (exx_enabled_)
     {
-        if (GlobalC::exx_info.info_ri.real_number)
-            exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
-        else
-            exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+        try
+        {
+            if (GlobalC::exx_info.info_ri.real_number)
+                exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+            else
+                exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+        }
+        catch (const std::bad_alloc& e)
+        {
+            // The EXX RI tensor build (Cs / Vs) is the dominant memory user in RDMFT
+            // setup.  When per-rank memory is insufficient a bare std::bad_alloc with
+            // no location is thrown, which confuses end users.  Wrap with a hint that
+            // points at the standard EXX memory knobs.
+            std::ostringstream msg;
+            msg << "RDMFT EXX RI tensor build (Exx_LRI::cal_exx_ions) ran out of memory: "
+                << e.what()
+                << ". Reduce per-rank memory by tightening EXX thresholds "
+                   "(exx_pca_threshold, exx_c_threshold, exx_v_threshold, "
+                   "exx_dm_threshold), reducing exx_ccp_rmesh_times, or increasing "
+                   "the number of MPI ranks / memory per rank.  See "
+                   "docs/CONTRIBUTING.md and source/source_lcao/module_rdmft/doc/"
+                   "rdmft_usage.md for guidance.";
+            GlobalV::ofs_running << msg.str() << std::endl;
+            throw std::runtime_error(msg.str());
+        }
     }
 #endif
 
@@ -672,7 +693,8 @@ template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::build_DM_xc(
     const std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc,
-    std::vector<std::vector<TK>>& DM_XC)
+    std::vector<std::vector<TK>>& DM_XC,
+    double alpha_override)
 {
     DM_XC.resize(nk_, std::vector<TK>(ParaV_->nloc, TK(0)));
 
@@ -683,6 +705,7 @@ void EnergyGradient<TK, TR>::build_DM_xc(
     // Permutation is fixed for the current n (piecewise constant w.r.t. small perturbations).
     ModuleBase::matrix wk_g(nk_, nbands_);
     const bool bbc3 = (xc_func_.type() == XCFunctionalType::BBC3);
+    const bool use_override = (alpha_override > 0.0);
     const int n_strong = bbc3 ? rdmft_bbc3_n_strong_bands() : 0;
     std::vector<int> rank_ib;
     for (int ik = 0; ik < nk_; ++ik)
@@ -697,7 +720,12 @@ void EnergyGradient<TK, TR>::build_DM_xc(
         {
             const double n = occ_k[ib];
             double eff_g = 0.0;
-            if (!bbc3)
+            if (use_override)
+            {
+                // GEO term: build DM with n^{alpha_override}, regularised the same way as g().
+                eff_g = xc_func_.pow_reg(n, alpha_override);
+            }
+            else if (!bbc3)
             {
                 eff_g = xc_func_.g(n);
             }
@@ -868,6 +896,126 @@ inline TK* psi_k_ptr_or_dummy(psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
 }
 
 } // namespace
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::compute_geo_exx_contributions(
+    const std::vector<double>& occ_flat,
+    const psi::Psi<TK>& wfc_eval,
+    std::vector<std::vector<double>>& vx_diag_E_acc,
+    std::vector<std::vector<double>>& vx_diag_G_acc,
+    std::vector<std::vector<TK>>& Hpsi_x_acc,
+    bool compute_orb_grad)
+{
+    assert(xc_func_.type() == XCFunctionalType::GEO);
+    vx_diag_E_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
+    vx_diag_G_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
+    const int nb_local = wfc_eval.get_nbands();
+    const int nbs_local = wfc_eval.get_nbasis();
+    const std::int64_t hpsi_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    if (compute_orb_grad)
+    {
+        Hpsi_x_acc.assign(nk_, std::vector<TK>(static_cast<size_t>(hpsi_alloc), TK(0)));
+    }
+    else
+    {
+        Hpsi_x_acc.clear();
+    }
+
+#ifdef __EXX
+    if (!exx_enabled_) return;
+
+    std::vector<TK> Hpsi_t(static_cast<size_t>(hpsi_alloc), TK(0));
+    std::vector<double> vx_t(nbands_, 0.0);
+    std::vector<TK> psi_dummy(1, TK(0));
+
+    for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
+    {
+        const double c_t = XCFunctional::geo_coef(t);
+        const double a_t = XCFunctional::geo_alpha(t);
+        if (c_t == 0.0) continue;
+
+        std::vector<std::vector<TK>> DM_XC;
+        build_DM_xc(occ_flat, wfc_eval, DM_XC, a_t);
+
+        if (exx_spacegroup_symmetry_)
+            DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
+
+        std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
+        for (size_t ik = 0; ik < DM_XC.size(); ++ik)
+            DM_XC_ptr[ik] = &DM_XC[ik];
+
+        if (GlobalC::exx_info.info_ri.real_number)
+        {
+            auto Ds = std::is_same<TK, double>::value
+                ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                      exx_spacegroup_symmetry_);
+            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+            else
+                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+        }
+        else
+        {
+            auto Ds = std::is_same<TK, double>::value
+                ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                                     exx_spacegroup_symmetry_);
+            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+            else
+                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+        }
+
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
+
+            hsk_exx_->set_zero_hk();
+            if (GlobalC::exx_info.info_ri.real_number)
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
+            else
+            {
+                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                    1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+            }
+            std::fill(Hpsi_t.begin(), Hpsi_t.end(), TK(0));
+            apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_t.data());
+            std::fill(vx_t.begin(), vx_t.end(), 0.0);
+            compute_diagonal(psi_k, Hpsi_t.data(), vx_t.data(), ik);
+
+            for (int ib = 0; ib < nbands_; ++ib)
+            {
+                const double n = occ_flat[ik * nbands_ + ib];
+                vx_diag_E_acc[ik][ib] += c_t * xc_func_.pow_reg(n, a_t) * vx_t[ib];
+                vx_diag_G_acc[ik][ib] += c_t * xc_func_.dpow_reg(n, a_t) * vx_t[ib];
+            }
+            if (compute_orb_grad)
+            {
+                TK* acc_k = Hpsi_x_acc[ik].data();
+                for (int ib_local = 0; ib_local < nb_local; ++ib_local)
+                {
+                    int ib_global = ParaV_->local2global_col(ib_local);
+                    if (ib_global >= nbands_) continue;
+                    const double n = occ_flat[ik * nbands_ + ib_global];
+                    const double w = c_t * xc_func_.pow_reg(n, a_t);
+                    if (rdmft_skip_occ_weight(w)) continue;
+                    const TK* hp = &Hpsi_t[ib_local * nbs_local];
+                    TK* dst = &acc_k[ib_local * nbs_local];
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        dst[mu] += TK(w) * hp[mu];
+                }
+            }
+        }
+    }
+#else
+    (void)occ_flat; (void)wfc_eval; (void)compute_orb_grad;
+#endif
+}
 
 template <typename TK, typename TR>
 double EnergyGradient<TK, TR>::s_inner_product(
@@ -1304,8 +1452,12 @@ double EnergyGradient<TK, TR>::compute(
     }
 
     // 3. Build exchange from modified DM (RDMFT's private EXX)
+    const bool is_geo = (xc_func_.type() == XCFunctionalType::GEO);
+    std::vector<std::vector<double>> geo_vx_E_acc;
+    std::vector<std::vector<double>> geo_vx_G_acc;
+    std::vector<std::vector<TK>> geo_Hpsi_x_acc;
 #ifdef __EXX
-    if (exx_enabled_)
+    if (exx_enabled_ && !is_geo)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1343,6 +1495,13 @@ double EnergyGradient<TK, TR>::compute(
 
         }
     
+    }
+    else if (exx_enabled_ && is_geo)
+    {
+        // GEO: assemble per-k accumulators from the three Power-like terms.
+        compute_geo_exx_contributions(occ_flat, wfc_eval,
+                                       geo_vx_E_acc, geo_vx_G_acc, geo_Hpsi_x_acc,
+                                       /*compute_orb_grad=*/true);
     }
 #endif
 
@@ -1409,7 +1568,7 @@ double EnergyGradient<TK, TR>::compute(
         std::fill(Hpsi_x.begin(), Hpsi_x.end(), TK(0));
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_)
+        if (exx_enabled_ && !is_geo)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1424,6 +1583,13 @@ double EnergyGradient<TK, TR>::compute(
             }
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x.data());
             compute_diagonal(psi_k, Hpsi_x.data(), vx_diag.data(), ik);
+        }
+        else if (exx_enabled_ && is_geo)
+        {
+            if (!geo_Hpsi_x_acc.empty())
+            {
+                std::copy(geo_Hpsi_x_acc[ik].begin(), geo_Hpsi_x_acc[ik].end(), Hpsi_x.begin());
+            }
         }
 #endif
 
@@ -1453,7 +1619,17 @@ double EnergyGradient<TK, TR>::compute(
                 E_one_ += wk * n * h_one_diag[ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
             }
-            if (!rdmft_skip_occ_weight(gn))
+            if (is_geo)
+            {
+                // GEO: accumulator already encodes Σ_t c_t · n^{α_t} · vx_diag^t, so
+                // E_xc^t pieces sum directly here. The 0.5 prefactor is the same as
+                // the separable case (it comes from the −1/2 in E_xc = −1/2 Σ f K).
+                if (ik < static_cast<int>(geo_vx_E_acc.size()))
+                {
+                    E_xc_ += ex_scale * wk * geo_vx_E_acc[ik][ib] * 0.5;
+                }
+            }
+            else if (!rdmft_skip_occ_weight(gn))
             {
                 E_xc_ += ex_scale * wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
             }
@@ -1491,8 +1667,18 @@ double EnergyGradient<TK, TR>::compute(
             {
                 d_exx_dn = (rank_bbc3[ib] < n_strong_bbc3) ? xc_func_.dg(n) : 1.0;
             }
-            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib])
-                                          + ex_scale * wk * d_exx_dn * vx_diag[ib];
+            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib]);
+            if (is_geo)
+            {
+                if (ik < static_cast<int>(geo_vx_G_acc.size()))
+                {
+                    grad_occ[ik * nbands_ + ib] += ex_scale * wk * geo_vx_G_acc[ik][ib];
+                }
+            }
+            else
+            {
+                grad_occ[ik * nbands_ + ib] += ex_scale * wk * d_exx_dn * vx_diag[ib];
+            }
             if (xc_func_.type() == XCFunctionalType::GU)
             {
                 const double gn = xc_func_.g(n);
@@ -1522,7 +1708,11 @@ double EnergyGradient<TK, TR>::compute(
             const double n = occ_flat[ik * nbands_ + ib_global];
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
-            const bool use_exx = !rdmft_skip_occ_weight(gn);
+            // For GEO, Hpsi_x already contains Σ_t c_t · n^{α_t} · H_exx^t · φ, so the
+            // exchange contribution is meaningful as long as any of the GEO weights is
+            // non-trivial (which is true unless n is at the regularisation cutoff).
+            const bool use_exx = is_geo ? !rdmft_skip_occ_weight(n)
+                                        : !rdmft_skip_occ_weight(gn);
             const bool use_xc_dft = rdmft_hybrid_dft_xc_active() && !rdmft_skip_occ_weight(n);
             if (!use_one_hart && !use_exx && !use_xc_dft)
             {
@@ -1548,7 +1738,14 @@ double EnergyGradient<TK, TR>::compute(
                 }
                 if (use_exx)
                 {
-                    acc += TK(ex_scale * gn) * hx_ptr[mu];
+                    if (is_geo)
+                    {
+                        acc += TK(ex_scale) * hx_ptr[mu];
+                    }
+                    else
+                    {
+                        acc += TK(ex_scale * gn) * hx_ptr[mu];
+                    }
                 }
                 grad_ptr[mu] = wk * acc;
             }
@@ -1641,8 +1838,12 @@ double EnergyGradient<TK, TR>::compute_energy(
     // on occupations (and on orbitals, but those are fixed for compute_energy
     // use cases). Without this, line-search / finite-difference calls would
     // use a stale H_exx from the last compute() call.
+    const bool is_geo_ce = (xc_func_.type() == XCFunctionalType::GEO);
+    std::vector<std::vector<double>> geo_vx_E_acc_ce;
+    std::vector<std::vector<double>> geo_vx_G_acc_ce;
+    std::vector<std::vector<TK>> geo_Hpsi_x_acc_ce;
 #ifdef __EXX
-    if (exx_enabled_)
+    if (exx_enabled_ && !is_geo_ce)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1679,6 +1880,12 @@ double EnergyGradient<TK, TR>::compute_energy(
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
         }
+    }
+    else if (exx_enabled_ && is_geo_ce)
+    {
+        compute_geo_exx_contributions(occ_flat, wfc_eval,
+                                       geo_vx_E_acc_ce, geo_vx_G_acc_ce, geo_Hpsi_x_acc_ce,
+                                       /*compute_orb_grad=*/false);
     }
 #endif
 
@@ -1739,7 +1946,7 @@ double EnergyGradient<TK, TR>::compute_energy(
         // Exchange diag (RDMFT's private EXX)
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_)
+        if (exx_enabled_ && !is_geo_ce)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1768,7 +1975,14 @@ double EnergyGradient<TK, TR>::compute_energy(
                 E_one_ += wk * n * cached_h_one_diag_[ik][ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5;
             }
-            if (!rdmft_skip_occ_weight(gn))
+            if (is_geo_ce)
+            {
+                if (ik < static_cast<int>(geo_vx_E_acc_ce.size()))
+                {
+                    E_xc_ += ex_scale_ce * wk * geo_vx_E_acc_ce[ik][ib] * 0.5;
+                }
+            }
+            else if (!rdmft_skip_occ_weight(gn))
             {
                 E_xc_ += ex_scale_ce * wk * gn * vx_diag[ib] * 0.5;
             }
@@ -1833,7 +2047,13 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
     }
 
     Uk_.resize(nk_);
-    Uk_inv_.resize(nk_);
+    // NOTE: Uk_inv_ is intentionally NOT allocated.  All transforms that
+    // previously used U^{-1} (wfc_X_to_C, grad_C_to_X) now use the upper
+    // triangular Cholesky factor Uk_ + a triangular solve (pdtrsm_) instead
+    // of an explicit inverse.  Halving the per-k Cholesky storage matters on
+    // memory-tight runs (large LCAO bases × many k-points), e.g. magnetic
+    // NiO with 16 MPI ranks where the previous code path could crash with
+    // std::bad_alloc inside RDMFT setup.
 
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
@@ -1882,33 +2102,6 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
                                          + std::to_string(ik) + " info=" + std::to_string(info));
             }
         }
-
-        // Compute U^{-1} by inverting the upper triangular factor
-        Uk_inv_[ik] = Uk_[ik];
-        {
-            int info = 0;
-            int one_int = 1;
-            char uplo = 'U';
-            char diag = 'N';
-            if (std::is_same<TK, double>::value)
-            {
-                pdtrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
-                    reinterpret_cast<double*>(Uk_inv_[ik].data()),
-                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
-            }
-            else
-            {
-                pztrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
-                    reinterpret_cast<std::complex<double>*>(Uk_inv_[ik].data()),
-                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
-            }
-            if (info != 0)
-            {
-                ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-                throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
-                                         + std::to_string(ik) + " info=" + std::to_string(info));
-            }
-        }
     }
 #else
     // Non-MPI: nbs_local == nbasis
@@ -1933,16 +2126,6 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         {
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
             throw std::runtime_error("RDMFT X-space setup failed: Cholesky factorisation of S_k failed at ik="
-                                     + std::to_string(ik) + " info=" + std::to_string(info));
-        }
-
-        // Compute U^{-1}
-        Uk_inv_[ik] = Uk_[ik];
-        info = detail::trtri_upper(Uk_inv_[ik].data(), nbasis);
-        if (info != 0)
-        {
-            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
-            throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
                                      + std::to_string(ik) + " info=" + std::to_string(info));
         }
     }

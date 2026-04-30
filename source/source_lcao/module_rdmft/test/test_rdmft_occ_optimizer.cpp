@@ -201,16 +201,52 @@ struct PGRunner
                 alpha *= config.line_search_rho;
             }
 
-            if (success)
+            // Mirror the solver's two-stage line-search SD fallback:
+            // (1) optimizer-direction Armijo (above);
+            // (2) SD-direction Armijo without resetting the optimizer;
+            // (3) zero step if both fail.
+            bool sd_success = false;
+            if (!success)
+            {
+                std::vector<double> dir_sd(prob.nb);
+                for (int i = 0; i < prob.nb; ++i) dir_sd[i] = -grad[i];
+                double alpha_sd = config.line_search_alpha_init;
+                std::vector<double> occ_trial_sd;
+                for (int ls = 0; ls < config.line_search_max_iter; ++ls)
+                {
+                    occ_trial_sd = occ_old;
+                    for (int i = 0; i < prob.nb; ++i)
+                        occ_trial_sd[i] += alpha_sd * dir_sd[i];
+                    constraint.project(occ_trial_sd);
+                    if (std::abs(constraint.constraint_violation(occ_trial_sd)) > proj_tol)
+                    {
+                        alpha_sd *= config.line_search_rho;
+                        continue;
+                    }
+                    double dd_proj_sd = 0.0;
+                    for (int i = 0; i < prob.nb; ++i)
+                        dd_proj_sd += grad[i] * (occ_trial_sd[i] - occ_old[i]);
+                    if (dd_proj_sd >= 0.0) { alpha_sd *= config.line_search_rho; continue; }
+                    double E_trial_sd = prob.energy(occ_trial_sd);
+                    if (E_trial_sd <= E + config.line_search_c1 * dd_proj_sd)
+                    {
+                        sd_success = true;
+                        occ_trial = occ_trial_sd;
+                        break;
+                    }
+                    alpha_sd *= config.line_search_rho;
+                }
+            }
+
+            if (success || sd_success)
             {
                 occ = occ_trial;
             }
             else
             {
-                // Mirror the solver: reject unchecked fallback steps so the
-                // objective cannot increase because Armijo failed.
+                // Both line searches failed: zero step (don't move).
+                // Curvature history preserved, no opt.init() call.
                 occ = occ_old;
-                opt.init(prob.nb);
             }
 
             // Update optimizer history.
@@ -319,19 +355,54 @@ struct ASRunner
                 alpha *= config.line_search_rho;
             }
 
-            if (success)
+            // Mirror the solver's AS two-stage line-search SD fallback:
+            // (1) optimizer-direction Armijo (above);
+            // (2) SD-direction Armijo on grad_mod without resetting state;
+            // (3) zero step if both fail.
+            bool sd_success = false;
+            if (!success)
+            {
+                std::vector<double> dir_sd(prob.nb);
+                for (int i = 0; i < prob.nb; ++i) dir_sd[i] = -grad_mod[i];
+                for (int idx = 0; idx < prob.nb; ++idx)
+                    if (!as_info.is_free[idx]) dir_sd[idx] = 0.0;
+                double alpha_sd = config.line_search_alpha_init;
+                std::vector<double> occ_trial_sd;
+                for (int ls = 0; ls < config.line_search_max_iter; ++ls)
+                {
+                    occ_trial_sd = occ_old;
+                    for (int i = 0; i < prob.nb; ++i)
+                        occ_trial_sd[i] += alpha_sd * dir_sd[i];
+                    for (auto& n : occ_trial_sd) n = std::max(0.0, std::min(1.0, n));
+                    constraint.project(occ_trial_sd);
+                    if (std::abs(constraint.constraint_violation(occ_trial_sd)) > proj_tol)
+                    {
+                        alpha_sd *= config.line_search_rho;
+                        continue;
+                    }
+                    double dd_proj_sd = 0.0;
+                    for (int i = 0; i < prob.nb; ++i)
+                        dd_proj_sd += grad_mod[i] * (occ_trial_sd[i] - occ_old[i]);
+                    if (dd_proj_sd >= 0.0) { alpha_sd *= config.line_search_rho; continue; }
+                    double E_trial_sd = prob.energy(occ_trial_sd);
+                    if (E_trial_sd <= E + config.line_search_c1 * dd_proj_sd)
+                    {
+                        sd_success = true;
+                        occ_trial = occ_trial_sd;
+                        break;
+                    }
+                    alpha_sd *= config.line_search_rho;
+                }
+            }
+
+            if (success || sd_success)
             {
                 occ = occ_trial;
             }
             else
             {
+                // Both line searches failed: zero step. Preserve optimizer state.
                 occ = occ_old;
-                for (int i = 0; i < prob.nb; ++i)
-                    occ[i] -= config.line_search_alpha_init * grad_mod[i];
-                for (auto& n : occ) n = std::max(0.0, std::min(1.0, n));
-                constraint.project(occ);
-                opt.init(prob.nb);
-                prev_n_active = -1;
             }
 
             // Update optimizer history.

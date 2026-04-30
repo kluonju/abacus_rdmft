@@ -101,10 +101,31 @@ class EnergyGradient
     void build_charge(const std::vector<double>& occ_flat,
                       const psi::Psi<TK>& wfc);
 
-    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|
+    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|.
+    /// When `alpha_override > 0`, use n^alpha_override instead of the functional's g(n).
+    /// This is needed by non-separable functionals (e.g. GEO) whose energy is the sum of
+    /// several separable Power-like terms: each call evaluates one term.
     void build_DM_xc(const std::vector<double>& occ_flat,
                      const psi::Psi<TK>& wfc,
-                     std::vector<std::vector<TK>>& DM_XC);
+                     std::vector<std::vector<TK>>& DM_XC,
+                     double alpha_override = 0.0);
+
+    /// GEO-only: evaluate the three separable Power-like exchange contributions and
+    /// fill per-k accumulators usable in the main energy / gradient assembly:
+    ///
+    ///   vx_diag_E_acc[ik][ib]  = Σ_t c_t · n_{ik,ib}^{α_t} · ⟨φ| H_exx[γ^t] |φ⟩
+    ///   vx_diag_G_acc[ik][ib]  = Σ_t c_t · α_t n_{ik,ib}^{α_t-1} · ⟨φ| H_exx[γ^t] |φ⟩
+    ///   Hpsi_x_acc[ik](ib,μ)   = Σ_t c_t · n_{ik,ib}^{α_t} · (H_exx[γ^t] · φ)_μ
+    ///
+    /// where (c_t, α_t) ∈ {(1/4, 1), (1/4, 1/2), (1/2, 3/4)} is the GEO decomposition
+    /// of f^GEO(n_p, n_q) = [n_p n_q + (n_p n_q)^{1/2} + 2(n_p n_q)^{3/4}] / 4.
+    /// `compute_orb_grad` controls whether `Hpsi_x_acc` is filled (skip for energy-only).
+    void compute_geo_exx_contributions(const std::vector<double>& occ_flat,
+                                        const psi::Psi<TK>& wfc,
+                                        std::vector<std::vector<double>>& vx_diag_E_acc,
+                                        std::vector<std::vector<double>>& vx_diag_G_acc,
+                                        std::vector<std::vector<TK>>& Hpsi_x_acc,
+                                        bool compute_orb_grad);
 
     /// Compute one-body Hamiltonian * wfc and diagonal elements
     void compute_one_body(const psi::Psi<TK>& wfc,
@@ -272,9 +293,11 @@ class EnergyGradient
     /// Stored in column-major format. Only the upper triangle is meaningful;
     /// the lower triangle may contain arbitrary values after the factorisation.
     /// Size is nbasis_local * nbasis_local (non-MPI) or ParaV_->nloc (MPI).
+    /// All X-space transforms that conceptually need U_k^{-1} (wfc_X_to_C,
+    /// grad_C_to_X) implement that as a triangular solve against U_k via
+    /// pdtrsm_, so we never store the explicit inverse — this halves the
+    /// per-k Cholesky memory footprint.
     std::vector<std::vector<TK>> Uk_;
-    /// U_k^{-1} for each k-point, same upper-triangular column-major layout.
-    std::vector<std::vector<TK>> Uk_inv_;
 };
 
 } // namespace rdmft

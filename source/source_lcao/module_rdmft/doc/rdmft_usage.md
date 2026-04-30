@@ -181,9 +181,23 @@ when the inner flags alone indicate convergence.
 **When to use PG.**  Useful for experiments or when you want updates purely in
 \(n\)-space without ALM penalties.  For difficult functionals (e.g. Müller at
 stretched geometries), **ALM (`augmented_lagrangian`) is usually more robust**.
-If the log shows repeated `PG line search failed` / `applied SD fallback`, try
-smaller `rdmft_alpha_step`, looser `rdmft_line_search_c1`, more inner iterations
-`rdmft_occ_maxiter`, or switch constraint method.
+If the log shows repeated `PG line search failed` / `accepted SD-direction
+Armijo step` or `accepting zero step`, try smaller `rdmft_alpha_step`, looser
+`rdmft_line_search_c1`, more inner iterations `rdmft_occ_maxiter`, or switch
+constraint method.
+
+**Line-search SD fallback.**  When the optimizer-direction Armijo line search
+fails (no Armijo-feasible α found within `rdmft_line_search_max_iter`), the
+inner loop now retries the same backtracking schedule with the steepest-descent
+direction \(d = -\nabla_n E\) (PG) or \(d = -P_{\mathrm{free}} \nabla_n E\)
+(AS).  If that succeeds, the step is accepted and the CG / L-BFGS curvature
+state is **preserved** (only the QHist seed for next iter is updated).  If both
+line searches fail, a **zero step** is accepted (the optimizer is not reset);
+this is much safer than the previous fallback that applied a single
+\(n - α_\text{init} \nabla E\) update followed by a global feasibility
+projection, which could collapse occupations to a uniform pattern when
+`rdmft_alpha_step` was much larger than the local descent step (typical at
+\(N_e\) shifts produced by `rdmft_nelec_delta`).
 
 ### Optimiser selection
 
@@ -435,16 +449,28 @@ fallback (clip + dual rescaling); see
 
 ## Troubleshooting
 
-### PG occupation line search always fails or resets the optimiser
+### PG occupation line search always fails
 
-The running log may show `occ line search (PG Armijo): ... fail` and
-`applied SD fallback and reset optimizer` when no trial satisfies projected
-Armijo within the backtracking cap.  Typical mitigations: smaller
-`rdmft_alpha_step`, slightly **larger** `rdmft_line_search_c1` (e.g. `1e-3`–`1e-2`),
-more `rdmft_occ_maxiter`, or `rdmft_occ_optimizer sd`.  For stubborn cases switch
-to `rdmft_constraint augmented_lagrangian`.  If failures persist with plausible
-inputs, run `rdmft_grad_check 1` to verify \(\partial E/\partial n\) against
-finite differences.
+The running log may show `occ line search (PG Armijo): ... fail` followed by
+`occ line search (PG SD-direction Armijo): ... ok|fail`.  Behaviour:
+
+- *optimizer Armijo fails, SD Armijo ok*: the SD-direction step is accepted and
+  the CG / L-BFGS history is preserved.  This is usually transient and the next
+  iteration recovers normal behaviour.
+- *both line searches fail*: a zero step is accepted (the optimiser is not
+  reset).  Repeated occurrences indicate either the gradient is too small to
+  trigger Armijo descent at the available step sizes, or `rdmft_alpha_step` is
+  much larger than the natural descent step.  Mitigations: smaller
+  `rdmft_alpha_step`, slightly **larger** `rdmft_line_search_c1`
+  (e.g. `1e-3`–`1e-2`), more `rdmft_occ_maxiter`, or `rdmft_occ_optimizer sd`.
+  For stubborn cases switch to `rdmft_constraint augmented_lagrangian`.  If
+  failures persist with plausible inputs, run `rdmft_grad_check 1` to verify
+  \(\partial E/\partial n\) against finite differences.
+
+The pre-existing `applied SD fallback and reset optimizer` recovery (single
+unsafe SD step + projection that could collapse occupations to a uniform
+pattern when `rdmft_alpha_step` was too large for the local descent scale —
+notably with `rdmft_nelec_delta != 0`) has been removed.
 
 ### ABACUS runs for a long time with no RDMFT output
 
