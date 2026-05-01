@@ -940,7 +940,10 @@ void ReadInput::item_others()
         item.type = "String";
         item.description = "Gradient-based optimiser for the occupation sub-problem. "
                            "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
-                           "Augmented-Lagrangian inner line search: Strong Wolfe if lbfgs, Armijo if sd/cg/adam.";
+                           "Used by augmented_lagrangian only (Strong Wolfe if lbfgs, Armijo otherwise). "
+                           "Ignored by projected_gradient / active_set: these route to the textbook Spectral "
+                           "Projected Gradient method, which uses a Barzilai-Borwein spectral step and a "
+                           "non-monotone Armijo line search and does not consult this keyword.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1175,12 +1178,10 @@ void ReadInput::item_others()
         item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Projected-gradient occupation inner loop converges when ||g_proj||_inf = ||n - P(n - "
-                           "τ∇E)||_inf/τ is below this. For PG, τ is tied to the occupation line search: the "
-                           "initial trial step α₀ (rdmft_occ_ls_init_step / BB / quad) at the pre-step map, and "
-                           "the accepted Armijo step after a successful line search (or rdmft_alpha_step after "
-                           "SD fallback) at the post-step map—see logs. Also used for ALM first-inner ||dL/dp||, "
-                           "active set, joint, and other gradient checks as in the solver.";
+        item.description = "Projected-gradient (SPG) occupation inner loop converges when "
+                           "||r||_inf = ||n - P(n - ∇E)||_inf is below this (Bertsekas projected-gradient "
+                           "residual at unit step, the textbook SPG stationarity measure). Also used for ALM "
+                           "first-inner ||dL/dp||, joint, and other gradient checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1251,8 +1252,9 @@ void ReadInput::item_others()
         item.type = "String";
         item.description = "Method to enforce the electron-number constraint sum_k w_k sum_i n_ik = N_e. "
                            "augmented_lagrangian: ALM on the occupation parameters (rdmft_occ_param cosine_sq or logistic) with Armijo line search. "
-                           "projected_gradient: occupation-space projected gradient with Barzilai-Borwein step lengths. "
-                           "active_set: legacy reduced-space method that tracks pinned occupations.";
+                           "projected_gradient: Spectral Projected Gradient (Birgin-Martinez-Raydan, SIOPT 2000) "
+                           "in occupation space with non-monotone Armijo line search (Grippo-Lampariello-Lucidi). "
+                           "active_set: alias for projected_gradient in the current implementation -- kept for backward INPUT compatibility.";
         item.default_value = "augmented_lagrangian";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1334,39 +1336,14 @@ void ReadInput::item_others()
         item.annotation = "Initial line-search step length for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. For "
-                           "projected_gradient occupations it also supplies the SD-fallback step and the fallback "
-                           "scale in the Bertsekas map when the line-search initial α₀ is invalid; otherwise PG "
-                           "Bertsekas τ follows the occupation line search (see rdmft_occ_grad_tol).";
+        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. Used by "
+                           "ALM occupation Armijo and the orbital Armijo line search; the SPG (projected_gradient / "
+                           "active_set) occupation block manages its own spectral (Barzilai-Borwein) step length and "
+                           "does not consult this value.";
         item.default_value = "1.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_alpha_step);
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_occ_ls_init_step");
-        item.annotation = "Occupation Armijo initial-step policy: fixed, bb, quad";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "String";
-        item.description = "Initial trial alpha for occupation line search: "
-                           "fixed (always 1.0), bb (Barzilai-Borwein estimate), "
-                           "quad (quadratic estimate from previous accepted step).";
-        item.default_value = "bb";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_string(input.rdmft_occ_ls_init_step);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                const std::string& s = para.input.rdmft_occ_ls_init_step;
-                if (s != "fixed" && s != "bb" && s != "quad")
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_occ_ls_init_step must be one of: fixed, bb, quad");
-                }
-            }
-        };
         this->add_item(item);
     }
     {
