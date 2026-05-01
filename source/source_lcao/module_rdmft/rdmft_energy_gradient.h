@@ -103,14 +103,14 @@ class EnergyGradient
 
     /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|.
     /// When `alpha_override > 0`, use n^alpha_override instead of the functional's g(n).
-    /// This is needed by non-separable functionals (e.g. GEO) whose energy is the sum of
+    /// This is needed by non-separable functionals (e.g. GEO / optGM) whose energy is the sum of
     /// several separable Power-like terms: each call evaluates one term.
     void build_DM_xc(const std::vector<double>& occ_flat,
                      const psi::Psi<TK>& wfc,
                      std::vector<std::vector<TK>>& DM_XC,
                      double alpha_override = 0.0);
 
-    /// GEO-only: evaluate the three separable Power-like exchange contributions and
+    /// GEO / optGM: evaluate the three separable Power-like exchange contributions and
     /// fill per-k accumulators usable in the main energy / gradient assembly:
     ///
     ///   vx_diag_E_acc[ik][ib]  = Σ_t c_t · n_{ik,ib}^{α_t} · ⟨φ| H_exx[γ^t] |φ⟩

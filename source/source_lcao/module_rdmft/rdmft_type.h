@@ -24,7 +24,10 @@ enum class XCFunctionalType
     /// Decomposes as a sum of three separable terms with coefficients (1/4, 1/4, 1/2)
     /// and powers (1, 1/2, 3/4).  Non-separable in the single-g(n) sense; evaluated as
     /// a sum of three Power-like exchange contributions.
-    GEO
+    GEO,
+    /// optGM: same exponent mixture as GEO (1, 1/2, 3/4) with calibrated weights
+    /// (0.00675, 0.64213, 0.35112) instead of GEO's (1/4, 1/4, 1/2).
+    OptGM
 };
 
 enum class OccParamType
@@ -110,6 +113,7 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "gu") return XCFunctionalType::GU;
     if (name == "bbc3") return XCFunctionalType::BBC3;
     if (name == "geo") return XCFunctionalType::GEO;
+    if (name == "optgm") return XCFunctionalType::OptGM;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -123,6 +127,7 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::GU: return "gu";
         case XCFunctionalType::BBC3: return "bbc3";
         case XCFunctionalType::GEO: return "geo";
+        case XCFunctionalType::OptGM: return "optgm";
     }
     return "unknown";
 }

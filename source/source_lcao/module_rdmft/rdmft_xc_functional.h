@@ -48,6 +48,7 @@ class XCFunctional
         // for callers that probe a single coupling (e.g. is_separable() == false handlers
         // ignore them).
         else if (type == XCFunctionalType::GEO) alpha_ = 0.75;
+        else if (type == XCFunctionalType::OptGM) alpha_ = 0.75;
     }
 
     XCFunctionalType type() const { return type_; }
@@ -87,7 +88,7 @@ class XCFunctional
     bool is_separable() const
     {
         return type_ != XCFunctionalType::GU && type_ != XCFunctionalType::BBC3
-               && type_ != XCFunctionalType::GEO;
+               && type_ != XCFunctionalType::GEO && type_ != XCFunctionalType::OptGM;
     }
 
     /// GEO functional decomposition.
@@ -104,10 +105,29 @@ class XCFunctional
         switch (idx)
         {
             case 0: return 0.25; // n^1
-            case 1: return 0.50; // n^{1/2}
-            case 2: return 0.25; // n^{3/4}
+            case 1: return 0.25; // n^{1/2}
+            case 2: return 0.50; // n^{3/4}
             default: return 0.0;
         }
+    }
+    /// optGM mixture weights for the same (alpha_0, alpha_1, alpha_2) as GEO.
+    static double optgm_coef(int idx)
+    {
+        switch (idx)
+        {
+            case 0: return 0.00675; // n^1
+            case 1: return 0.64213; // n^{1/2}
+            case 2: return 0.35112; // n^{3/4}
+            default: return 0.0;
+        }
+    }
+    /// Coefficient c_t for GEO or optGM mixture term `idx`.
+    double mixture_coef(int idx) const
+    {
+        if (type_ == XCFunctionalType::GEO) return geo_coef(idx);
+        if (type_ == XCFunctionalType::OptGM) return optgm_coef(idx);
+        assert(false && "mixture_coef only for GEO / optGM");
+        return 0.0;
     }
     static double geo_alpha(int idx)
     {
@@ -158,12 +178,12 @@ class XCFunctional
             };
             return sqrt_reg(nic) * sqrt_reg(njc);
         }
-        if (type_ == XCFunctionalType::GEO)
+        if (type_ == XCFunctionalType::GEO || type_ == XCFunctionalType::OptGM)
         {
             double sum = 0.0;
             for (int t = 0; t < num_geo_terms(); ++t)
             {
-                sum += geo_coef(t) * pow_reg(ni, geo_alpha(t)) * pow_reg(nj, geo_alpha(t));
+                sum += mixture_coef(t) * pow_reg(ni, geo_alpha(t)) * pow_reg(nj, geo_alpha(t));
             }
             return sum;
         }
@@ -182,13 +202,13 @@ class XCFunctional
             const double nj_safe = std::max(njc, reg_eps_);
             return 0.5 / std::sqrt(ni_safe) * std::sqrt(nj_safe);
         }
-        if (type_ == XCFunctionalType::GEO)
+        if (type_ == XCFunctionalType::GEO || type_ == XCFunctionalType::OptGM)
         {
             double sum = 0.0;
             for (int t = 0; t < num_geo_terms(); ++t)
             {
                 const double a = geo_alpha(t);
-                sum += geo_coef(t) * dpow_reg(ni, a) * pow_reg(nj, a);
+                sum += mixture_coef(t) * dpow_reg(ni, a) * pow_reg(nj, a);
             }
             return sum;
         }

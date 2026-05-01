@@ -906,7 +906,7 @@ void EnergyGradient<TK, TR>::compute_geo_exx_contributions(
     std::vector<std::vector<TK>>& Hpsi_x_acc,
     bool compute_orb_grad)
 {
-    assert(xc_func_.type() == XCFunctionalType::GEO);
+    assert(xc_func_.type() == XCFunctionalType::GEO || xc_func_.type() == XCFunctionalType::OptGM);
     vx_diag_E_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
     vx_diag_G_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
     const int nb_local = wfc_eval.get_nbands();
@@ -931,7 +931,7 @@ void EnergyGradient<TK, TR>::compute_geo_exx_contributions(
 
     for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
     {
-        const double c_t = XCFunctional::geo_coef(t);
+        const double c_t = xc_func_.mixture_coef(t);
         const double a_t = XCFunctional::geo_alpha(t);
         if (c_t == 0.0) continue;
 
@@ -1452,12 +1452,13 @@ double EnergyGradient<TK, TR>::compute(
     }
 
     // 3. Build exchange from modified DM (RDMFT's private EXX)
-    const bool is_geo = (xc_func_.type() == XCFunctionalType::GEO);
+    const bool is_geo_like = (xc_func_.type() == XCFunctionalType::GEO
+                              || xc_func_.type() == XCFunctionalType::OptGM);
     std::vector<std::vector<double>> geo_vx_E_acc;
     std::vector<std::vector<double>> geo_vx_G_acc;
     std::vector<std::vector<TK>> geo_Hpsi_x_acc;
 #ifdef __EXX
-    if (exx_enabled_ && !is_geo)
+    if (exx_enabled_ && !is_geo_like)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1496,9 +1497,9 @@ double EnergyGradient<TK, TR>::compute(
         }
     
     }
-    else if (exx_enabled_ && is_geo)
+    else if (exx_enabled_ && is_geo_like)
     {
-        // GEO: assemble per-k accumulators from the three Power-like terms.
+        // GEO / optGM: assemble per-k accumulators from the three Power-like terms.
         compute_geo_exx_contributions(occ_flat, wfc_eval,
                                        geo_vx_E_acc, geo_vx_G_acc, geo_Hpsi_x_acc,
                                        /*compute_orb_grad=*/true);
@@ -1568,7 +1569,7 @@ double EnergyGradient<TK, TR>::compute(
         std::fill(Hpsi_x.begin(), Hpsi_x.end(), TK(0));
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && !is_geo)
+        if (exx_enabled_ && !is_geo_like)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1584,7 +1585,7 @@ double EnergyGradient<TK, TR>::compute(
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x.data());
             compute_diagonal(psi_k, Hpsi_x.data(), vx_diag.data(), ik);
         }
-        else if (exx_enabled_ && is_geo)
+        else if (exx_enabled_ && is_geo_like)
         {
             if (!geo_Hpsi_x_acc.empty())
             {
@@ -1619,9 +1620,9 @@ double EnergyGradient<TK, TR>::compute(
                 E_one_ += wk * n * h_one_diag[ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
             }
-            if (is_geo)
+            if (is_geo_like)
             {
-                // GEO: accumulator already encodes Σ_t c_t · n^{α_t} · vx_diag^t, so
+                // GEO / optGM: accumulator already encodes Σ_t c_t · n^{α_t} · vx_diag^t, so
                 // E_xc^t pieces sum directly here. The 0.5 prefactor is the same as
                 // the separable case (it comes from the −1/2 in E_xc = −1/2 Σ f K).
                 if (ik < static_cast<int>(geo_vx_E_acc.size()))
@@ -1668,7 +1669,7 @@ double EnergyGradient<TK, TR>::compute(
                 d_exx_dn = (rank_bbc3[ib] < n_strong_bbc3) ? xc_func_.dg(n) : 1.0;
             }
             grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib]);
-            if (is_geo)
+            if (is_geo_like)
             {
                 if (ik < static_cast<int>(geo_vx_G_acc.size()))
                 {
@@ -1708,10 +1709,10 @@ double EnergyGradient<TK, TR>::compute(
             const double n = occ_flat[ik * nbands_ + ib_global];
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
-            // For GEO, Hpsi_x already contains Σ_t c_t · n^{α_t} · H_exx^t · φ, so the
-            // exchange contribution is meaningful as long as any of the GEO weights is
+            // For GEO / optGM, Hpsi_x already contains Σ_t c_t · n^{α_t} · H_exx^t · φ, so the
+            // exchange contribution is meaningful as long as any mixture weight is
             // non-trivial (which is true unless n is at the regularisation cutoff).
-            const bool use_exx = is_geo ? !rdmft_skip_occ_weight(n)
+            const bool use_exx = is_geo_like ? !rdmft_skip_occ_weight(n)
                                         : !rdmft_skip_occ_weight(gn);
             const bool use_xc_dft = rdmft_hybrid_dft_xc_active() && !rdmft_skip_occ_weight(n);
             if (!use_one_hart && !use_exx && !use_xc_dft)
@@ -1738,7 +1739,7 @@ double EnergyGradient<TK, TR>::compute(
                 }
                 if (use_exx)
                 {
-                    if (is_geo)
+                    if (is_geo_like)
                     {
                         acc += TK(ex_scale) * hx_ptr[mu];
                     }
@@ -1838,12 +1839,13 @@ double EnergyGradient<TK, TR>::compute_energy(
     // on occupations (and on orbitals, but those are fixed for compute_energy
     // use cases). Without this, line-search / finite-difference calls would
     // use a stale H_exx from the last compute() call.
-    const bool is_geo_ce = (xc_func_.type() == XCFunctionalType::GEO);
+    const bool is_geo_like_ce = (xc_func_.type() == XCFunctionalType::GEO
+                                 || xc_func_.type() == XCFunctionalType::OptGM);
     std::vector<std::vector<double>> geo_vx_E_acc_ce;
     std::vector<std::vector<double>> geo_vx_G_acc_ce;
     std::vector<std::vector<TK>> geo_Hpsi_x_acc_ce;
 #ifdef __EXX
-    if (exx_enabled_ && !is_geo_ce)
+    if (exx_enabled_ && !is_geo_like_ce)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1881,7 +1883,7 @@ double EnergyGradient<TK, TR>::compute_energy(
 
         }
     }
-    else if (exx_enabled_ && is_geo_ce)
+    else if (exx_enabled_ && is_geo_like_ce)
     {
         compute_geo_exx_contributions(occ_flat, wfc_eval,
                                        geo_vx_E_acc_ce, geo_vx_G_acc_ce, geo_Hpsi_x_acc_ce,
@@ -1946,7 +1948,7 @@ double EnergyGradient<TK, TR>::compute_energy(
         // Exchange diag (RDMFT's private EXX)
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && !is_geo_ce)
+        if (exx_enabled_ && !is_geo_like_ce)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1975,7 +1977,7 @@ double EnergyGradient<TK, TR>::compute_energy(
                 E_one_ += wk * n * cached_h_one_diag_[ik][ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5;
             }
-            if (is_geo_ce)
+            if (is_geo_like_ce)
             {
                 if (ik < static_cast<int>(geo_vx_E_acc_ce.size()))
                 {

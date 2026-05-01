@@ -226,6 +226,74 @@ TEST_F(XCFunctionalTest, GEO_pow_reg_bounded_at_zero)
     EXPECT_FALSE(std::isinf(xc.dpow_reg(0.0, 0.75)));
 }
 
+TEST_F(XCFunctionalTest, OptGM_parse_and_string)
+{
+    EXPECT_EQ(parse_xc_type("optgm"), XCFunctionalType::OptGM);
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::OptGM), "optgm");
+}
+
+TEST_F(XCFunctionalTest, OptGM_is_nonseparable)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    EXPECT_FALSE(xc.is_separable());
+}
+
+TEST_F(XCFunctionalTest, OptGM_decomposition_constants)
+{
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(0), 0.00675);
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(1), 0.64213);
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(2), 0.35112);
+    XCFunctional xc_geo(XCFunctionalType::GEO);
+    XCFunctional xc_opt(XCFunctionalType::OptGM);
+    for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
+    {
+        EXPECT_DOUBLE_EQ(xc_geo.mixture_coef(t), XCFunctional::geo_coef(t));
+        EXPECT_DOUBLE_EQ(xc_opt.mixture_coef(t), XCFunctional::optgm_coef(t));
+    }
+    double sum = 0.0;
+    for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
+        sum += XCFunctional::optgm_coef(t);
+    EXPECT_NEAR(sum, 1.0, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, OptGM_full_coupling_formula)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    for (double np : {0.1, 0.3, 0.7})
+    {
+        for (double nq : {0.2, 0.5, 0.9})
+        {
+            const double prod = np * nq;
+            const double expected = 0.00675 * prod + 0.64213 * std::sqrt(prod)
+                                    + 0.35112 * std::pow(prod, 0.75);
+            EXPECT_NEAR(xc.f(np, nq, false), expected, 1e-12)
+                << "n_p=" << np << " n_q=" << nq;
+        }
+    }
+}
+
+TEST_F(XCFunctionalTest, OptGM_boundary_and_symmetry)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    EXPECT_NEAR(xc.f(1.0, 1.0, false), 1.0, 1e-12);
+    EXPECT_NEAR(xc.f(0.4, 0.7, false), xc.f(0.7, 0.4, false), 1e-14);
+}
+
+TEST_F(XCFunctionalTest, OptGM_df_dni_finite_difference)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    const double eps = 1e-7;
+    for (double np : {0.2, 0.5, 0.8})
+    {
+        for (double nq : {0.3, 0.6})
+        {
+            const double analytic = xc.df_dni(np, nq, false);
+            const double numeric = (xc.f(np + eps, nq, false) - xc.f(np - eps, nq, false)) / (2.0 * eps);
+            EXPECT_NEAR(analytic, numeric, 1e-5) << "n_p=" << np << " n_q=" << nq;
+        }
+    }
+}
+
 TEST_F(XCFunctionalTest, gradient_consistency_numerical)
 {
     // Check that dg is consistent with g via finite differences
