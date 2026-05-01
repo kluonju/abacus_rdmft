@@ -2663,6 +2663,43 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
+    // Riemannian Spectral Projected Gradient on the Stiefel manifold
+    // (Iannazzo-Porcelli, IMA J. Numer. Anal. 38 (2018) 495; combination of
+    // Birgin-Martinez-Raydan SPG with Wen-Yin / Absil retraction-based
+    // Riemannian optimisation).  At each inner iteration k:
+    //
+    //   1.  G_k = grad_X E (X-space Euclidean gradient).
+    //       G_R = G_k - X_k sym(X_k^H G_k)              (Riemannian gradient,
+    //                                                    Stiefel canonical metric).
+    //   2.  Spectral (BB1) step length  alpha_k = <S, S>_F / <S, Y>_F
+    //       with  S = X_k - X_{k-1}  and  Y = G_R^k - T_{X_k <- X_{k-1}}(G_R^{k-1}),
+    //       safeguarded into [alpha_min, alpha_max].  The vector transport T
+    //       is the tangent-space projection onto T_{X_k} St (consistent with
+    //       the gradient projection).  At iteration 1 we use the canonical
+    //       initial step alpha_0 = 1 / max(1, ||G_R||_F).
+    //   3.  Search direction
+    //         CG (Polak-Ribiere+):  D = -G_R + beta * T(D_prev),   beta >= 0,
+    //         L-BFGS / Adam:        D from the Euclidean optimiser, projected
+    //                               onto T_{X_k} St,
+    //         SD:                   D = -G_R.
+    //       Descent safeguard:  if <G_R, D>_F >= 0, reset D = -G_R.
+    //   4.  Non-monotone Armijo (Grippo-Lampariello-Lucidi, SINUM 1986) along
+    //       the retracted curve  X(lambda) = R_{X_k}(lambda * D),
+    //       with  R  the Cholesky-QR retraction implemented by retract_orbitals:
+    //         E(X(lambda * alpha_k)) <= f_max + c1 * lambda * alpha_k * <G_R, D>_F,
+    //         f_max = max_{0 <= i <= min(k, M-1)} E(X_{k-i}),    M = 10.
+    //
+    // This replaces the previous bespoke combination of:
+    //   * fixed alpha_init = 1 (or rdmft_alpha_step) with the raw G_R --
+    //     for SD/CG this is huge when the natural step length is O(1/L) for
+    //     the local Lipschitz constant L of the regularised functional.
+    //   * a two-stage "CG-then-SD reset" / "lbfgs reset" line-search retry
+    //     after Armijo failure.
+    // The BB step naturally absorbs the orbital block's local curvature, and
+    // the non-monotone Armijo accommodates the transient gradient growth that
+    // the regularised separable functionals (Mueller / Power / GEO) produce
+    // when occupations move close to the n^alpha cutoff.
+
     OptResult result;
 
     const int nk = wfc.get_nk();
@@ -2677,9 +2714,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
     energy_grad_->invalidate_hone_cache();
 
-    // EuclideanOptimizer for lbfgs / Adam.  SD and CG are handled by the
-    // existing bespoke Riemannian code paths below because they need
-    // manifold-aware vector transport / restart heuristics.
     EuclideanOptimizer eucl_opt(opt_type, config_);
     int flat_size = 0;
     if (use_lbfgs || use_adam)
@@ -2689,61 +2723,92 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         eucl_opt.init(flat_size);
     }
 
-    // Work buffers: snapshot of the current wfc used for line-search rollback,
-    // previous Riemannian gradient and previous search direction (both needed
-    // for conjugate-gradient). prev_grad / prev_dir remain uninitialised when
-    // use_cg is false.
-    psi::Psi<TK> wfc_save(wfc);
-    psi::Psi<TK> prev_grad;
-    psi::Psi<TK> prev_dir;
-    if (use_cg)
-    {
-        prev_grad = wfc;
-        prev_dir = wfc;
-        prev_grad.zero_out();
-        prev_dir.zero_out();
-    }
+    // SPG safeguarding constants.  alpha_min/max bound the BB spectral step
+    // (loose because the orbital sub-problem can be very ill-conditioned).
+    // The non-monotone history length M = 10 matches the value used in the
+    // original SPG paper.  rho re-uses the user's line_search_rho.
+    const double alpha_min = 1e-10;
+    const double alpha_max = 1e10;
+    const int nm_memory = 10;
+    const double rho = (config_.line_search_rho > 0.0 && config_.line_search_rho < 1.0)
+                           ? config_.line_search_rho : 0.5;
+    const double c1 = config_.line_search_c1;
+    std::deque<double> f_history;
 
-    double prev_gnorm2 = 0.0;
+    // Adaptive Stiefel trust radius (Wen-Yin, Math. Prog. 142 (2013) 397).
+    // |dir|_F is rescaled to <= tau_orb * |X|_F before the line search.  The
+    // bound shrinks whenever the actual energy descent significantly exceeds
+    // the linear-model prediction (indicating the trial point is outside the
+    // model's region of validity, e.g. inside a spurious low-energy basin of
+    // a regularised separable functional), and slowly recovers otherwise.
+    double tau_orb = 0.001;
+    const double tau_orb_min = 1e-6;
+    const double tau_orb_max = 0.01;
+    const double tau_orb_shrink = 0.25;
+    const double tau_orb_grow = 1.5;
+    // Suspicious-descent guard: if (E - E_new) > k_susp * |lambda * dd|,
+    // treat the line-search trial as outside the linear model and reject it.
+    // The Armijo model predicts descent of order |lambda * dd|; a much larger
+    // drop indicates the local quadratic model is not valid and the iterate
+    // would walk into a low-energy region the regularised functional carries
+    // outside the physical basin.  k_susp = 2 gives a tight model envelope
+    // (consistent with standard trust-region convergence ratios eta_1 = 0.25
+    // / eta_2 = 0.75 used in Powell-style trust-region methods).
+    const double k_susp = 2.0;
+
+    // Snapshot for line-search rollback and previous (X, G_R) for BB / CG.
+    psi::Psi<TK> wfc_save(wfc);
+    psi::Psi<TK> prev_wfc(wfc);
+    psi::Psi<TK> prev_grad(wfc);
+    psi::Psi<TK> prev_dir(wfc);
+    bool have_prev = false;
+
     double prev_orb_gnorm = 0.0;
     double prev_orb_E = 0.0;
-    // After a line-search failure, CG retries with pure SD and lbfgs/Adam
-    // reset to SD; if Armijo fails again on that recovery inner, stop.
-    bool orb_after_ls_retry = false;
+
+    auto frob2 = [&](const psi::Psi<TK>& A) {
+        double s = 0.0;
+        const int nkA = A.get_nk();
+        const int nbA = A.get_nbands();
+        const int nbsA = A.get_nbasis();
+        for (int ik = 0; ik < nkA; ++ik)
+        {
+            const int nelem = nbA * nbsA;
+            if (nelem == 0) continue;
+            const TK* a = &A(ik, 0, 0);
+            for (int i = 0; i < nelem; ++i) s += std::real(std::conj(a[i]) * a[i]);
+        }
+        Parallel_Reduce::reduce_all(s);
+        return s;
+    };
+
+    auto frob_inner = [&](const psi::Psi<TK>& A, const psi::Psi<TK>& B) {
+        double s = 0.0;
+        const int nkA = A.get_nk();
+        const int nbA = A.get_nbands();
+        const int nbsA = A.get_nbasis();
+        for (int ik = 0; ik < nkA; ++ik)
+        {
+            const int nelem = nbA * nbsA;
+            if (nelem == 0) continue;
+            const TK* a = &A(ik, 0, 0);
+            const TK* b = &B(ik, 0, 0);
+            for (int i = 0; i < nelem; ++i) s += std::real(std::conj(a[i]) * b[i]);
+        }
+        Parallel_Reduce::reduce_all(s);
+        return s;
+    };
 
     for (int inner = 0; inner < config_.orb_maxiter; ++inner)
     {
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;
-        double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
-                                          wfc, grad_occ, grad_wfc);
+        const double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
+                                               wfc, grad_occ, grad_wfc);
 
-        // Project onto the tangent space of the standard Stiefel manifold in
-        // X-space:
-        //     G_R = G - X sym(X^H G)
+        // Riemannian gradient: G_R = G - X sym(X^H G).
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
-
-        // Compute ||G_R||^2 in the appropriate metric (S-weighted or
-        // Euclidean when in X-space) for descent / CG consistency.
-        // Use Euclidean (plain) norm of the projected gradient G_R
-        double gnorm2 = 0.0;
-        {
-            const int nk_local = grad_wfc.get_nk();
-            const int nb_local = grad_wfc.get_nbands();
-            const int nbs_local = grad_wfc.get_nbasis();
-            for (int ik = 0; ik < nk_local; ++ik)
-            {
-                const int nelem = nb_local * nbs_local;
-                if (nelem == 0)
-                {
-                    continue;
-                }
-                const TK* gk = &grad_wfc(ik, 0, 0);
-                for (int i = 0; i < nelem; ++i)
-                    gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
-            }
-            Parallel_Reduce::reduce_all(gnorm2);
-        }
+        const double gnorm2 = frob2(grad_wfc);
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
         const bool orb_e_enabled = (config_.orb_energy_tol > 0.0);
@@ -2751,8 +2816,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                                               ? std::abs(E - prev_orb_E)
                                               : std::numeric_limits<double>::infinity();
 
-        // Log gradient norm with ratio to previous iteration for monitoring
-        // monotonic decrease (expected for steepest descent, approximate for CG).
         {
             std::ostringstream os;
             os << "      orb inner " << inner + 1
@@ -2760,22 +2823,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                << "  gnorm=" << std::scientific << result.grad_norm;
             if (inner > 0)
             {
-                const double dE_orb = E - prev_orb_E;
-                os << "  dE=" << std::scientific << dE_orb;
-
+                os << "  dE=" << std::scientific << (E - prev_orb_E);
                 if (result.grad_norm > prev_orb_gnorm * 1.1)
-                {
                     os << "  [WARNING: gnorm increased]";
-                }
             }
             GlobalV::ofs_running << os.str() << std::endl;
         }
         prev_orb_gnorm = result.grad_norm;
         prev_orb_E = E;
 
-        // Orbital sub-problem: converged when ||G_R|| is small and (if
-        // rdmft_orb_energy_tol > 0) successive inner energies change by less
-        // than that threshold — both must hold when energy tolerance is enabled.
         const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
         const bool energy_conv = orb_e_enabled && (orb_inner_dE_abs < config_.orb_energy_tol);
         const bool inner_energy_ok = !orb_e_enabled || energy_conv;
@@ -2789,258 +2845,267 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             break;
         }
 
+        // ---- Spectral (BB1) step length ----
+        // For the ambient X-space metric <A, B>_F = Re Tr(A^H B), the BB1
+        // estimate of the local Hessian inverse is alpha = <S, S> / <S, Y>
+        // with S = X_k - X_{k-1} and Y = G_R^k - G_R^{k-1} after vector
+        // transport.  Vector transport: project G_R^{k-1} onto T_{X_k} St.
+        double alpha_bb;
+        if (have_prev)
+        {
+            // S = X_k - X_{k-1}
+            psi::Psi<TK> S(wfc);
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        S(ik, ib, mu) = wfc(ik, ib, mu) - prev_wfc(ik, ib, mu);
+            // Y = G_R^k - T(G_R^{k-1}); transport by tangent-space projection.
+            psi::Psi<TK> Y(prev_grad);
+            energy_grad_->project_orbital_gradient(wfc, Y);
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        Y(ik, ib, mu) = grad_wfc(ik, ib, mu) - Y(ik, ib, mu);
+            const double ss = frob2(S);
+            const double sy = frob_inner(S, Y);
+            alpha_bb = (sy > 1e-30 && std::isfinite(ss)) ? ss / sy : 0.0;
+            if (!std::isfinite(alpha_bb) || alpha_bb <= 0.0)
+                alpha_bb = 1.0 / std::max(1.0, result.grad_norm);
+        }
+        else
+        {
+            // Initial step: alpha_0 = 1 / max(1, ||G_R||_F) keeps the first
+            // trial Stiefel perturbation ||alpha_0 * G_R||_F <= 1 (small
+            // relative to ||X||_F = sqrt(N_b * N_k)) regardless of the
+            // gradient magnitude.
+            alpha_bb = 1.0 / std::max(1.0, result.grad_norm);
+        }
+        alpha_bb = std::min(alpha_max, std::max(alpha_min, alpha_bb));
+
         // ---- Build search direction ----
-        //   SD:       d = -G
-        //   CG (FR):  d = -G + beta * T(d_prev),  beta = ||G||^2 / ||G_prev||^2
-        //             Safeguards: beta >= 0 (FR+), restart on first step and
-        //             whenever <G, d> >= 0 (not a descent direction) or the
-        //             inner product <G_prev, G> / ||G_prev||^2 is too large
-        //             (Powell restart).
-        //   lbfgs:    d computed by EuclideanOptimizer on the flattened
-        //             gradient, then projected onto the Stiefel tangent
-        //             space.  The update (s, y) pair is computed from the
-        //             Riemannian gradient before/after the retraction.
-        //   Adam:     same as lbfgs; Adam already carries its own
-        //             learning rate so we step with unit alpha in the
-        //             Armijo line search (with backtracking as a safety
-        //             net in case the manifold curvature invalidates the
-        //             Euclidean step scale).
         psi::Psi<TK> dir(wfc);
-        // dir = -grad_wfc
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
                     dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
 
-        bool restart = true;
-
         if (use_lbfgs || use_adam)
         {
-            // Flatten the Riemannian gradient into a real-valued vector and
-            // let the Euclidean optimiser produce a direction.
             std::vector<double> grad_flat, dir_flat;
             psi_to_flat(grad_wfc, grad_flat);
             eucl_opt.compute_direction(grad_flat, dir_flat);
-
-            // Unflatten the direction back into a psi::Psi and project it
-            // onto the current tangent space (vector transport by
-            // projection).  This is standard for Riemannian lbfgs and is
-            // numerically stable here because the flattened inner product
-            // matches the Euclidean ambient metric.
             flat_to_psi(dir_flat, dir);
             energy_grad_->project_orbital_gradient(wfc, dir);
-
-            // Check descent.  If not, fall back to steepest descent (this
-            // can happen in the first few iterations of lbfgs before the
-            // Hessian approximation has been built up, or when an Adam
-            // momentum term points uphill along the projection).
-            double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
-            if (dd_check >= 0.0)
-            {
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
-            }
-            restart = false;
         }
-        if (use_cg && inner > 0 && prev_gnorm2 > 1e-30)
+        else if (use_cg && have_prev)
         {
-            // Vector-transport prev_dir to the current tangent space. We use the
-            // simplest transport: project onto the new tangent space (this is
-            // consistent with our descent-direction projection).
-            energy_grad_->project_orbital_gradient(wfc, prev_dir);
-
-            // Powell restart: if <grad, transported grad_prev> / ||grad||^2 is
-            // too large, the gradients have lost orthogonality and CG memory is
-            // unreliable.
-            energy_grad_->project_orbital_gradient(wfc, prev_grad);
-            double prev_grad_dot = energy_grad_->s_inner_product(grad_wfc, prev_grad);
-            const double powell_thr = 0.1;
-            if (std::abs(prev_grad_dot) <= powell_thr * gnorm2)
+            // Polak-Ribiere+ CG with vector transport by projection.
+            psi::Psi<TK> g_prev_T(prev_grad);
+            energy_grad_->project_orbital_gradient(wfc, g_prev_T);
+            const double gn2_prev = frob2(g_prev_T);
+            if (gn2_prev > 1e-30)
             {
-                double beta = gnorm2 / prev_gnorm2;
-                // Polak-Ribiere+ style: enforce beta >= 0 for FR too.
-                beta = std::max(0.0, beta);
-                // dir += beta * prev_dir
+                psi::Psi<TK> y(grad_wfc);
                 for (int ik = 0; ik < nk; ++ik)
                     for (int ib = 0; ib < nb_local; ++ib)
                         for (int mu = 0; mu < nbs_local; ++mu)
-                            dir(ik, ib, mu) += TK(beta) * prev_dir(ik, ib, mu);
-
-                // Re-project to kill the small tangent-space drift introduced by
-                // the linear combination.
+                            y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
+                double beta_pr = frob_inner(grad_wfc, y) / gn2_prev;
+                beta_pr = std::max(0.0, beta_pr);
+                psi::Psi<TK> d_prev_T(prev_dir);
+                energy_grad_->project_orbital_gradient(wfc, d_prev_T);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
+                                              + TK(beta_pr) * d_prev_T(ik, ib, mu);
                 energy_grad_->project_orbital_gradient(wfc, dir);
-
-                // Check descent condition  <grad, dir> < 0.
-                double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
-                if (dd_check < 0.0)
-                {
-                    restart = false;
-                }
             }
         }
-        if (restart)
+
+        // Descent safeguard.
+        double dd = energy_grad_->s_inner_product(grad_wfc, dir);
+        if (dd >= 0.0)
         {
-            // Steepest descent fallback (also used when use_cg is false)
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+            dd = energy_grad_->s_inner_product(grad_wfc, dir);
         }
 
-        // Directional derivative  dd = <grad, dir>  (must be negative)
-        double dd = energy_grad_->s_inner_product(grad_wfc, dir);
-
-        // ---- Armijo line search along the retracted direction ----
-        // For step size alpha, we want  wfc_new = R_wfc(alpha * dir).
-        // retract_orbitals(wfc, step, alpha) internally does
-        //     wfc <- wfc - alpha * step,
-        // so we pass  step = -dir  to get the effective update  wfc + alpha*dir.
-        psi::Psi<TK> neg_dir(dir);
+        // For lbfgs / adam the optimiser-produced direction is already scaled;
+        // honour that scale by skipping the BB pre-multiplier on the direction
+        // (the line search still uses non-monotone Armijo with lambda <= 1).
+        // For SD / CG we apply alpha_bb to set the initial trial step to the
+        // BB-rescaled direction.
+        const bool dir_is_quasi_newton = (use_lbfgs || use_adam);
+        if (!dir_is_quasi_newton)
         {
-            if (total_size > 0)
-            {
-                TK* q = &neg_dir(0, 0, 0);
-                const TK* p = &dir(0, 0, 0);
-                for (int i = 0; i < total_size; ++i) q[i] = -p[i];
-            }
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        dir(ik, ib, mu) *= TK(alpha_bb);
+            dd = energy_grad_->s_inner_product(grad_wfc, dir);
         }
 
-        const double c1 = config_.line_search_c1;
-        const double rho = config_.line_search_rho;
-        // Initial Armijo trial step for the orbital sub-problem.
-        // This path never uses the ALM Barzilai-Borwein seed; BB is limited
-        // to optimize_occupations() under the augmented-Lagrangian constraint.
-        // Initial line-search step size:
-        //   - SD/CG: use the configured Armijo start (small, because the
-        //            gradient has arbitrary scale).
-        //   - lbfgs:  start at 1.0 (the quasi-Newton step is already
-        //             properly scaled) and backtrack if needed.
-        //   - Adam:   start at 1.0 (Adam incorporates its own learning
-        //             rate into the direction).
-        const double armijo_alpha_init = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
-        double alpha = armijo_alpha_init;
-        double E_new = E;
-        bool ls_success = false;
-        int orb_ls_ntrial = 0;
-        double orb_ls_alpha_last = 0.0;
-        double orb_ls_E_last = E;
+        // ---- Stiefel trust-region cap on the first trial perturbation ----
+        // Bound  ||lambda * dir||_F <= tau_orb * ||X||_F  with lambda = 1
+        // (Wen-Yin, Math. Prog. 142 (2013) 397; Iannazzo-Porcelli, IMA J.
+        // Numer. Anal. 38 (2018) 495).  Required for energy surfaces that
+        // lack a global lower bound -- e.g. regularised separable
+        // functionals (Mueller / Power / GEO) where g(n) = n^alpha at
+        // far-from-KS occupations produces spurious very-low-energy orbital
+        // configurations far outside the physical basin (the exchange
+        // Coulomb integral K_ij = <phi_i phi_j | r_12^{-1} | phi_i phi_j>
+        // can be made arbitrarily large by orbital concentration, so the
+        // energy is not bounded below as a function of X for fractional
+        // occupations).  Without this cap Armijo correctly accepts the
+        // descent (E_trial - E ~ -1e5 Ry) and the optimiser walks
+        // unboundedly into the spurious region.  ||X||_F = sqrt(N_b * N_k)
+        // is the natural Stiefel scale.  tau_orb is shrunk adaptively below
+        // (suspicious-descent guard) when the local model is violated.
+        const double dir_frob = std::sqrt(std::max(0.0, frob2(dir)));
+        const double X_frob = std::sqrt(static_cast<double>(nb_local) * static_cast<double>(nk));
+        if (dir_frob > tau_orb * X_frob && std::isfinite(dir_frob) && dir_frob > 0.0)
+        {
+            const double scale = tau_orb * X_frob / dir_frob;
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        dir(ik, ib, mu) *= TK(scale);
+            dd *= scale;
+            GlobalV::ofs_running << "      orb trust region: |dir|_F=" << std::scientific << dir_frob
+                                 << " > tau_orb*|X|_F=" << (tau_orb * X_frob)
+                                 << "; rescaled dir by " << scale
+                                 << "  tau_orb=" << tau_orb << std::defaultfloat << std::endl;
+        }
 
-        // Save current wfc for line-search rollback
+        // ---- Non-monotone Armijo along the retracted curve ----
+        // retract_orbitals(wfc, step, lambda) computes wfc <- wfc - lambda * step,
+        // then S-orthonormalises.  Pass step = -dir so the effective update is
+        // wfc_new = R_{wfc}(lambda * dir).
+        psi::Psi<TK> neg_dir(dir);
+        if (total_size > 0)
+        {
+            TK* q = &neg_dir(0, 0, 0);
+            const TK* p = &dir(0, 0, 0);
+            for (int i = 0; i < total_size; ++i) q[i] = -p[i];
+        }
+
+        // Save current X for rollback.
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
                     wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
 
+        if (static_cast<int>(f_history.size()) >= nm_memory) f_history.pop_front();
+        f_history.push_back(E);
+        double f_max = E;
+        for (double f : f_history) if (f > f_max) f_max = f;
+
+        double lambda = 1.0;
+        double E_new = E;
+        bool ls_success = false;
+        int orb_ls_ntrial = 0;
+        double orb_ls_lambda_last = 0.0;
+        double orb_ls_E_last = E;
+
+        // Line search: non-monotone Armijo with model-violation guard.
+        // The local quadratic model predicts E(lambda) ~= E + lambda * dd;
+        // a drop of more than k_susp * |lambda * dd| means the trial point
+        // is outside the model's region of validity (typically inside a
+        // spurious low-energy basin of the regularised functional).  When
+        // detected, we shrink lambda and *also* shrink tau_orb so subsequent
+        // inner iterations stay closer to the trust region.
+        bool model_violated_at_first_trial = false;
+
         for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
         {
-            // Reset wfc from the saved copy
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
 
-            // Retract along +alpha * dir  (i.e. -alpha * neg_dir)
-            energy_grad_->retract_orbitals(wfc, neg_dir, alpha);
+            energy_grad_->retract_orbitals(wfc, neg_dir, lambda);
             energy_grad_->invalidate_hone_cache();
 
             E_new = energy_grad_->compute_energy(occ_flat, wfc);
             orb_ls_ntrial = ls + 1;
-            orb_ls_alpha_last = alpha;
+            orb_ls_lambda_last = lambda;
             orb_ls_E_last = E_new;
-            if (E_new <= E + c1 * alpha * dd)
+
+            const double model_descent = std::abs(lambda * dd);
+            const double actual_descent = E - E_new;
+            if (std::isfinite(E_new)
+                && actual_descent > k_susp * model_descent
+                && model_descent > 0.0)
+            {
+                // Reject: trial outside the linear model's region of validity.
+                if (ls == 0) model_violated_at_first_trial = true;
+                lambda *= rho;
+                continue;
+            }
+            if (E_new <= f_max + c1 * lambda * dd)
             {
                 ls_success = true;
                 break;
             }
-            alpha *= rho;
+            lambda *= rho;
         }
+
+        // Adapt the Stiefel trust radius for the next inner iteration.
+        if (model_violated_at_first_trial)
+        {
+            const double tau_old = tau_orb;
+            tau_orb = std::max(tau_orb_min, tau_orb * tau_orb_shrink);
+            GlobalV::ofs_running << "      orb trust region: model violated at first trial; "
+                                 << "tau_orb " << std::scientific << tau_old << " -> " << tau_orb
+                                 << std::defaultfloat << std::endl;
+        }
+        else if (ls_success && orb_ls_ntrial == 1)
+        {
+            // First trial accepted cleanly: the trust region was fine, allow
+            // it to grow gently for the next inner iteration.
+            tau_orb = std::min(tau_orb_max, tau_orb * tau_orb_grow);
+        }
+
+        const char* orb_opt_name = use_lbfgs ? "lbfgs" : (use_adam ? "adam" : (use_cg ? "cg" : "sd"));
+        {
+            std::ostringstream orb_ls;
+            orb_ls << "      orb line search (Riemannian SPG non-monotone Armijo)"
+                   << ": optim=" << orb_opt_name << " alpha_BB=" << std::scientific << alpha_bb
+                   << " lambda=" << (ls_success ? orb_ls_lambda_last : 0.0)
+                   << " n_trial=" << orb_ls_ntrial
+                   << " E0=" << E << " E_trial=" << orb_ls_E_last
+                   << " f_max=" << f_max << " dd=<G_R,dir>=" << dd
+                   << "  c1=" << std::defaultfloat << c1 << "  rho=" << rho
+                   << (ls_success ? "  ok" : "  fail");
+            GlobalV::ofs_running << orb_ls.str() << std::endl;
+        }
+
+        // Save (X_k, G_R^k, D_k) for the next BB / CG step BEFORE committing
+        // the move so n_prev / g_prev refer to the previous iterate.
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                {
+                    prev_wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+                    prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
+                    prev_dir(ik, ib, mu) = dir(ik, ib, mu);
+                }
+        have_prev = true;
 
         if (!ls_success)
         {
-            {
-                const char* orb_opt = use_lbfgs ? "lbfgs" : (use_adam ? "adam" : (use_cg ? "cg" : "sd"));
-                const double armijo_rhs = E + c1 * orb_ls_alpha_last * dd;
-                std::ostringstream orb_ls;
-                orb_ls << "      orb line search (Armijo) failed: inner=" << (inner + 1) << "  optim=" << orb_opt
-                       << "  n_trial=" << orb_ls_ntrial;
-                orb_ls << std::scientific << "  E0=" << E << "  E_last_trial=" << orb_ls_E_last
-                       << "  dd=<G_R,dir>=" << dd << "  alpha_init=" << armijo_alpha_init
-                       << "  last_alpha=" << orb_ls_alpha_last << "  armijo_rhs=E0+c1*alpha*dd=" << armijo_rhs
-                       << "  margin(E_trial-rhs)=" << (orb_ls_E_last - armijo_rhs);
-                orb_ls << std::defaultfloat << "  c1=" << c1 << "  rho=" << rho
-                       << "  max_iter=" << config_.line_search_max_iter << "  gnorm=" << result.grad_norm;
-                if (dd >= 0.0)
-                {
-                    orb_ls << "  [dd>=0: not a descent direction along dir]";
-                }
-                GlobalV::ofs_running << orb_ls.str() << std::endl;
-            }
-            // Line search failed; revert to previous orbitals.
+            // Roll back; non-monotone Armijo failed.  In SPG floating-point this
+            // is rare and indicates a stationary iterate (dd ~ 0); let the outer
+            // loop notice via the gradient norm.
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
             energy_grad_->invalidate_hone_cache();
-
-            if (use_cg)
-            {
-                if (orb_after_ls_retry)
-                {
-                    GlobalV::ofs_running << "      orb inner: Armijo failed again after SD recovery; "
-                                            "stopping orbital inner loop."
-                                         << std::endl;
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
-                    print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                            occ_flat, nk_, nbands_, false);
-                    break;
-                }
-                orb_after_ls_retry = true;
-                // Any CG line-search failure: drop CG memory and retry next inner
-                // iteration along pure steepest descent (-G_R), including the
-                // first inner (restart==true) where we previously exited early.
-                GlobalV::ofs_running << "      orb inner: Armijo line search failed for CG; "
-                                        "falling back to steepest descent next inner."
-                                     << std::endl;
-                prev_gnorm2 = 0.0;
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            prev_dir(ik, ib, mu) = TK(0);
-                result.iterations = inner + 1;
-                result.final_energy = E;
-                print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                        occ_flat, nk_, nbands_, false);
-                continue;
-            }
-
-            if (use_lbfgs || use_adam)
-            {
-                if (orb_after_ls_retry)
-                {
-                    GlobalV::ofs_running << "      orb inner: Armijo failed again after optimiser reset "
-                                            "(steepest-descent recovery); stopping orbital inner loop."
-                                         << std::endl;
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
-                    print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                            occ_flat, nk_, nbands_, false);
-                    break;
-                }
-                orb_after_ls_retry = true;
-                // Reset the Euclidean optimiser state so the next step
-                // starts from steepest descent.  This is the Riemannian
-                // analogue of the CG Powell-restart safeguard above.
-                eucl_opt.init(flat_size);
-                result.iterations = inner + 1;
-                result.final_energy = E;
-                print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                        occ_flat, nk_, nbands_, false);
-                continue;
-            }
-
             result.iterations = inner + 1;
             result.final_energy = E;
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
@@ -3048,45 +3113,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             break;
         }
 
-        orb_after_ls_retry = false;
-
-        // Save this step's gradient and direction for the next CG iteration.
-        if (use_cg)
-        {
-            for (int ik = 0; ik < nk; ++ik)
-                for (int ib = 0; ib < nb_local; ++ib)
-                    for (int mu = 0; mu < nbs_local; ++mu)
-                    {
-                        prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
-                        prev_dir(ik, ib, mu)  = dir(ik, ib, mu);
-                    }
-            prev_gnorm2 = gnorm2;
-        }
-
-        // Energy + Riemannian gradient at the new iterate (after accepted line search).
+        // Energy + Riemannian gradient at the new iterate (line search accepted).
         std::vector<double> grad_occ_new;
         psi::Psi<TK> grad_wfc_new;
         energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat), wfc, grad_occ_new, grad_wfc_new);
         energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
-
-        double post_gnorm2 = 0.0;
-        {
-            const int nk_pg = grad_wfc_new.get_nk();
-            const int nb_pg = grad_wfc_new.get_nbands();
-            const int nbs_pg = grad_wfc_new.get_nbasis();
-            for (int ik = 0; ik < nk_pg; ++ik)
-            {
-                const int nelem = nb_pg * nbs_pg;
-                if (nelem == 0)
-                {
-                    continue;
-                }
-                const TK* gk = &grad_wfc_new(ik, 0, 0);
-                for (int i = 0; i < nelem; ++i)
-                    post_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
-            }
-            Parallel_Reduce::reduce_all(post_gnorm2);
-        }
+        const double post_gnorm2 = frob2(grad_wfc_new);
         result.grad_norm = std::sqrt(std::max(0.0, post_gnorm2));
 
         if (use_lbfgs)
@@ -3096,8 +3128,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             psi_to_flat(dir, dir_flat_step);
             step_flat.resize(dir_flat_step.size());
             for (size_t i = 0; i < step_flat.size(); ++i)
-                step_flat[i] = alpha * dir_flat_step[i];
-
+                step_flat[i] = lambda * dir_flat_step[i];
             eucl_opt.update(new_grad_flat, step_flat);
         }
 
@@ -3123,7 +3154,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                                 occ_flat, nk_, nbands_, false);
     }
 
-    // Final summary of orbital sub-problem
     GlobalV::ofs_running << "      orb sub-problem: " << result.iterations << " iters"
         << "  final_gnorm=" << std::scientific << result.grad_norm
         << "  final_E=" << std::fixed << std::setprecision(10) << result.final_energy

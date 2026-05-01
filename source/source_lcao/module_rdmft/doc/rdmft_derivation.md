@@ -573,8 +573,42 @@ is bounded but very large near the regularisation cutoff.
 
 Alternate between:
 
-- **Orbital step**: Fix $n_{i\mathbf{k}}$, optimize $C^{\mathbf{k}}$ on Stiefel manifold
-- **Occupation step**: Fix $C^{\mathbf{k}}$, optimize $n_{i\mathbf{k}}$ with constraints
+- **Occupation step**: Fix $C^{\mathbf{k}}$, optimise $n_{i\mathbf{k}}$ on the
+  feasible set $\mathcal{C} = \{0 \le n_{ik} \le 1,\; \sum_k w_k\sum_i n_{ik} = N_e\}$.
+  Implementation: the Spectral Projected Gradient method described in §6.2.
+
+- **Orbital step**: Fix $n_{i\mathbf{k}}$, optimise $X^{\mathbf{k}}$ on the
+  Stiefel manifold $\mathrm{St}(N_b, N_{\mathrm{basis}})$ in X-space
+  (after the Cholesky $S = U^H U$ change of variable, §3.4 + §5.4).
+  Implementation: a Riemannian Spectral Projected Gradient on Stiefel
+  (Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38** (2018) 495), with the
+  Cholesky-QR retraction `retract_orbitals`, a Barzilai–Borwein (BB1)
+  spectral step length and the same Grippo–Lampariello–Lucidi non-monotone
+  Armijo line search as the occupation block, plus an **adaptive Stiefel
+  trust radius**
+  $$
+    \lVert \lambda \mathbf{D}_k\rVert_F \le \tau_{\mathrm{orb}}\, \lVert X_k\rVert_F
+  $$
+  (Wen–Yin, *Math. Prog.* **142** (2013) 397).  $\tau_{\mathrm{orb}}$
+  shrinks ($\times 1/4$) whenever the Armijo first trial yields an energy
+  drop more than $k_{\mathrm{susp}} = 2$ times the linear-model prediction
+  $\lvert \lambda\, \mathbf{G}_R\cdot \mathbf{D}\rvert$, and grows
+  ($\times 3/2$) when the first trial passes cleanly.  This is required
+  because the regularised separable functionals (Müller / Power / GEO) at
+  fractional occupations have no global lower bound as a function of $X$:
+  the exchange Coulomb integral
+  $K_{ij} = \langle \phi_i\phi_j\,|\,r_{12}^{-1}\,|\,\phi_i\phi_j\rangle$
+  can be made arbitrarily large by orbital concentration.  Without the
+  trust radius, monotone Armijo correctly accepts huge "descents" of the
+  form $E_{\mathrm{trial}} - E \sim -10^4$ Ry that walk the iterate into
+  the spurious unphysical basin.
+
+  Optimiser blending: the SPG **direction** can optionally be blended with
+  Polak–Ribière+ CG (vector transport by tangent-space projection) or
+  L-BFGS / Adam (Euclidean direction projected back onto the tangent
+  space).  The BB step length is then applied only to the SD/CG direction;
+  L-BFGS / Adam directions carry their own scale and are used as-is.
+  All branches share the same non-monotone Armijo + trust radius.
 
 ### 7.2 Joint (Product Manifold) Optimization
 
