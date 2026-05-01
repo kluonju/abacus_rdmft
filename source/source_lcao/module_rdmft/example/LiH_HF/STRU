@@ -1,0 +1,29 @@
+ATOMIC_SPECIES
+H 1.000 H.upf
+Li 1.000 Li.upf
+
+NUMERICAL_ORBITAL
+H.orb
+Li.orb
+
+LATTICE_CONSTANT
+1.889726125457828
+
+LATTICE_VECTORS
+20.0 0.0 0.0
+0.0 20.0 0.0
+0.0 0.0 20.0
+
+ATOMIC_POSITIONS # (in Angstrom)
+
+Cartesian              # or Cartesion
+
+H
+0.0
+1
+0 0 0
+
+Li
+0.0
+1
+0 0 1.5949        # Approximate bond length of Li

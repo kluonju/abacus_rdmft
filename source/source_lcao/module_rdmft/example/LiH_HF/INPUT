@@ -1,0 +1,31 @@
+INPUT_PARAMETERS
+calculation      scf
+symmetry         1
+scf_thr          1e-6
+scf_nmax         1
+cal_force        0
+cal_stress       0
+
+basis_type       lcao
+smearing_method  gaussian
+smearing_sigma   0.01
+mixing_type      broyden
+mixing_beta      0.5
+ks_solver        scalapack_gvx
+dft_functional pbe
+rdmft            true
+rdmft_functional    hf
+rdmft_solver_strategy  alternating
+rdmft_constraint projected_gradient
+rdmft_occ_init_mode perturbed
+rdmft_occ_init_nbands_top 4
+rdmft_occ_init_perturb   1e-3
+nelec_delta 0.0
+rdmft_occ_optimizer    cg
+rdmft_orb_optimizer    cg
+rdmft_outer_maxiter    50
+rdmft_occ_maxiter      5
+rdmft_orb_maxiter      5
+rdmft_energy_tol       1e-7
+rdmft_orb_grad_tol  1e-5
+rdmft_occ_grad_tol  1e-5
