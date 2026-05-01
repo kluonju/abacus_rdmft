@@ -168,11 +168,14 @@ class OccupationConstraint
         mu_ = std::min(mu_ * factor, max_mu);
     }
 
-    /// Project occupations onto feasible set [0,1] with electron number constraint
+    /// Project occupations onto the feasible set {0 <= n_ik <= 1, sum_k w_k sum_i
+    /// n_ik = N_e}.  This is the standard Euclidean foot point: n_ik =
+    /// clip(x_ik - lambda * w_k, 0, 1) with a single dual lambda solved by
+    /// bisection.  We must NOT pre-clip x to [0, 1] (which is a different,
+    /// non-Euclidean, feasibility repair); the box clip is part of the dual
+    /// map below.
     void project(std::vector<double>& occ) const
     {
-        for (auto& n : occ)
-            n = std::max(0.0, std::min(1.0, n));
         rescale_to_nel(occ);
     }
 
@@ -271,9 +274,13 @@ class OccupationConstraint
     void rescale_to_nel(std::vector<double>& occ) const
     {
         assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
-        for (auto& n : occ)
-            n = std::max(0.0, std::min(1.0, n));
 
+        // Standard box-and-equality Euclidean projector: n_ik = clip(x_ik -
+        // lambda * w_k, 0, 1) with a single dual lambda solved by bisection
+        // (the box clip is folded *inside* the dual map, NOT applied before).
+        // Pre-clipping x then redistributing gives a different, non-Euclidean
+        // foot point and breaks SPG monotonicity (Birgin-Martinez-Raydan,
+        // SIOPT 2000, Section 2).
         const double target = n_electrons_;
         const double tol_sum = 1e-12;
         const std::vector<double> occ_tmp(occ);
