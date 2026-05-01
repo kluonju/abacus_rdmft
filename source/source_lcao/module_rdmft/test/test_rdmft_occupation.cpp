@@ -189,6 +189,40 @@ TEST_F(OccupationConstraintTest, projection_clips_and_rescales)
     }
 }
 
+// Regression for the LiH/HF SPG explosion: when the *clipped* image of the
+// input occupations already gives the right weighted sum, project() must
+// still apply the [0,1] box clip before returning. Returning untouched left
+// negative / >1 occupations in the iterate, which then fed back into the
+// next SPG step.
+TEST_F(OccupationConstraintTest, projection_clips_when_lambda_zero_satisfies)
+{
+    std::vector<double> wk = {2.0};
+    const int nbands = 4;
+    const double nel = 4.0;
+    OccupationConstraint constraint(ConstraintMethod::ProjectedGradient, nel, wk, nbands);
+
+    // Two components above 1 and one below 0; their clip is {1, 1, 0, 0}
+    // which gives weighted sum 2*(1+1+0+0) = 4 = N_e, so the lambda=0 path
+    // is taken.
+    std::vector<double> occ = {1.5, 1.2, -0.3, -0.9};
+    constraint.project(occ);
+
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        EXPECT_GE(occ[i], 0.0) << "i=" << i;
+        EXPECT_LE(occ[i], 1.0) << "i=" << i;
+    }
+    EXPECT_NEAR(occ[0], 1.0, 1e-12);
+    EXPECT_NEAR(occ[1], 1.0, 1e-12);
+    EXPECT_NEAR(occ[2], 0.0, 1e-12);
+    EXPECT_NEAR(occ[3], 0.0, 1e-12);
+
+    double weighted = 0.0;
+    for (int i = 0; i < nbands; ++i)
+        weighted += wk[0] * occ[i];
+    EXPECT_NEAR(weighted, nel, 1e-12);
+}
+
 TEST_F(OccupationConstraintTest, active_set_identification)
 {
     std::vector<double> wk = {1.0};

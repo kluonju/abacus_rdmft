@@ -301,7 +301,20 @@ class OccupationConstraint
 
         const double sum0 = weighted_sum_from_lambda(0.0);
         if (std::abs(sum0 - target) < tol_sum)
+        {
+            // lambda = 0 already satisfies the equality; still apply the box
+            // clip n_ik = clip(occ_tmp_ik, 0, 1) so the input is mapped onto
+            // the feasible set.  Returning without writing would leave
+            // out-of-box inputs untouched, which has been the source of
+            // negative / >1 RDMFT occupations on the first SPG step.
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int i = 0; i < nbands_; ++i)
+                {
+                    occ[ik * nbands_ + i]
+                        = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i]));
+                }
             return;
+        }
 
         double lam_lo = 0.0;
         double lam_hi = 0.0;
