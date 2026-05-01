@@ -104,8 +104,8 @@ class XCFunctional
         switch (idx)
         {
             case 0: return 0.25; // n^1
-            case 1: return 0.25; // n^{1/2}
-            case 2: return 0.50; // n^{3/4}
+            case 1: return 0.50; // n^{1/2}
+            case 2: return 0.25; // n^{3/4}
             default: return 0.0;
         }
     }
