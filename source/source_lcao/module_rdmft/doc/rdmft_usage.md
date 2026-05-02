@@ -183,7 +183,6 @@ when the inner flags alone indicate convergence.
 |---------|------|---------|----------------|
 | `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
 | `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
-| `rdmft_orb_strategy` | string | `riemannian_bb` | `riemannian_bb`, `simple` (alternating only; `spg` accepted as deprecated alias of `riemannian_bb`) |
 | `rdmft_orb_retraction` | string | `polar` | `polar`, `qr`, `cayley` (`qr` / `cayley` serial-only; MPI builds fall back to `polar` with a one-time warning) |
 | `rdmft_joint_optimizer` | string | `lbfgs` | `sd`, `cg`, `lbfgs`, `adam` |
 
@@ -193,13 +192,13 @@ selects the **single** unified optimiser used by the `joint` strategy on the
 packed `(p, C)` variable.  Only the keyword matching the active strategy is
 consulted; the others are ignored.
 
-`rdmft_orb_strategy` selects the orbital-sub-problem solver of the
-`alternating` strategy (it is ignored under `joint`):
-
-| Value | Algorithm | Notes |
-|-------|-----------|-------|
-| `riemannian_bb` (default) | BB-NMArmijo Riemannian gradient method on Stiefel: BB1 spectral step + Grippo–Lampariello–Lucidi non-monotone Armijo + Wen–Yin adaptive trust radius + direction blending (`sd` / `cg` / `lbfgs` / `adam` projected back onto the tangent space). | Reproduces the historical implementation byte-for-byte. The source comments name this *"Riemannian SPG"* (Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38** (2018) 495); classical SPG (Birgin–Martínez–Raydan 2000) is unrelated and is used only on the convex occupation sub-problem. |
-| `simple` | Textbook plain Riemannian SD or CG with **monotone** Armijo backtracking (Absil–Mahony–Sepulchre, 2008, §4.2). | A baseline against the default. Only `rdmft_orb_optimizer = sd` and `cg` are honoured; `lbfgs` / `adam` fall back to `cg` with a one-time warning. No BB step, no non-monotone history, no trust radius — for the regularised functionals (Müller / Power / GEO) the missing trust radius can let monotone Armijo accept steps into the unphysical basin, so use this only for algorithm validation, debugging, and pedagogical comparisons with `riemannian_bb`. |
+`rdmft_orb_optimizer` chooses the Riemannian optimiser used by the
+`alternating` orbital sub-problem (clean Stiefel SD, CG, L-BFGS, or Adam;
+see *Optimiser semantics* below).  All four are textbook Riemannian methods
+on `St(N_b, N_basis)` with no Barzilai–Borwein spectral step, no
+non-monotone history, and no trust radius.  Line search: monotone Armijo
+backtracking (`armijo_line_search`) for `sd` / `cg` / `adam`, Strong Wolfe
+(`strong_wolfe_line_search`) for `lbfgs`.
 
 `rdmft_orb_retraction` selects the Stiefel retraction used by every orbital
 step (both `alternating` and `joint`):

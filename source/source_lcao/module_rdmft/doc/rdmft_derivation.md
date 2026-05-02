@@ -585,71 +585,63 @@ Alternate between:
   Stiefel manifold $\mathrm{St}(N_b, N_{\mathrm{basis}})$ in X-space
   (after the Cholesky $S = U^H U$ change of variable, §3.4 + §5.4).
 
-  **Terminology note.**  Classical Spectral Projected Gradient
-  (Birgin–Martínez–Raydan, 2000) is defined for *convex* constrained
-  Euclidean problems and applies in this module only to the occupation
-  sub-problem above (§6.2).  The Stiefel manifold is non-convex and
-  admits no meaningful convex projection; the orbital solver presented
-  here is therefore a **BB-NMArmijo Riemannian gradient method** that
-  borrows two SPG kernel components — the BB1 spectral step length and
-  the Grippo–Lampariello–Lucidi non-monotone Armijo backtracking — and
-  replaces the convex projection with a retraction.  This is precisely
-  the *"Riemannian SPG"* of Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38**
-  (2018) 495; the source comments use that name, while the rest of this
-  document uses the more precise designation.
+  The orbital sub-problem uses a textbook Riemannian gradient method
+  (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix
+  Manifolds*, Princeton 2008, §4.2). Per inner iteration:
 
-  Default implementation (`rdmft_orb_strategy = riemannian_bb`): the
-  BB-NMArmijo Riemannian gradient method, with retraction selected by
-  `rdmft_orb_retraction` (§5.4; default `polar` reproduces the historical
-  Cholesky-QR), a Barzilai–Borwein (BB1) spectral step length, the same
-  Grippo–Lampariello–Lucidi non-monotone Armijo line search as the
-  occupation block, plus an **adaptive Stiefel trust radius**
-  $$
-    \lVert \lambda \mathbf{D}_k\rVert_F \le \tau_{\mathrm{orb}}\, \lVert X_k\rVert_F
-  $$
-  (Wen–Yin, *Math. Prog.* **142** (2013) 397).  $\tau_{\mathrm{orb}}$
-  shrinks ($\times 1/4$) whenever the Armijo first trial yields an energy
-  drop more than $k_{\mathrm{susp}} = 2$ times the linear-model prediction
-  $\lvert \lambda\, \mathbf{G}_R\cdot \mathbf{D}\rvert$, and grows
-  ($\times 3/2$) when the first trial passes cleanly.  This is required
-  because the regularised separable functionals (Müller / Power / GEO) at
-  fractional occupations have no global lower bound as a function of $X$:
-  the exchange Coulomb integral
-  $K_{ij} = \langle \phi_i\phi_j\,|\,r_{12}^{-1}\,|\,\phi_i\phi_j\rangle$
-  can be made arbitrarily large by orbital concentration.  Without the
-  trust radius, monotone Armijo correctly accepts huge "descents" of the
-  form $E_{\mathrm{trial}} - E \sim -10^4$ Ry that walk the iterate into
-  the spurious unphysical basin.
+  1. Evaluate $E$ and the Euclidean gradient $G$, then project to the
+     Riemannian gradient
+     $G_R = G - X\,\mathrm{sym}(X^H G)$ at the current iterate $X_k$.
+  2. Build the search direction $D \in T_{X_k}\mathrm{St}$ according to
+     `rdmft_orb_optimizer`:
+       - `sd`: $D = -G_R$.
+       - `cg`: Polak–Ribière⁺ with vector transport by tangent-space
+         projection of $(G_R^{\mathrm{prev}}, D_{\mathrm{prev}})$ at
+         $X_k$.
+       - `lbfgs`: limited-memory BFGS two-loop recursion over a history
+         of $(s, y)$ pairs in flat coordinates, the resulting direction
+         projected onto $T_{X_k}\mathrm{St}$ (Riemannian L-BFGS by
+         projection).
+       - `adam`: Euclidean Adam direction (Adam moments updated from the
+         Euclidean gradient $G$), projected onto $T_{X_k}\mathrm{St}$.
+     Descent safeguard: if $\langle G_R, D\rangle \ge 0$ (or non-finite),
+     reset $D = -G_R$.
+  3. Line search along the retracted curve
+     $X(\alpha) = R_{X_k}(\alpha\,D)$ where $R$ is one of three Stiefel
+     retractions selected by `rdmft_orb_retraction` (§5.4; default
+     `polar`):
+       - **monotone Armijo** backtracking with optional polynomial
+         (quadratic / cubic) safeguarded interpolation
+         (`armijo_line_search` in `rdmft_optimizer.h`) for `sd` / `cg`
+         / `adam`.
+       - **Strong Wolfe** (Nocedal & Wright Algorithm 3.5 + 3.6,
+         `strong_wolfe_line_search`) for `lbfgs`.
+     Initial step $\alpha_0$: $1.0$ for `lbfgs` / `adam` (the optimiser
+     sets the natural scale), `line_search_alpha_init` for `sd` / `cg`.
+  4. Commit $X_{k+1} = R_{X_k}(\alpha\,D)$ with the accepted $\alpha$.
+     For `lbfgs`, append $s = \alpha\,D$ and
+     $y = G_R(X_{k+1}) - G_R(X_k)$ (transported by projection at
+     $X_{k+1}$) to the history.
 
-  Optimiser blending: the BB-NMArmijo **direction** can optionally be
-  blended with Polak–Ribière+ CG (vector transport by tangent-space
-  projection) or L-BFGS / Adam (Euclidean direction projected back onto
-  the tangent space).  The BB step length is then applied only to the
-  SD/CG direction; L-BFGS / Adam directions carry their own scale and
-  are used as-is.  All branches share the same non-monotone Armijo +
-  trust radius.
+  No Barzilai–Borwein spectral step, no non-monotone history, no
+  Wen–Yin trust radius, no suspicious-descent guard. Convergence
+  criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, and (when
+  `rdmft_orb_energy_tol > 0`) $|E - E_{\mathrm{prev}}|$ below
+  `rdmft_orb_energy_tol`.
 
-  **Simple baseline strategy (`rdmft_orb_strategy = simple`).**  As an
-  additive baseline against the default, the module also implements the
-  textbook plain Riemannian gradient method
-  (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*,
-  Princeton 2008, §4.2): per inner iteration evaluate $E$ and the
-  Riemannian gradient $G_R$, build the search direction
-  $D = -G_R$ (`rdmft_orb_optimizer = sd`) or
-  $D = -G_R + \beta_{\mathrm{PR}^+}\, T(D_{k-1})$ with vector transport
-  $T$ by tangent-space projection (`rdmft_orb_optimizer = cg`), enforce
-  $\langle G_R, D\rangle < 0$ by resetting to SD on failure, and accept
-  $X_{k+1} = R_{X_k}(\alpha D)$ via a *monotone* Armijo backtracking on
-  $\alpha$.  No BB step, no non-monotone history, no trust radius, no
-  suspicious-descent guard.  Only `sd` and `cg` are honoured (`lbfgs` /
-  `adam` fall back to `cg` with a one-time warning).  The same
-  retraction selector `rdmft_orb_retraction` applies, so e.g. `simple` +
-  `cayley` is a valid combination.  This baseline is intended for
-  algorithm validation, debugging, and pedagogical comparison against
-  the default `riemannian_bb` solver, not as a recommended setting for
-  production runs of the regularised functionals (Müller / Power / GEO),
-  where the absence of the trust radius can let monotone Armijo accept
-  steps into the unphysical basin.
+  **Caveat for regularised functionals (Müller / Power / GEO).**  Because
+  the regularised functionals at fractional occupations have no global
+  lower bound as a function of $X$ (the exchange Coulomb integral
+  $K_{ij} = \langle \phi_i\phi_j|r_{12}^{-1}|\phi_i\phi_j\rangle$ can be
+  made arbitrarily large by orbital concentration), monotone Armijo can
+  in principle accept huge "descents" $E_{\mathrm{trial}} - E \sim -10^4$
+  Ry into a spurious unphysical basin. Mitigations: (i) tighten
+  `rdmft_orb_grad_tol` only as far as the physical basin's descent map
+  warrants; (ii) reduce `line_search_alpha_init` so the first trial
+  $\alpha_0\,D$ is small relative to $\lVert X\rVert_F$; (iii) when the
+  alternating outer loop diverges in this way, switch to
+  `rdmft_solver_strategy = joint`, which scales the orbital block by
+  `joint_orb_scale` and avoids the alternating amplification.
 
 ### 7.2 Joint (Product Manifold) Optimization
 

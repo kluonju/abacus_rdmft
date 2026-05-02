@@ -50,8 +50,9 @@ class RDMFTSolver
                                     const psi::Psi<TK>& wfc);
 
     /// Run orbital optimization only (occupations fixed).
-    /// Dispatches to optimize_orbitals_riemannian_bb (default) or
-    /// optimize_orbitals_simple based on config_.orb_strategy.
+    /// Riemannian gradient method on the Stiefel manifold with the
+    /// optimiser selected by config_.orb_optimizer (sd, cg, lbfgs, adam).
+    /// Line search: monotone Armijo (sd / cg / adam) or Strong Wolfe (lbfgs).
     OptResult optimize_orbitals(const std::vector<double>& occ_flat,
                                  psi::Psi<TK>& wfc);
 
@@ -75,21 +76,6 @@ class RDMFTSolver
     /// occupation parameters are packed into one descent direction and
     /// updated simultaneously at every outer iteration.
     double solve_joint(std::vector<double>& occ_flat, psi::Psi<TK>& wfc);
-
-    /// RiemannianBB strategy (default): the existing implementation that
-    /// combines Riemannian gradient + BB1 spectral step + non-monotone
-    /// Armijo + Wen-Yin trust radius + direction blending. Named after
-    /// "Riemannian SPG" in the source comments (Iannazzo-Porcelli, IMA
-    /// JNA 38 (2018) 495).
-    OptResult optimize_orbitals_riemannian_bb(const std::vector<double>& occ_flat,
-                                              psi::Psi<TK>& wfc);
-
-    /// Simple strategy: textbook Riemannian SD/CG + monotone Armijo
-    /// (Absil-Mahony-Sepulchre 2008, §4.2). No BB step, no non-monotone
-    /// history, no trust radius, no descent guard. Only sd / cg are
-    /// honoured (lbfgs / adam fall back to cg with a warning).
-    OptResult optimize_orbitals_simple(const std::vector<double>& occ_flat,
-                                       psi::Psi<TK>& wfc);
 
     /// Single step of orbital optimization on Stiefel manifold
     void orbital_step(const std::vector<double>& occ_flat, psi::Psi<TK>& wfc);

@@ -1,11 +1,11 @@
 // -----------------------------------------------------------------------------
-// Unit tests for the RDMFT orbital sub-problem additions:
+// Unit tests for the RDMFT orbital sub-problem:
 //
 //   1. Three Stiefel retractions exposed by EnergyGradient::retract_orbitals
 //      via OrbRetraction = { Polar, QR, Cayley }: orthogonality is preserved
 //      to machine precision after one retraction step.
-//   2. The simple Riemannian SD/CG + monotone Armijo strategy
-//      (OrbStrategy::Simple) converges on a Rayleigh-quotient minimisation.
+//   2. The Riemannian SD/CG + monotone Armijo orbital optimiser
+//      converges on a Rayleigh-quotient minimisation.
 //   3. RDMFTConfig defaults, parser semantics and string round-trip.
 //
 // The retraction tests use the serial reference twins implemented in
@@ -249,9 +249,9 @@ double rayleigh_min_diag(int p)
     return s;
 }
 
-// One iteration of Simple SD/CG + monotone Armijo, retraction selectable.
-// Returns final energy; mirrors RDMFTSolver::optimize_orbitals_simple but at
-// the small algebraic-test scale.
+// One iteration of Riemannian SD/CG + monotone Armijo, retraction selectable.
+// Returns final energy; mirrors RDMFTSolver::optimize_orbitals (sd / cg path)
+// but at the small algebraic-test scale.
 enum class HelperRetraction
 {
     Polar,
@@ -259,13 +259,13 @@ enum class HelperRetraction
     Cayley
 };
 
-double run_simple_riemannian(Rayleigh& problem,
-                             bool use_cg,
-                             HelperRetraction retr,
-                             int iters,
-                             double alpha_init,
-                             const std::vector<double>& C0,
-                             std::vector<double>& C_out)
+double run_riemannian_sd_cg(Rayleigh& problem,
+                            bool use_cg,
+                            HelperRetraction retr,
+                            int iters,
+                            double alpha_init,
+                            const std::vector<double>& C0,
+                            std::vector<double>& C_out)
 {
     const int n = problem.n;
     const int p = problem.p;
@@ -374,7 +374,7 @@ double run_simple_riemannian(Rayleigh& problem,
 }
 } // namespace
 
-TEST(RdmftOrbStrategy, simple_sd_qr_converges_on_rayleigh)
+TEST(RdmftOrbStep, sd_qr_converges_on_rayleigh)
 {
     const int n = 8, p = 2;
     auto problem = make_rayleigh_diag(n, p);
@@ -384,12 +384,12 @@ TEST(RdmftOrbStrategy, simple_sd_qr_converges_on_rayleigh)
     auto C0 = random_stiefel_real(n, p, rng);
 
     std::vector<double> C;
-    const double E = run_simple_riemannian(problem, /*use_cg=*/false,
-                                           HelperRetraction::QR, 400, 0.1, C0, C);
+    const double E = run_riemannian_sd_cg(problem, /*use_cg=*/false,
+                                          HelperRetraction::QR, 400, 0.1, C0, C);
     EXPECT_NEAR(E, E_ref, 1e-5);
 }
 
-TEST(RdmftOrbStrategy, simple_cg_cayley_converges_on_rayleigh)
+TEST(RdmftOrbStep, cg_cayley_converges_on_rayleigh)
 {
     const int n = 8, p = 2;
     auto problem = make_rayleigh_diag(n, p);
@@ -399,12 +399,12 @@ TEST(RdmftOrbStrategy, simple_cg_cayley_converges_on_rayleigh)
     auto C0 = random_stiefel_real(n, p, rng);
 
     std::vector<double> C;
-    const double E = run_simple_riemannian(problem, /*use_cg=*/true,
-                                           HelperRetraction::Cayley, 400, 0.1, C0, C);
+    const double E = run_riemannian_sd_cg(problem, /*use_cg=*/true,
+                                          HelperRetraction::Cayley, 400, 0.1, C0, C);
     EXPECT_NEAR(E, E_ref, 1e-5);
 }
 
-TEST(RdmftOrbStrategy, simple_sd_polar_converges_on_rayleigh)
+TEST(RdmftOrbStep, sd_polar_converges_on_rayleigh)
 {
     const int n = 10, p = 3;
     auto problem = make_rayleigh_diag(n, p);
@@ -414,36 +414,21 @@ TEST(RdmftOrbStrategy, simple_sd_polar_converges_on_rayleigh)
     auto C0 = random_stiefel_real(n, p, rng);
 
     std::vector<double> C;
-    const double E = run_simple_riemannian(problem, /*use_cg=*/false,
-                                           HelperRetraction::Polar, 400, 0.1, C0, C);
+    const double E = run_riemannian_sd_cg(problem, /*use_cg=*/false,
+                                          HelperRetraction::Polar, 400, 0.1, C0, C);
     EXPECT_NEAR(E, E_ref, 1e-5);
 }
 
 // -----------------------------------------------------------------------------
-// 3. RDMFTConfig defaults & parser semantics: the default config selects
-// the historical implementation byte-for-byte (RiemannianBB + Polar), and
-// the parsers accept the documented aliases.
+// 3. RDMFTConfig defaults & parser semantics for the orbital retraction.
 // -----------------------------------------------------------------------------
 
-TEST(RdmftOrbConfig, default_orb_strategy_is_riemannian_bb)
+TEST(RdmftOrbConfig, default_orb_retraction_is_polar)
 {
     RDMFTConfig cfg;
-    EXPECT_EQ(cfg.orb_strategy, OrbStrategy::RiemannianBB);
     EXPECT_EQ(cfg.orb_retraction, OrbRetraction::Polar);
-    EXPECT_EQ(orb_strategy_to_string(cfg.orb_strategy), std::string("riemannian_bb"));
     EXPECT_EQ(orb_retraction_to_string(cfg.orb_retraction), std::string("polar"));
-}
-
-TEST(RdmftOrbConfig, parse_orb_strategy_accepts_documented_values)
-{
-    EXPECT_EQ(parse_orb_strategy("riemannian_bb"), OrbStrategy::RiemannianBB);
-    EXPECT_EQ(parse_orb_strategy("riemannian-bb"), OrbStrategy::RiemannianBB);
-    EXPECT_EQ(parse_orb_strategy("simple"), OrbStrategy::Simple);
-    // Deprecated alias: "spg" mapped to RiemannianBB so legacy INPUTs still
-    // load. The user-facing INPUT keyword warns; here we just assert the
-    // parser semantics.
-    EXPECT_EQ(parse_orb_strategy("spg"), OrbStrategy::RiemannianBB);
-    EXPECT_THROW(parse_orb_strategy("nonsense"), std::invalid_argument);
+    EXPECT_EQ(cfg.orb_optimizer, OptimizerType::ConjugateGradient);
 }
 
 TEST(RdmftOrbConfig, parse_orb_retraction_accepts_documented_values)

@@ -673,8 +673,7 @@ struct Input_para
     std::string rdmft_functional = "muller";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
-    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
-    std::string rdmft_orb_strategy = "riemannian_bb"; // alternating-only orbital sub-problem strategy: riemannian_bb (default), simple
+    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer (Riemannian): sd, cg, lbfgs, adam
     std::string rdmft_orb_retraction = "polar";    // Stiefel retraction: polar (default), qr, cayley (qr/cayley serial-only)
     std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
     int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)

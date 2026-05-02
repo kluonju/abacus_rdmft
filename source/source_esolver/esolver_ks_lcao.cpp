@@ -683,18 +683,9 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
         rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
         rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
-        // Parse the new orbital strategy / retraction strings. Unknown values
-        // raise (already validated by Input_Item check_value at INPUT read
-        // time, but we double-check here in case of future programmatic use).
-        try
-        {
-            rdmft_config.orb_strategy
-                = rdmft::parse_orb_strategy(inp.rdmft_orb_strategy);
-        }
-        catch (const std::invalid_argument& e)
-        {
-            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf", e.what());
-        }
+        // Parse the orbital retraction string. Unknown values raise (already
+        // validated by Input_Item check_value at INPUT read time, but we
+        // double-check here in case of future programmatic use).
         try
         {
             rdmft_config.orb_retraction
