@@ -363,20 +363,24 @@ $$
 
 ### 5.4 Retraction on Stiefel Manifold
 
-Given a tangent vector $\eta \in T_C \mathrm{St}$, the QR-based retraction is:
+After the Cholesky variable change $X = U C$ (with $S = U^\dagger U$, see §3.3),
+the constraint becomes $X^\dagger X = I$ and the orbital sub-problem lives on
+the standard Stiefel manifold $\mathrm{St}(N_b, N)$.  Three retractions are
+implemented; the choice is selected at run time by the `rdmft_orb_retraction`
+INPUT keyword (default `polar`).  All preserve $X_{\text{new}}^\dagger X_{\text{new}} = I$
+to machine precision when applicable.
 
-$$
-R_C(\eta) = \mathrm{qf}(C + \eta)
-$$
+| `rdmft_orb_retraction` | Formula (one Stiefel step with tangent $\eta = -\alpha\, G_R$) | Cost / robustness |
+|---|---|---|
+| **`polar`** (default) | $R_X(\eta) = (X + \eta)\bigl[(X+\eta)^\dagger (X+\eta)\bigr]^{-1/2}$, computed as Cholesky-QR: $M = (X+\eta)^\dagger (X+\eta) = L L^\dagger$, then $X_{\text{new}} = (X+\eta)\, L^{-\dagger}$. | One Cholesky + one triangular solve per k-point. Fully MPI-parallelised (ScaLAPACK `pdpotrf` + `pdtrsm`). Loses about half the working precision when $M$ is ill-conditioned, e.g. when $\alpha \|\eta\|$ is too large; the outer line search keeps $\alpha$ small enough that this rarely matters. |
+| **`qr`** | $R_X(\eta) = Q\, \mathrm{diag}\bigl(\mathrm{phase}(R_{ii})\bigr)$, where $X+\eta = Q R$ is the Householder QR (LAPACK `?geqrf` + `?orgqr`). The diagonal sign-fix makes $R$ have positive real diagonal so the retraction is uniquely defined. | More numerically robust than `polar` when $(X+\eta)^\dagger(X+\eta)$ is near-singular. Serial-only; MPI builds emit a one-time warning and fall back to `polar`. |
+| **`cayley`** | Wen-Yin low-rank Cayley retraction (Wen & Yin, *Math. Prog.* 142 (2013) 397, Algorithm 1). With $W = G_R X^\dagger - X G_R^\dagger$ rank-$2p$, $W = U V^\dagger$ for $U = [G_R \mid X]$, $V = [X \mid -G_R]$ (each $N \times 2p$): $$X_{\text{new}} = X - \alpha\, U \bigl(I_{2p} + \tfrac{\alpha}{2} V^\dagger U\bigr)^{-1}\, V^\dagger X.$$ | Solves only one $2p \times 2p$ system; preserves orthogonality exactly without a triangular factor. Attractive when $N \gg p$. Serial-only; MPI builds emit a one-time warning and fall back to `polar`. |
 
-where $\mathrm{qf}$ denotes the Q-factor of the QR decomposition (with positive diagonal in R),
-followed by S-orthogonalization: solve $S^{1/2} (C+\eta) = QR$, return $S^{-1/2} Q$.
-
-For the **polar retraction**:
-
-$$
-R_C(\eta) = (C + \eta) \bigl[ (C + \eta)^\dagger S (C + \eta) \bigr]^{-1/2}
-$$
+The retraction choice affects every orbital step in both the alternating
+strategy (§7.1) and the joint strategy (§7.2); a single
+`EnergyGradient::set_orb_retraction` call during solver initialisation forwards
+the INPUT value to `EnergyGradient::retract_orbitals`, which dispatches to
+`retract_polar`, `retract_qr_serial`, or `retract_cayley_serial`.
 
 ---
 
@@ -580,12 +584,26 @@ Alternate between:
 - **Orbital step**: Fix $n_{i\mathbf{k}}$, optimise $X^{\mathbf{k}}$ on the
   Stiefel manifold $\mathrm{St}(N_b, N_{\mathrm{basis}})$ in X-space
   (after the Cholesky $S = U^H U$ change of variable, §3.4 + §5.4).
-  Implementation: a Riemannian Spectral Projected Gradient on Stiefel
-  (Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38** (2018) 495), with the
-  Cholesky-QR retraction `retract_orbitals`, a Barzilai–Borwein (BB1)
-  spectral step length and the same Grippo–Lampariello–Lucidi non-monotone
-  Armijo line search as the occupation block, plus an **adaptive Stiefel
-  trust radius**
+
+  **Terminology note.**  Classical Spectral Projected Gradient
+  (Birgin–Martínez–Raydan, 2000) is defined for *convex* constrained
+  Euclidean problems and applies in this module only to the occupation
+  sub-problem above (§6.2).  The Stiefel manifold is non-convex and
+  admits no meaningful convex projection; the orbital solver presented
+  here is therefore a **BB-NMArmijo Riemannian gradient method** that
+  borrows two SPG kernel components — the BB1 spectral step length and
+  the Grippo–Lampariello–Lucidi non-monotone Armijo backtracking — and
+  replaces the convex projection with a retraction.  This is precisely
+  the *"Riemannian SPG"* of Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38**
+  (2018) 495; the source comments use that name, while the rest of this
+  document uses the more precise designation.
+
+  Default implementation (`rdmft_orb_strategy = riemannian_bb`): the
+  BB-NMArmijo Riemannian gradient method, with retraction selected by
+  `rdmft_orb_retraction` (§5.4; default `polar` reproduces the historical
+  Cholesky-QR), a Barzilai–Borwein (BB1) spectral step length, the same
+  Grippo–Lampariello–Lucidi non-monotone Armijo line search as the
+  occupation block, plus an **adaptive Stiefel trust radius**
   $$
     \lVert \lambda \mathbf{D}_k\rVert_F \le \tau_{\mathrm{orb}}\, \lVert X_k\rVert_F
   $$
@@ -603,12 +621,35 @@ Alternate between:
   form $E_{\mathrm{trial}} - E \sim -10^4$ Ry that walk the iterate into
   the spurious unphysical basin.
 
-  Optimiser blending: the SPG **direction** can optionally be blended with
-  Polak–Ribière+ CG (vector transport by tangent-space projection) or
-  L-BFGS / Adam (Euclidean direction projected back onto the tangent
-  space).  The BB step length is then applied only to the SD/CG direction;
-  L-BFGS / Adam directions carry their own scale and are used as-is.
-  All branches share the same non-monotone Armijo + trust radius.
+  Optimiser blending: the BB-NMArmijo **direction** can optionally be
+  blended with Polak–Ribière+ CG (vector transport by tangent-space
+  projection) or L-BFGS / Adam (Euclidean direction projected back onto
+  the tangent space).  The BB step length is then applied only to the
+  SD/CG direction; L-BFGS / Adam directions carry their own scale and
+  are used as-is.  All branches share the same non-monotone Armijo +
+  trust radius.
+
+  **Simple baseline strategy (`rdmft_orb_strategy = simple`).**  As an
+  additive baseline against the default, the module also implements the
+  textbook plain Riemannian gradient method
+  (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*,
+  Princeton 2008, §4.2): per inner iteration evaluate $E$ and the
+  Riemannian gradient $G_R$, build the search direction
+  $D = -G_R$ (`rdmft_orb_optimizer = sd`) or
+  $D = -G_R + \beta_{\mathrm{PR}^+}\, T(D_{k-1})$ with vector transport
+  $T$ by tangent-space projection (`rdmft_orb_optimizer = cg`), enforce
+  $\langle G_R, D\rangle < 0$ by resetting to SD on failure, and accept
+  $X_{k+1} = R_{X_k}(\alpha D)$ via a *monotone* Armijo backtracking on
+  $\alpha$.  No BB step, no non-monotone history, no trust radius, no
+  suspicious-descent guard.  Only `sd` and `cg` are honoured (`lbfgs` /
+  `adam` fall back to `cg` with a one-time warning).  The same
+  retraction selector `rdmft_orb_retraction` applies, so e.g. `simple` +
+  `cayley` is a valid combination.  This baseline is intended for
+  algorithm validation, debugging, and pedagogical comparison against
+  the default `riemannian_bb` solver, not as a recommended setting for
+  production runs of the regularised functionals (Müller / Power / GEO),
+  where the absence of the trust radius can let monotone Armijo accept
+  steps into the unphysical basin.
 
 ### 7.2 Joint (Product Manifold) Optimization
 

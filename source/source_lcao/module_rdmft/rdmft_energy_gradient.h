@@ -150,6 +150,25 @@ class EnergyGradient
     void compute_diagonal(const TK* psi_k, const TK* Hpsi_k,
                           double* diag, int ik) const;
 
+    /// Polar retraction (Cholesky-QR S-orthonormalisation), MPI + serial.
+    /// Default retraction; the original retract_orbitals body.
+    void retract_polar(psi::Psi<TK>& wfc,
+                       const psi::Psi<TK>& grad_wfc,
+                       double alpha);
+
+    /// Householder QR retraction with sign-fixed R diagonal. Serial-only;
+    /// in MPI builds, retract_orbitals falls back to retract_polar.
+    void retract_qr_serial(psi::Psi<TK>& wfc,
+                           const psi::Psi<TK>& grad_wfc,
+                           double alpha);
+
+    /// Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397,
+    /// Algorithm 1). Serial-only; in MPI builds, retract_orbitals falls
+    /// back to retract_polar.
+    void retract_cayley_serial(psi::Psi<TK>& wfc,
+                               const psi::Psi<TK>& grad_wfc,
+                               double alpha);
+
   public:
     /// Project orbital gradient onto the tangent space of the Stiefel manifold
     /// with overlap matrix S (generalised Stiefel: C^H S C = I).
@@ -166,12 +185,34 @@ class EnergyGradient
 
     /// S-orthonormalise wfc along the direction grad_wfc with step -alpha:
     ///   C <- C - alpha * G
-    ///   C <- C * M^{-1/2}   where M = C^H S C
-    /// Ensures the new orbitals lie on the generalised Stiefel manifold
-    /// (C^H S C = I) to machine precision.
+    ///   C <- R(C - alpha G)
+    /// where R is one of three retractions on the standard Stiefel manifold
+    /// in X-space (X^H X = I), selected by `set_orb_retraction`:
+    ///
+    ///   Polar  (default): R(Y) = Y * (Y^H Y)^{-1/2}, Cholesky-QR implementation.
+    ///                     Cheap, MPI-supported. Loses ~half precision when
+    ///                     Y^H Y is ill-conditioned.
+    ///   QR             : R(Y) = qf(Y) via Householder QR with sign-fixed R
+    ///                     diagonal. More numerically robust. Serial-only;
+    ///                     MPI builds fall back to Polar with a one-time
+    ///                     warning.
+    ///   Cayley         : Wen-Yin low-rank Cayley retraction (Math. Prog. 142
+    ///                     (2013) 397, Algorithm 1). Solves a 2p x 2p system
+    ///                     and is exactly orthogonality-preserving without
+    ///                     factorisation. Serial-only; MPI falls back to
+    ///                     Polar with a one-time warning.
+    ///
+    /// The retraction choice can be changed at any time before calling this
+    /// function (typically by RDMFTSolver during `init`).
     void retract_orbitals(psi::Psi<TK>& wfc,
                           const psi::Psi<TK>& grad_wfc,
                           double alpha);
+
+    /// Select which retraction `retract_orbitals` uses. Default is Polar.
+    /// Setting this to QR or Cayley in an MPI build emits a one-time warning
+    /// and falls back to Polar inside `retract_orbitals`.
+    void set_orb_retraction(OrbRetraction r) { orb_retraction_ = r; }
+    OrbRetraction orb_retraction() const { return orb_retraction_; }
 
     /// Return pointer to overlap matrix at k-point ik (column-major).
     /// Rebuilt lazily the first time it is requested per ion step.
@@ -298,6 +339,13 @@ class EnergyGradient
     /// pdtrsm_, so we never store the explicit inverse — this halves the
     /// per-k Cholesky memory footprint.
     std::vector<std::vector<TK>> Uk_;
+
+    /// Orbital retraction selector. Default Polar matches the historical
+    /// Cholesky-QR S-orthonormalisation. QR / Cayley are serial-only.
+    OrbRetraction orb_retraction_ = OrbRetraction::Polar;
+    /// Set true after the first time an MPI fallback warning is emitted, so
+    /// the message does not flood the log.
+    mutable bool orb_retraction_mpi_fallback_warned_ = false;
 };
 
 } // namespace rdmft

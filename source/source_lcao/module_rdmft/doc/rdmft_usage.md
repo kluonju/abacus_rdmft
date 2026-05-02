@@ -183,6 +183,8 @@ when the inner flags alone indicate convergence.
 |---------|------|---------|----------------|
 | `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
 | `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_orb_strategy` | string | `riemannian_bb` | `riemannian_bb`, `simple` (alternating only; `spg` accepted as deprecated alias of `riemannian_bb`) |
+| `rdmft_orb_retraction` | string | `polar` | `polar`, `qr`, `cayley` (`qr` / `cayley` serial-only; MPI builds fall back to `polar` with a one-time warning) |
 | `rdmft_joint_optimizer` | string | `lbfgs` | `sd`, `cg`, `lbfgs`, `adam` |
 
 `rdmft_occ_optimizer` and `rdmft_orb_optimizer` control the two sub-problem
@@ -190,6 +192,23 @@ optimisers used by the `alternating` strategy.  `rdmft_joint_optimizer`
 selects the **single** unified optimiser used by the `joint` strategy on the
 packed `(p, C)` variable.  Only the keyword matching the active strategy is
 consulted; the others are ignored.
+
+`rdmft_orb_strategy` selects the orbital-sub-problem solver of the
+`alternating` strategy (it is ignored under `joint`):
+
+| Value | Algorithm | Notes |
+|-------|-----------|-------|
+| `riemannian_bb` (default) | BB-NMArmijo Riemannian gradient method on Stiefel: BB1 spectral step + Grippo–Lampariello–Lucidi non-monotone Armijo + Wen–Yin adaptive trust radius + direction blending (`sd` / `cg` / `lbfgs` / `adam` projected back onto the tangent space). | Reproduces the historical implementation byte-for-byte. The source comments name this *"Riemannian SPG"* (Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38** (2018) 495); classical SPG (Birgin–Martínez–Raydan 2000) is unrelated and is used only on the convex occupation sub-problem. |
+| `simple` | Textbook plain Riemannian SD or CG with **monotone** Armijo backtracking (Absil–Mahony–Sepulchre, 2008, §4.2). | A baseline against the default. Only `rdmft_orb_optimizer = sd` and `cg` are honoured; `lbfgs` / `adam` fall back to `cg` with a one-time warning. No BB step, no non-monotone history, no trust radius — for the regularised functionals (Müller / Power / GEO) the missing trust radius can let monotone Armijo accept steps into the unphysical basin, so use this only for algorithm validation, debugging, and pedagogical comparisons with `riemannian_bb`. |
+
+`rdmft_orb_retraction` selects the Stiefel retraction used by every orbital
+step (both `alternating` and `joint`):
+
+| Value | Algorithm | Notes |
+|-------|-----------|-------|
+| `polar` (default) | $R_X(\eta) = (X+\eta)\bigl[(X+\eta)^\dagger (X+\eta)\bigr]^{-1/2}$ via Cholesky-QR. | Cheap (one Cholesky + one triangular solve) and fully MPI-parallelised (ScaLAPACK `pdpotrf` + `pdtrsm`). Loses about half the working precision when $(X+\eta)^\dagger (X+\eta)$ is ill-conditioned. |
+| `qr` | Householder QR of $X+\eta = QR$ with sign-fixed $R$ diagonal. | More numerically robust than `polar` when $(X+\eta)^\dagger(X+\eta)$ is near-singular. **Serial-only**; MPI builds emit a one-time warning and fall back to `polar`. |
+| `cayley` | Wen–Yin low-rank Cayley retraction (Wen & Yin, *Math. Prog.* **142** (2013) 397, Algorithm 1). Solves a $2p \times 2p$ system via Sherman–Morrison–Woodbury; preserves orthogonality exactly without a triangular factor. | Attractive when $N_{\mathrm{basis}} \gg N_{\mathrm{bands}}$. **Serial-only**; MPI builds emit a one-time warning and fall back to `polar`. |
 
 You can choose different optimisers for the occupation and orbital
 sub-problems:

@@ -603,6 +603,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         {
             add_kv(keys, vals, "rdmft_occ_optimizer", optimizer_to_string(cfg.occ_optimizer));
             add_kv(keys, vals, "rdmft_orb_optimizer", optimizer_to_string(cfg.orb_optimizer));
+            add_kv(keys, vals, "rdmft_orb_strategy", orb_strategy_to_string(cfg.orb_strategy));
             add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
             add_kv(keys, vals, "rdmft_occ_maxiter", std::to_string(cfg.occ_maxiter));
             add_kv(keys, vals, "rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
@@ -614,6 +615,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
             add_kv(keys, vals, "joint_orb_scale", as_sci(cfg.joint_orb_scale));
             add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
         }
+        add_kv(keys, vals, "rdmft_orb_retraction", orb_retraction_to_string(cfg.orb_retraction));
         emit_rdmft_config_kv_table("Solver strategy", keys, vals);
     }
 
@@ -935,6 +937,12 @@ void RDMFTSolver<TK, TR>::init(
 
     occ_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.occ_optimizer, config_);
     orb_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.orb_optimizer, config_);
+
+    // Forward the orbital retraction selector to EnergyGradient. Default
+    // Polar reproduces the historical behaviour byte-for-byte; QR / Cayley
+    // are honoured by retract_orbitals (serial-only; MPI builds fall back
+    // to Polar with a one-time warning, see EnergyGradient::retract_orbitals).
+    energy_grad_->set_orb_retraction(config_.orb_retraction);
 
     occ_constraint_->set_lambda(config_.aug_lag_lambda_init);
     occ_constraint_->set_mu(config_.aug_lag_mu_init);
@@ -2663,6 +2671,24 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const std::vector<double>& occ_flat,
     psi::Psi<TK>& wfc)
 {
+    // Dispatcher on config_.orb_strategy. Default RiemannianBB reproduces
+    // the historical implementation; Simple selects the textbook
+    // Absil-Mahony-Sepulchre baseline (Riemannian SD/CG + monotone Armijo).
+    switch (config_.orb_strategy)
+    {
+        case OrbStrategy::RiemannianBB:
+            return optimize_orbitals_riemannian_bb(occ_flat, wfc);
+        case OrbStrategy::Simple:
+            return optimize_orbitals_simple(occ_flat, wfc);
+    }
+    return optimize_orbitals_riemannian_bb(occ_flat, wfc);
+}
+
+template <typename TK, typename TR>
+OptResult RDMFTSolver<TK, TR>::optimize_orbitals_riemannian_bb(
+    const std::vector<double>& occ_flat,
+    psi::Psi<TK>& wfc)
+{
     // Riemannian Spectral Projected Gradient on the Stiefel manifold
     // (Iannazzo-Porcelli, IMA J. Numer. Anal. 38 (2018) 495; combination of
     // Birgin-Martinez-Raydan SPG with Wen-Yin / Absil retraction-based
@@ -3155,6 +3181,317 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     }
 
     GlobalV::ofs_running << "      orb sub-problem: " << result.iterations << " iters"
+        << "  final_gnorm=" << std::scientific << result.grad_norm
+        << "  final_E=" << std::fixed << std::setprecision(10) << result.final_energy
+        << (result.converged ? "  CONVERGED" : "  not converged")
+        << std::endl;
+
+    return result;
+}
+
+template <typename TK, typename TR>
+OptResult RDMFTSolver<TK, TR>::optimize_orbitals_simple(
+    const std::vector<double>& occ_flat,
+    psi::Psi<TK>& wfc)
+{
+    // Plain Riemannian gradient method on the Stiefel manifold
+    //   (Absil-Mahony-Sepulchre, "Optimization Algorithms on Matrix
+    //   Manifolds", Princeton 2008, §4.2).
+    //
+    // Per inner iteration k:
+    //   1. E, G       <- energy & Euclidean orbital gradient.
+    //      G_R       <- project_orbital_gradient(X_k, G).
+    //   2. Direction
+    //        SD :  D = -G_R
+    //        CG :  D = -G_R + beta * T(D_{k-1}),  Polak-Ribiere+,
+    //              vector transport T = tangent-space projection at X_k.
+    //      Descent safeguard: if <G_R, D>_F >= 0, reset D = -G_R.
+    //   3. Monotone Armijo backtracking with the user's
+    //        line_search_alpha_init / line_search_c1 / line_search_rho /
+    //        line_search_max_iter.
+    //   4. Retract:  X_{k+1} = R_{X_k}(alpha * D), where R is the
+    //      retraction selected by config_.orb_retraction (defaults to Polar
+    //      = Cholesky-QR).
+    //
+    // No BB step, no non-monotone history, no trust radius, no
+    // suspicious-descent guard. Convergence stops on the same
+    // orb_grad_tol + (optional) orb_energy_tol pair as the default
+    // strategy. Only sd / cg are honoured; lbfgs / adam fall back to cg
+    // with a one-time warning (the simple strategy is intentionally a
+    // textbook baseline, not a quasi-Newton method).
+    OptResult result;
+
+    const int nk = wfc.get_nk();
+    const int nb_local = wfc.get_nbands();
+    const int nbs_local = wfc.get_nbasis();
+    const int total_size = nk * nb_local * nbs_local;
+
+    OptimizerType opt_type = config_.orb_optimizer;
+    if (opt_type == OptimizerType::LBFGS || opt_type == OptimizerType::Adam)
+    {
+        GlobalV::ofs_running
+            << "  RDMFT orb_strategy=simple: rdmft_orb_optimizer="
+            << (opt_type == OptimizerType::LBFGS ? "lbfgs" : "adam")
+            << " is not supported in the simple strategy; falling back to cg."
+            << std::endl;
+        opt_type = OptimizerType::ConjugateGradient;
+    }
+    const bool use_cg = (opt_type == OptimizerType::ConjugateGradient);
+
+    energy_grad_->invalidate_hone_cache();
+
+    psi::Psi<TK> wfc_save(wfc);
+    psi::Psi<TK> prev_grad(wfc);
+    psi::Psi<TK> prev_dir(wfc);
+    bool have_prev = false;
+
+    double prev_orb_E = 0.0;
+
+    auto frob2 = [&](const psi::Psi<TK>& A) {
+        double s = 0.0;
+        const int nkA = A.get_nk();
+        const int nbA = A.get_nbands();
+        const int nbsA = A.get_nbasis();
+        for (int ik = 0; ik < nkA; ++ik)
+        {
+            const int nelem = nbA * nbsA;
+            if (nelem == 0) continue;
+            const TK* a = &A(ik, 0, 0);
+            for (int i = 0; i < nelem; ++i) s += std::real(std::conj(a[i]) * a[i]);
+        }
+        Parallel_Reduce::reduce_all(s);
+        return s;
+    };
+
+    auto frob_inner = [&](const psi::Psi<TK>& A, const psi::Psi<TK>& B) {
+        double s = 0.0;
+        const int nkA = A.get_nk();
+        const int nbA = A.get_nbands();
+        const int nbsA = A.get_nbasis();
+        for (int ik = 0; ik < nkA; ++ik)
+        {
+            const int nelem = nbA * nbsA;
+            if (nelem == 0) continue;
+            const TK* a = &A(ik, 0, 0);
+            const TK* b = &B(ik, 0, 0);
+            for (int i = 0; i < nelem; ++i) s += std::real(std::conj(a[i]) * b[i]);
+        }
+        Parallel_Reduce::reduce_all(s);
+        return s;
+    };
+
+    for (int inner = 0; inner < config_.orb_maxiter; ++inner)
+    {
+        std::vector<double> grad_occ;
+        psi::Psi<TK> grad_wfc;
+        const double E = energy_grad_->compute(
+            const_cast<std::vector<double>&>(occ_flat), wfc, grad_occ, grad_wfc);
+
+        energy_grad_->project_orbital_gradient(wfc, grad_wfc);
+        const double gnorm2 = frob2(grad_wfc);
+        result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
+
+        const bool orb_e_enabled = (config_.orb_energy_tol > 0.0);
+        const double dE_abs = (inner > 0 && orb_e_enabled)
+                                  ? std::abs(E - prev_orb_E)
+                                  : std::numeric_limits<double>::infinity();
+
+        {
+            std::ostringstream os;
+            os << "      orb inner (simple) " << inner + 1
+               << "  E=" << std::fixed << std::setprecision(10) << E
+               << "  gnorm=" << std::scientific << result.grad_norm;
+            if (inner > 0)
+                os << "  dE=" << std::scientific << (E - prev_orb_E);
+            GlobalV::ofs_running << os.str() << std::endl;
+        }
+        prev_orb_E = E;
+
+        const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
+        const bool energy_conv = orb_e_enabled && (dE_abs < config_.orb_energy_tol);
+        const bool inner_energy_ok = !orb_e_enabled || energy_conv;
+        if (grad_conv && inner_energy_ok)
+        {
+            result.converged = true;
+            result.iterations = inner + 1;
+            result.final_energy = E;
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_, false);
+            break;
+        }
+
+        // Build search direction D in the tangent space at X_k.
+        psi::Psi<TK> dir(wfc);
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+
+        if (use_cg && have_prev)
+        {
+            // Polak-Ribiere+ CG with vector transport by tangent-space
+            // projection of the previous gradient and direction onto T_{X_k}.
+            psi::Psi<TK> g_prev_T(prev_grad);
+            energy_grad_->project_orbital_gradient(wfc, g_prev_T);
+            const double gn2_prev = frob2(g_prev_T);
+            if (gn2_prev > 1e-30)
+            {
+                psi::Psi<TK> y(grad_wfc);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
+                double beta_pr = frob_inner(grad_wfc, y) / gn2_prev;
+                beta_pr = std::max(0.0, beta_pr);
+                psi::Psi<TK> d_prev_T(prev_dir);
+                energy_grad_->project_orbital_gradient(wfc, d_prev_T);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
+                                              + TK(beta_pr) * d_prev_T(ik, ib, mu);
+                energy_grad_->project_orbital_gradient(wfc, dir);
+            }
+        }
+
+        // Descent safeguard: <G_R, D> must be < 0 (with our convention
+        // wfc <- wfc - alpha * G evaluated along the Cholesky-QR retraction,
+        // descent requires the directional derivative -<G_R, dir> at
+        // alpha = 0 to be negative, i.e. <G_R, dir> > 0). Equivalently in
+        // the formulation D = -G_R + beta * D_prev we need <G_R, D> < 0.
+        // Same convention as optimize_orbitals_riemannian_bb. Reset to SD on
+        // failure.
+        double dd = energy_grad_->s_inner_product(grad_wfc, dir);
+        if (dd >= 0.0)
+        {
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+            dd = energy_grad_->s_inner_product(grad_wfc, dir);
+        }
+
+        // Snapshot for line-search rollback.
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                    wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
+
+        // retract_orbitals applies wfc <- wfc - lambda * step (then
+        // S-orthonormalises). To retract along +dir we pass step = -dir.
+        psi::Psi<TK> neg_dir(dir);
+        if (total_size > 0)
+        {
+            TK* q = &neg_dir(0, 0, 0);
+            const TK* p = &dir(0, 0, 0);
+            for (int i = 0; i < total_size; ++i) q[i] = -p[i];
+        }
+
+        const double c1 = config_.line_search_c1;
+        const double rho = (config_.line_search_rho > 0.0 && config_.line_search_rho < 1.0)
+                               ? config_.line_search_rho : 0.5;
+        const double alpha_init = (config_.line_search_alpha_init > 0.0)
+                                       ? config_.line_search_alpha_init : 1.0;
+
+        // Monotone Armijo: smallest j s.t. E(X(rho^j alpha_init)) <= E + c1 * rho^j alpha_init * dd.
+        double lambda = alpha_init;
+        double E_new = E;
+        bool ls_success = false;
+        int orb_ls_ntrial = 0;
+        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+        {
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+            energy_grad_->retract_orbitals(wfc, neg_dir, lambda);
+            energy_grad_->invalidate_hone_cache();
+            E_new = energy_grad_->compute_energy(occ_flat, wfc);
+            ++orb_ls_ntrial;
+            if (std::isfinite(E_new) && E_new <= E + c1 * lambda * dd)
+            {
+                ls_success = true;
+                break;
+            }
+            lambda *= rho;
+        }
+
+        {
+            std::ostringstream orb_ls;
+            orb_ls << "      orb line search (simple Armijo)"
+                   << ": optim=" << (use_cg ? "cg" : "sd")
+                   << " alpha_init=" << std::scientific << alpha_init
+                   << " lambda=" << (ls_success ? lambda : 0.0)
+                   << " n_trial=" << orb_ls_ntrial
+                   << " E0=" << E << " E_trial=" << E_new
+                   << "  dd=<G_R,dir>=" << dd
+                   << "  c1=" << std::defaultfloat << c1 << "  rho=" << rho
+                   << (ls_success ? "  ok" : "  fail");
+            GlobalV::ofs_running << orb_ls.str() << std::endl;
+        }
+
+        // Save (G_R^k, D_k) BEFORE committing the move so prev_grad / prev_dir
+        // refer to the previous iterate when CG transports them.
+        for (int ik = 0; ik < nk; ++ik)
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                {
+                    prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
+                    prev_dir(ik, ib, mu) = dir(ik, ib, mu);
+                }
+        have_prev = true;
+
+        if (!ls_success)
+        {
+            // Roll back; Armijo failed (rare, usually means we are at a
+            // stationary point). Let the outer loop notice via gnorm.
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+            energy_grad_->invalidate_hone_cache();
+            result.iterations = inner + 1;
+            result.final_energy = E;
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_, false);
+            break;
+        }
+
+        // Optional energy convergence on the just-accepted step.
+        const double dE_step_abs = std::abs(E_new - E);
+        const bool orb_e_post = (config_.orb_energy_tol > 0.0);
+        const bool post_energy_ok = !orb_e_post || (dE_step_abs < config_.orb_energy_tol);
+
+        // Recompute gradient at new point (so result.grad_norm is reported
+        // post-step; cheap to drop on the *next* iteration's evaluation but
+        // worth doing here for the convergence check).
+        std::vector<double> grad_occ_new;
+        psi::Psi<TK> grad_wfc_new;
+        energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat), wfc, grad_occ_new, grad_wfc_new);
+        energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
+        const double post_gnorm2 = frob2(grad_wfc_new);
+        result.grad_norm = std::sqrt(std::max(0.0, post_gnorm2));
+        const bool post_grad_conv = (result.grad_norm < config_.orb_grad_tol);
+        if (post_grad_conv && post_energy_ok)
+        {
+            result.converged = true;
+            result.iterations = inner + 1;
+            result.final_energy = E_new;
+            print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                    occ_flat, nk_, nbands_, false);
+            energy_grad_->invalidate_hone_cache();
+            break;
+        }
+
+        energy_grad_->invalidate_hone_cache();
+        result.iterations = inner + 1;
+        result.final_energy = E_new;
+        print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
+                                occ_flat, nk_, nbands_, false);
+    }
+
+    GlobalV::ofs_running << "      orb sub-problem (simple): "
+        << result.iterations << " iters"
         << "  final_gnorm=" << std::scientific << result.grad_norm
         << "  final_E=" << std::fixed << std::setprecision(10) << result.final_energy
         << (result.converged ? "  CONVERGED" : "  not converged")

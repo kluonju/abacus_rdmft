@@ -966,6 +966,87 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_orb_strategy");
+        item.annotation = "Alternating-only orbital sub-problem strategy: riemannian_bb (default), simple";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Selects the orbital solver used by the alternating strategy. "
+                           "riemannian_bb (default): the existing implementation that combines a "
+                           "Riemannian gradient method with a Barzilai-Borwein (BB1) spectral step, "
+                           "Grippo-Lampariello-Lucidi non-monotone Armijo, a Wen-Yin adaptive "
+                           "trust radius, and direction blending (sd / cg / lbfgs / adam re-projected "
+                           "onto the tangent space). The source comments name this 'Riemannian SPG' "
+                           "after Iannazzo-Porcelli, IMA JNA 38 (2018) 495; classical SPG "
+                           "(Birgin-Martinez-Raydan 2000) is unrelated and is used only on the convex "
+                           "occupation sub-problem. simple: textbook plain Riemannian SD / CG with "
+                           "monotone Armijo backtracking (Absil-Mahony-Sepulchre, 2008, §4.2) -- a "
+                           "baseline against the default; only sd / cg are honoured (lbfgs / adam "
+                           "fall back to cg with a one-time warning). Ignored when "
+                           "rdmft_solver_strategy = joint.";
+        item.default_value = "riemannian_bb";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_orb_strategy);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_orb_strategy;
+                if (s.empty()) return;
+                std::string t = s;
+                for (char& c : t)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                // Accept "spg" as a deprecated alias for the default; downstream
+                // parser (parse_orb_strategy) treats it as riemannian_bb.
+                if (t != "riemannian_bb" && t != "riemannian-bb"
+                    && t != "simple" && t != "spg")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_orb_strategy must be one of: riemannian_bb, simple "
+                        "(spg accepted as deprecated alias of riemannian_bb)");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_retraction");
+        item.annotation = "Stiefel retraction: polar (default), qr, cayley (qr/cayley serial-only)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Retraction R(Y) used by every orbital step on the Stiefel manifold "
+                           "(both alternating and joint strategies share this knob). "
+                           "polar (default): R(Y) = Y * (Y^H Y)^{-1/2}, implemented as "
+                           "Cholesky-QR (M = L L^H, X_new = Y * L^{-H}). Cheap, fully MPI "
+                           "parallelised. Loses about half precision when Y^H Y is ill-conditioned. "
+                           "qr: Householder QR with sign-fixed R diagonal so the retraction is "
+                           "uniquely defined; more numerically robust than polar at the cost of one "
+                           "extra triangular operation; serial-only -- MPI builds fall back to polar "
+                           "with a one-time warning. cayley: Wen-Yin low-rank Cayley retraction "
+                           "(Math. Prog. 142 (2013) 397, Algorithm 1); solves a 2p x 2p system and "
+                           "preserves orthogonality exactly without a triangular factor; serial-only "
+                           "-- MPI builds fall back to polar with a one-time warning.";
+        item.default_value = "polar";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_orb_retraction);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_orb_retraction;
+                if (s.empty()) return;
+                std::string t = s;
+                for (char& c : t)
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                if (t != "polar" && t != "qr" && t != "cayley")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_orb_retraction must be one of: polar, qr, cayley");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_joint_optimizer");
         item.annotation = "Single unified optimiser for the RDMFT joint strategy: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";

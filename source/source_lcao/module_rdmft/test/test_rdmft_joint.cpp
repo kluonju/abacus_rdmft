@@ -28,7 +28,7 @@
 #include "gtest/gtest.h"
 #include "source_lcao/module_rdmft/rdmft_occupation.h"
 #include "source_lcao/module_rdmft/rdmft_optimizer.h"
-#include "source_lcao/module_rdmft/rdmft_stiefel.h"
+#include "source_lcao/module_rdmft/test/test_stiefel_helper.h"
 #include "source_lcao/module_rdmft/rdmft_type.h"
 
 #include <algorithm>

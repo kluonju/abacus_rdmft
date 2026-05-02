@@ -59,6 +59,25 @@ extern "C" {
     void pztrtri_(const char* uplo, const char* diag, const int* n,
                   std::complex<double>* A, const int* ia, const int* ja, const int* descA,
                   int* info);
+
+    // Householder QR (serial-only; used by retract_qr_serial).
+    void dgeqrf_(const int* m, const int* n, double* A, const int* lda,
+                 double* tau, double* work, const int* lwork, int* info);
+    void zgeqrf_(const int* m, const int* n, std::complex<double>* A, const int* lda,
+                 std::complex<double>* tau, std::complex<double>* work,
+                 const int* lwork, int* info);
+    void dorgqr_(const int* m, const int* n, const int* k, double* A,
+                 const int* lda, const double* tau, double* work,
+                 const int* lwork, int* info);
+    void zungqr_(const int* m, const int* n, const int* k, std::complex<double>* A,
+                 const int* lda, const std::complex<double>* tau,
+                 std::complex<double>* work, const int* lwork, int* info);
+    // 2p x 2p LU solve (serial-only; used by retract_cayley_serial).
+    void dgesv_(const int* n, const int* nrhs, double* A, const int* lda,
+                int* ipiv, double* B, const int* ldb, int* info);
+    void zgesv_(const int* n, const int* nrhs, std::complex<double>* A,
+                const int* lda, int* ipiv, std::complex<double>* B,
+                const int* ldb, int* info);
 }
 
 #include <cmath>
@@ -1258,6 +1277,43 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     const psi::Psi<TK>& grad_wfc,
     double alpha)
 {
+    // Dispatcher: select retraction implementation based on orb_retraction_.
+    // QR / Cayley are serial-only; in MPI builds we fall back to Polar with
+    // a one-time warning.
+#ifdef __MPI
+    if (orb_retraction_ != OrbRetraction::Polar
+        && !orb_retraction_mpi_fallback_warned_)
+    {
+        GlobalV::ofs_running
+            << "\n  RDMFT WARNING: rdmft_orb_retraction = "
+            << orb_retraction_to_string(orb_retraction_)
+            << " is currently serial-only; MPI build falls back to 'polar'."
+            << " This message is printed once.\n" << std::endl;
+        orb_retraction_mpi_fallback_warned_ = true;
+    }
+    retract_polar(wfc, grad_wfc, alpha);
+#else
+    switch (orb_retraction_)
+    {
+        case OrbRetraction::Polar:
+            retract_polar(wfc, grad_wfc, alpha);
+            break;
+        case OrbRetraction::QR:
+            retract_qr_serial(wfc, grad_wfc, alpha);
+            break;
+        case OrbRetraction::Cayley:
+            retract_cayley_serial(wfc, grad_wfc, alpha);
+            break;
+    }
+#endif
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::retract_polar(
+    psi::Psi<TK>& wfc,
+    const psi::Psi<TK>& grad_wfc,
+    double alpha)
+{
     // One retraction step on the standard Stiefel manifold in X-space:
     //   Y = X - alpha * G
     //   X_new = Y * (Y^H Y)^{-1/2}
@@ -1397,6 +1453,296 @@ void EnergyGradient<TK, TR>::retract_orbitals(
         detail::trsm_right_lower_conjt(nbasis, nbands, C, nbasis, M.data(), nbands);
     }
 #endif
+}
+
+namespace detail
+{
+// Serial-only helpers for the QR and Cayley retractions. Inline helpers used
+// only from this TU; isolating them here keeps the retract_*_serial bodies
+// readable. The extern "C" prototypes for ?geqrf, ?orgqr/?ungqr and ?gesv
+// are declared at file scope alongside the other LAPACK / ScaLAPACK
+// prototypes near the top of the TU.
+
+inline int geqrf(int m, int n, double* A, int lda, double* tau,
+                 double* work, int lwork)
+{
+    int info = 0;
+    dgeqrf_(&m, &n, A, &lda, tau, work, &lwork, &info);
+    return info;
+}
+inline int geqrf(int m, int n, std::complex<double>* A, int lda,
+                 std::complex<double>* tau, std::complex<double>* work, int lwork)
+{
+    int info = 0;
+    zgeqrf_(&m, &n, A, &lda, tau, work, &lwork, &info);
+    return info;
+}
+inline int orgqr(int m, int n, int k, double* A, int lda, const double* tau,
+                 double* work, int lwork)
+{
+    int info = 0;
+    dorgqr_(&m, &n, &k, A, &lda, tau, work, &lwork, &info);
+    return info;
+}
+inline int orgqr(int m, int n, int k, std::complex<double>* A, int lda,
+                 const std::complex<double>* tau, std::complex<double>* work, int lwork)
+{
+    int info = 0;
+    zungqr_(&m, &n, &k, A, &lda, tau, work, &lwork, &info);
+    return info;
+}
+inline int gesv(int n, int nrhs, double* A, int lda, int* ipiv,
+                double* B, int ldb)
+{
+    int info = 0;
+    dgesv_(&n, &nrhs, A, &lda, ipiv, B, &ldb, &info);
+    return info;
+}
+inline int gesv(int n, int nrhs, std::complex<double>* A, int lda, int* ipiv,
+                std::complex<double>* B, int ldb)
+{
+    int info = 0;
+    zgesv_(&n, &nrhs, A, &lda, ipiv, B, &ldb, &info);
+    return info;
+}
+
+// Sign / phase factor for the diagonal of R, used to make the Householder QR
+// retraction unique (R has positive real diagonal). For complex,
+// phase = R[i,i] / |R[i,i]|; for real, phase = sign(R[i,i]).
+inline double qr_diag_phase(double r) { return r >= 0.0 ? 1.0 : -1.0; }
+inline std::complex<double> qr_diag_phase(const std::complex<double>& r)
+{
+    const double m = std::abs(r);
+    if (m < 1.0e-300) return std::complex<double>(1.0, 0.0);
+    return r / m;
+}
+
+} // namespace detail
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::retract_qr_serial(
+    psi::Psi<TK>& wfc,
+    const psi::Psi<TK>& grad_wfc,
+    double alpha)
+{
+    // Householder QR retraction in X-space:
+    //   Y = X - alpha * D
+    //   Y = Q R         (LAPACK ?geqrf, ?orgqr)
+    //   X_new = Q * diag(phase(R[i,i]))   so that the implicit R has
+    //                                     positive real diagonal and the
+    //                                     retraction is unique.
+    // More numerically robust than Cholesky-QR (Polar) when Y^H Y is close to
+    // singular, at the cost of one extra triangular operation.
+    const int nbasis = wfc.get_nbasis();
+    const int nbands = wfc.get_nbands();
+    if (nbasis == 0 || nbands == 0) return;
+
+    std::vector<TK> c_dummy(1, TK(0));
+    std::vector<TK> g_dummy(1, TK(0));
+
+    std::vector<TK> tau(nbands, TK(0));
+    // Workspace size query.
+    TK lwork_query = TK(0);
+    int info = detail::geqrf(nbasis, nbands, nullptr, nbasis,
+                             tau.data(), &lwork_query, -1);
+    int lwork = static_cast<int>(detail::real_of(lwork_query));
+    if (info != 0 || lwork < nbands) lwork = std::max(lwork, nbands);
+    int lwork_orgqr_query = 0;
+    {
+        TK q = TK(0);
+        info = detail::orgqr(nbasis, nbands, nbands, nullptr, nbasis,
+                             tau.data(), &q, -1);
+        const int lwq = static_cast<int>(detail::real_of(q));
+        if (info != 0 || lwq < nbands) lwork_orgqr_query = std::max(lwq, nbands);
+        else lwork_orgqr_query = lwq;
+    }
+    if (lwork_orgqr_query > lwork) lwork = lwork_orgqr_query;
+    std::vector<TK> work(static_cast<size_t>(std::max(lwork, 1)), TK(0));
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
+        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
+
+        // Y = C - alpha * G   (in-place on C).
+        for (int i = 0; i < nbasis * nbands; ++i)
+            C[i] -= TK(alpha) * G[i];
+
+        // QR factor Y in-place (writes R into upper triangle of C, reflectors
+        // below; tau holds the per-column reflector scalars).
+        info = detail::geqrf(nbasis, nbands, C, nbasis, tau.data(),
+                             work.data(), lwork);
+        if (info != 0)
+        {
+            GlobalV::ofs_running << "WARNING: QR retraction (geqrf) failed at ik="
+                << ik << " (info=" << info << "); skipping retraction." << std::endl;
+            continue;
+        }
+
+        // Capture R diagonal before orgqr overwrites C with Q.
+        std::vector<TK> r_diag(nbands, TK(0));
+        for (int j = 0; j < nbands; ++j) r_diag[j] = C[j + j * nbasis];
+
+        // Form Q in C.
+        info = detail::orgqr(nbasis, nbands, nbands, C, nbasis, tau.data(),
+                             work.data(), lwork);
+        if (info != 0)
+        {
+            GlobalV::ofs_running << "WARNING: QR retraction (orgqr) failed at ik="
+                << ik << " (info=" << info << "); skipping retraction." << std::endl;
+            continue;
+        }
+
+        // Sign-fix: column j of Q is multiplied by phase(R[j,j]) so the
+        // implicit R has positive real diagonal. Without this the QR
+        // retraction is not uniquely defined and round-off can flip signs
+        // between consecutive iterations, hurting CG / BB.
+        for (int j = 0; j < nbands; ++j)
+        {
+            const TK phase = detail::qr_diag_phase(r_diag[j]);
+            // Skip the cheap multiply when phase is +1.
+            if (phase == TK(1.0)) continue;
+            TK* col = C + static_cast<std::size_t>(j) * nbasis;
+            for (int i = 0; i < nbasis; ++i) col[i] *= phase;
+        }
+    }
+}
+
+template <typename TK, typename TR>
+void EnergyGradient<TK, TR>::retract_cayley_serial(
+    psi::Psi<TK>& wfc,
+    const psi::Psi<TK>& grad_wfc,
+    double alpha)
+{
+    // Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397, Alg. 1).
+    // The caller passes a (Riemannian) gradient G with the convention that
+    // a descent step is wfc <- wfc - alpha * G for alpha > 0. The Cayley
+    // curve uses the skew-Hermitian matrix W = G X^H - X G^H and is
+    //   Y(alpha) = (I + (alpha/2) W)^{-1} (I - (alpha/2) W) X.
+    // For W = U V^H of rank 2p (U = [G | X], V = [X | -G], both N x 2p)
+    // the Sherman-Morrison-Woodbury identity reduces the inversion to a
+    // 2p x 2p system:
+    //     Y = X - alpha * U * (I_{2p} + (alpha/2) V^H U)^{-1} * V^H X.
+    //
+    // V^H U is a 2x2 block matrix of p x p blocks; with the abbreviations
+    // XtX = X^H X, XtG = X^H G, GtX = G^H X, GtG = G^H G:
+    //     V^H U = [ XtG    XtX ]
+    //             [-GtG   -GtX ]
+    // V^H X has 2p rows by p columns:
+    //     V^H X = [ XtX ; -GtX ].
+    //
+    // We solve (I_{2p} + (alpha/2) V^H U) M = V^H X with one 2p x 2p LU,
+    // split M into top / bottom p x p halves, and apply
+    //     Y = X - alpha * (G * M_top + X * M_bottom)
+    // exactly preserving X^H X = I (no Cholesky / QR re-orthonormalisation).
+    //
+    // Cost per k-point: 4 p x p gemms + one 2p x 2p LU solve + 2 (N x p)
+    // gemms.  Attractive when N >> p and when Y^H Y is ill-conditioned.
+    // Skipping a step (LU singular) is safe: the outer line search rejects
+    // the trial point.
+    const int nbasis = wfc.get_nbasis();
+    const int nbands = wfc.get_nbands();
+    if (nbasis == 0 || nbands == 0) return;
+
+    const int p = nbands;
+    const int two_p = 2 * p;
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const char tc = detail::trans_char(TK());
+    const double half_tau = 0.5 * alpha;
+
+    std::vector<TK> c_dummy(1, TK(0));
+    std::vector<TK> g_dummy(1, TK(0));
+
+    std::vector<TK> XtX(p * p, TK(0));
+    std::vector<TK> XtG(p * p, TK(0));
+    std::vector<TK> GtX(p * p, TK(0));
+    std::vector<TK> GtG(p * p, TK(0));
+    std::vector<TK> Tmat(two_p * two_p, TK(0));
+    std::vector<TK> RHS(two_p * p, TK(0));
+    std::vector<int> ipiv(two_p, 0);
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
+        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
+
+        // Four p x p Gram-style products. With X^H X = I (X-space invariant)
+        // we could shortcut XtX = I, but we still compute it: numerical
+        // round-off from previous retractions may have drifted it slightly,
+        // and using the actual value preserves exact Cayley invariance.
+        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
+            one, C, nbasis, C, nbasis, zero, XtX.data(), p);
+        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
+            one, C, nbasis, G, nbasis, zero, XtG.data(), p);
+        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
+            one, G, nbasis, C, nbasis, zero, GtX.data(), p);
+        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
+            one, G, nbasis, G, nbasis, zero, GtG.data(), p);
+
+        // Assemble T = I_{2p} + (alpha/2) * V^H U, column-major (2p x 2p).
+        // Block layout:
+        //   T(  0..p-1,   0..p-1) = (alpha/2) * XtG
+        //   T(  0..p-1,   p..2p-1) = (alpha/2) * XtX
+        //   T(  p..2p-1,  0..p-1) = -(alpha/2) * GtG
+        //   T(  p..2p-1,  p..2p-1) = -(alpha/2) * GtX
+        // plus I on the full 2p main diagonal.
+        std::fill(Tmat.begin(), Tmat.end(), TK(0));
+        auto Tref = [&](int gi, int gj) -> TK& {
+            return Tmat[gi + gj * two_p];
+        };
+        for (int j = 0; j < p; ++j)
+            for (int i = 0; i < p; ++i)
+            {
+                Tref(i, j)         = TK(half_tau) * XtG[i + j * p];
+                Tref(i, p + j)     = TK(half_tau) * XtX[i + j * p];
+                Tref(p + i, j)     = TK(-half_tau) * GtG[i + j * p];
+                Tref(p + i, p + j) = TK(-half_tau) * GtX[i + j * p];
+            }
+        for (int d = 0; d < two_p; ++d) Tref(d, d) += TK(1.0);
+
+        // Build RHS = V^H X = [XtX ; -GtX]   (2p x p).
+        std::fill(RHS.begin(), RHS.end(), TK(0));
+        for (int j = 0; j < p; ++j)
+            for (int i = 0; i < p; ++i)
+            {
+                RHS[i + j * two_p]     = XtX[i + j * p];
+                RHS[p + i + j * two_p] = -GtX[i + j * p];
+            }
+
+        // Solve T * M = RHS  =>  M overwrites RHS (2p x p column-major).
+        const int info = detail::gesv(two_p, p, Tmat.data(), two_p,
+                                      ipiv.data(), RHS.data(), two_p);
+        if (info != 0)
+        {
+            GlobalV::ofs_running << "WARNING: Cayley retraction LU solve failed at ik="
+                << ik << " (info=" << info
+                << "); skipping retraction (line search should reject)." << std::endl;
+            continue;
+        }
+
+        // Y = X - alpha * (G * M_top + X * M_bottom).
+        // M_top is RHS rows [0..p); M_bottom is rows [p..2p); both p x p.
+        std::vector<TK> Mtop(p * p, TK(0));
+        std::vector<TK> Mbot(p * p, TK(0));
+        for (int j = 0; j < p; ++j)
+            for (int i = 0; i < p; ++i)
+            {
+                Mtop[i + j * p] = RHS[i + j * two_p];
+                Mbot[i + j * p] = RHS[p + i + j * two_p];
+            }
+        // Order matters: form the X-dependent term BEFORE updating C.
+        std::vector<TK> Xnew(static_cast<size_t>(nbasis) * p, TK(0));
+        // Xnew := C * M_bottom
+        detail::gemm_wrapper('N', 'N', nbasis, p, p,
+            one, C, nbasis, Mbot.data(), p, zero, Xnew.data(), nbasis);
+        // Xnew += G * M_top
+        detail::gemm_wrapper('N', 'N', nbasis, p, p,
+            one, G, nbasis, Mtop.data(), p, one, Xnew.data(), nbasis);
+        // C <- C - alpha * Xnew
+        for (int i = 0; i < nbasis * p; ++i)
+            C[i] -= TK(alpha) * Xnew[i];
+    }
 }
 
 template <typename TK, typename TR>

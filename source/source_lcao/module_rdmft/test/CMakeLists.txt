@@ -18,12 +18,13 @@ if(ENABLE_LCAO AND BUILD_TESTING)
         )
     endif()
     AddTest(
-        TARGET rdmft_stiefel_test
-        SOURCES test_rdmft_stiefel.cpp
-    )
-    AddTest(
         TARGET rdmft_optimizer_test
         SOURCES test_rdmft_optimizer.cpp
+    )
+    AddTest(
+        TARGET rdmft_orbital_step_test
+        LIBS ${math_libs}
+        SOURCES test_rdmft_orbital_step.cpp
     )
     AddTest(
         TARGET rdmft_joint_test

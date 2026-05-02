@@ -78,6 +78,55 @@ enum class SolverStrategy
     Joint
 };
 
+/// Orbital sub-problem solver on the Stiefel manifold (alternating strategy).
+///
+/// RiemannianBB: BB1 spectral step + Grippo-Lampariello-Lucidi non-monotone
+///               Armijo + Wen-Yin adaptive trust radius + direction blending
+///               (CG / L-BFGS / Adam re-projected onto the tangent space) +
+///               suspicious-descent guard. This is the current default
+///               implementation, named "Riemannian SPG" in the source comments
+///               after Iannazzo-Porcelli (IMA JNA 38 (2018) 495); strictly
+///               speaking it only borrows two SPG kernel components (BB step
+///               and non-monotone Armijo) and replaces the convex projection
+///               with a retraction. Classical SPG (Birgin-Martinez-Raydan
+///               2000) is unrelated and is used only on the convex occupation
+///               sub-problem.
+/// Simple:       Plain Riemannian SD/CG + monotone Armijo backtracking, the
+///               textbook scheme of Absil-Mahony-Sepulchre, *Optimization
+///               Algorithms on Matrix Manifolds*, 2008, §4.2. No BB step, no
+///               non-monotone history, no trust radius, no descent guard.
+///               Only the alternating strategy honours this knob; only the
+///               sd / cg optimiser types are supported (lbfgs / adam fall
+///               back to cg with a warning).
+enum class OrbStrategy
+{
+    RiemannianBB,
+    Simple
+};
+
+/// Retraction on the Stiefel manifold St(N_b, N) used by every orbital step
+/// (alternating and joint). All three preserve X_new^H X_new = I to machine
+/// precision when applicable; they differ in cost and numerical robustness.
+///
+/// Polar:  X_new = (X - alpha D) (M)^{-1/2} with M = (X - alpha D)^H (X - alpha D),
+///         implemented as Cholesky-QR (M = L L^H -> Y * L^{-H}). This is the
+///         current default; cheap (one Cholesky + one triangular solve), but
+///         loses about half the working precision when M is ill-conditioned.
+/// QR:     X_new = qf(X - alpha D) via Householder QR, with the diagonal of R
+///         sign-fixed so the retraction is uniquely defined. More numerically
+///         robust than Polar when M is near-singular, slightly more expensive.
+/// Cayley: Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397,
+///         Algorithm 1). Builds U = [D | X], V = [X | -D] (size N x 2p) and
+///         X_new = X - alpha * U * (I_{2p} + (alpha/2) V^H U)^{-1} (V^H X).
+///         Solves only one 2p x 2p system, exact orthogonality, attractive
+///         when N >> p.
+enum class OrbRetraction
+{
+    Polar,
+    QR,
+    Cayley
+};
+
 enum class BBStepMode
 {
     BB1,
@@ -132,6 +181,46 @@ inline std::string xc_type_to_string(XCFunctionalType type)
     return "unknown";
 }
 
+inline OrbStrategy parse_orb_strategy(const std::string& name)
+{
+    if (name == "riemannian_bb" || name == "riemannian-bb"
+        || name == "spg" || name == "default") // accept "spg" as a deprecated alias
+        return OrbStrategy::RiemannianBB;
+    if (name == "simple") return OrbStrategy::Simple;
+    throw std::invalid_argument("Unknown rdmft_orb_strategy: " + name
+                                + " (allowed: riemannian_bb, simple)");
+}
+
+inline std::string orb_strategy_to_string(OrbStrategy s)
+{
+    switch (s)
+    {
+        case OrbStrategy::RiemannianBB: return "riemannian_bb";
+        case OrbStrategy::Simple: return "simple";
+    }
+    return "unknown";
+}
+
+inline OrbRetraction parse_orb_retraction(const std::string& name)
+{
+    if (name == "polar" || name == "default") return OrbRetraction::Polar;
+    if (name == "qr") return OrbRetraction::QR;
+    if (name == "cayley") return OrbRetraction::Cayley;
+    throw std::invalid_argument("Unknown rdmft_orb_retraction: " + name
+                                + " (allowed: polar, qr, cayley)");
+}
+
+inline std::string orb_retraction_to_string(OrbRetraction r)
+{
+    switch (r)
+    {
+        case OrbRetraction::Polar: return "polar";
+        case OrbRetraction::QR: return "qr";
+        case OrbRetraction::Cayley: return "cayley";
+    }
+    return "unknown";
+}
+
 /// How the RDMFT electron equality target N_e was built (for logging and diagnostics).
 struct RDMFTNelectronTargetMeta
 {
@@ -157,6 +246,17 @@ struct RDMFTConfig
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
     /// Alternating orbital inner: Armijo only (all optimiser types).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
+    /// Orbital sub-problem solver on the Stiefel manifold (alternating only).
+    /// Default `RiemannianBB` reproduces the existing implementation exactly.
+    /// `Simple` switches to the textbook Riemannian SD/CG + monotone Armijo
+    /// baseline (Absil-Mahony-Sepulchre §4.2); only sd / cg are honoured in
+    /// that mode (lbfgs / adam fall back to cg with a warning).
+    OrbStrategy orb_strategy = OrbStrategy::RiemannianBB;
+    /// Retraction used by every orbital step (alternating and joint).
+    /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
+    /// `QR` uses Householder QR with sign-fixed diagonal of R; `Cayley`
+    /// applies the Wen-Yin low-rank Cayley retraction.
+    OrbRetraction orb_retraction = OrbRetraction::Polar;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this

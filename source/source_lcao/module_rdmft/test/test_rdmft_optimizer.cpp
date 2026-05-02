@@ -1,6 +1,6 @@
 #include "gtest/gtest.h"
 #include "source_lcao/module_rdmft/rdmft_optimizer.h"
-#include "source_lcao/module_rdmft/rdmft_stiefel.h"
+#include "source_lcao/module_rdmft/test/test_stiefel_helper.h"
 #include <cmath>
 #include <vector>
 #include <functional>
