@@ -20,12 +20,14 @@ namespace rdmft
 /// for unoccupied bands and destroys the Armijo line-search / CG history
 /// in the occupation loop.
 ///
-/// We regularise by smoothly replacing the singular power with its Taylor
-/// expansion around a small cutoff eps:
-///     g(n)  = n^alpha                                     for n >= eps
-///           = eps^alpha + alpha * eps^(alpha-1) * (n-eps)  for n < eps
-/// so that g(0) = eps^alpha - alpha * eps^alpha = (1-alpha) * eps^alpha,
-/// g'(0) = alpha * eps^(alpha-1) (bounded), and g,g' are continuous at eps.
+/// We regularise by replacing the singular branch on [0, eps] with a C^1 cubic
+/// Hermite polynomial in x = n/eps:
+///     p(x) = (alpha-2)x^3 + (3-alpha)x^2
+/// and
+///     g(n)  = n^alpha                    for n >= eps
+///           = eps^alpha * p(n/eps)       for n < eps
+/// This enforces g(0)=0, g'(0)=0, g(eps)=eps^alpha, g'(eps)=alpha*eps^(alpha-1).
+/// So g and g' remain continuous at eps while empty bands keep zero coupling.
 /// The default cutoff eps = 1e-8 is many orders of magnitude below the
 /// target tolerances, so it does not affect the final converged energy
 /// for the ZnO-size problems we target, while keeping derivatives bounded
@@ -61,10 +63,7 @@ class XCFunctional
         n = std::max(0.0, std::min(1.0, n));
         if (alpha_ >= 1.0 - 1e-12) return n; // HF: no regularisation needed
         if (n >= reg_eps_) return std::pow(n, alpha_);
-        // Linear extrapolation from eps down to 0
-        const double g_eps  = std::pow(reg_eps_, alpha_);
-        const double dg_eps = alpha_ * std::pow(reg_eps_, alpha_ - 1.0);
-        return g_eps + dg_eps * (n - reg_eps_);
+        return regularized_power_value(n, alpha_);
     }
 
     /// g'(n): derivative of g(n) w.r.t. n (regularised to a bounded value on [0,eps])
@@ -72,15 +71,16 @@ class XCFunctional
     {
         n = std::max(0.0, std::min(1.0, n));
         if (alpha_ >= 1.0 - 1e-12) return 1.0; // HF
-        const double nmin = std::max(n, reg_eps_);
-        return alpha_ * std::pow(nmin, alpha_ - 1.0);
+        if (n >= reg_eps_) return alpha_ * std::pow(n, alpha_ - 1.0);
+        return regularized_power_derivative(n, alpha_);
     }
 
-    /// g''(n): second derivative (0 on the regularised interval)
+    /// g''(n): second derivative (finite on the regularised interval)
     double d2g(double n) const
     {
         n = std::max(0.0, std::min(1.0, n));
-        if (n < reg_eps_) return 0.0;
+        if (alpha_ >= 1.0 - 1e-12) return 0.0; // HF branch
+        if (n < reg_eps_) return regularized_power_second_derivative(n, alpha_);
         return alpha_ * (alpha_ - 1.0) * std::pow(n, alpha_ - 2.0);
     }
 
@@ -145,17 +145,15 @@ class XCFunctional
         n = std::max(0.0, std::min(1.0, n));
         if (alpha >= 1.0 - 1e-12) return n;
         if (n >= reg_eps_) return std::pow(n, alpha);
-        const double g_eps = std::pow(reg_eps_, alpha);
-        const double dg_eps = alpha * std::pow(reg_eps_, alpha - 1.0);
-        return g_eps + dg_eps * (n - reg_eps_);
+        return regularized_power_value(n, alpha);
     }
     /// Eps-regularised d(n^alpha)/dn (bounded near 0).
     double dpow_reg(double n, double alpha) const
     {
         n = std::max(0.0, std::min(1.0, n));
         if (alpha >= 1.0 - 1e-12) return 1.0;
-        const double nmin = std::max(n, reg_eps_);
-        return alpha * std::pow(nmin, alpha - 1.0);
+        if (n >= reg_eps_) return alpha * std::pow(n, alpha - 1.0);
+        return regularized_power_derivative(n, alpha);
     }
 
     /// Full coupling f(n_i, n_j) for the GU functional (non-separable).
@@ -169,14 +167,8 @@ class XCFunctional
             const double nic = std::max(0.0, std::min(1.0, ni));
             const double njc = std::max(0.0, std::min(1.0, nj));
             if (same_orbital) return nic * nic;
-            // eps-regularised sqrt: matches the Muller branch of g()
-            auto sqrt_reg = [&](double x) {
-                if (x >= reg_eps_) return std::sqrt(x);
-                const double g_eps  = std::sqrt(reg_eps_);
-                const double dg_eps = 0.5 / std::sqrt(reg_eps_);
-                return g_eps + dg_eps * (x - reg_eps_);
-            };
-            return sqrt_reg(nic) * sqrt_reg(njc);
+            // eps-regularised sqrt branch consistent with pow_reg(alpha=0.5).
+            return pow_reg(nic, 0.5) * pow_reg(njc, 0.5);
         }
         if (type_ == XCFunctionalType::GEO || type_ == XCFunctionalType::OptGM)
         {
@@ -198,9 +190,7 @@ class XCFunctional
             const double nic = std::max(0.0, std::min(1.0, ni));
             const double njc = std::max(0.0, std::min(1.0, nj));
             if (same_orbital) return 2.0 * nic;
-            const double ni_safe = std::max(nic, reg_eps_);
-            const double nj_safe = std::max(njc, reg_eps_);
-            return 0.5 / std::sqrt(ni_safe) * std::sqrt(nj_safe);
+            return dpow_reg(nic, 0.5) * pow_reg(njc, 0.5);
         }
         if (type_ == XCFunctionalType::GEO || type_ == XCFunctionalType::OptGM)
         {
@@ -234,6 +224,29 @@ class XCFunctional
     }
 
   private:
+    double regularized_power_value(double n, double alpha) const
+    {
+        // C1 cubic Hermite on [0, reg_eps] matching value and slope at reg_eps,
+        // while enforcing g(0)=0 and g'(0)=0 to keep empty states inactive.
+        const double x = n / reg_eps_;
+        const double p = (alpha - 2.0) * x * x * x + (3.0 - alpha) * x * x;
+        return std::pow(reg_eps_, alpha) * p;
+    }
+
+    double regularized_power_derivative(double n, double alpha) const
+    {
+        const double x = n / reg_eps_;
+        const double dpdx = 3.0 * (alpha - 2.0) * x * x + 2.0 * (3.0 - alpha) * x;
+        return std::pow(reg_eps_, alpha - 1.0) * dpdx;
+    }
+
+    double regularized_power_second_derivative(double n, double alpha) const
+    {
+        const double x = n / reg_eps_;
+        const double d2pdx2 = 6.0 * (alpha - 2.0) * x + 2.0 * (3.0 - alpha);
+        return std::pow(reg_eps_, alpha - 2.0) * d2pdx2;
+    }
+
     XCFunctionalType type_;
     double alpha_;
     double reg_eps_;

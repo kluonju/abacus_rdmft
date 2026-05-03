@@ -426,3 +426,23 @@ TEST_F(XCFunctionalTest, boundary_values)
     EXPECT_NEAR(xc.g(0.0), 0.0, 1e-12);
     EXPECT_NEAR(xc.g(1.0), 1.0, 1e-12);
 }
+
+TEST_F(XCFunctionalTest, RegularizedPowerKeepsEmptyBandsInactive)
+{
+    // Regression for Power/Muller occupations near n=0: regularization must
+    // preserve g(0)=0 and avoid a finite exchange weight for empty states.
+    constexpr double reg_eps = 1e-8;
+    XCFunctional power(XCFunctionalType::Power, 0.65, reg_eps);
+    XCFunctional muller(XCFunctionalType::Muller, 0.5, reg_eps);
+
+    EXPECT_DOUBLE_EQ(power.g(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(power.dg(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(muller.g(0.0), 0.0);
+    EXPECT_DOUBLE_EQ(muller.dg(0.0), 0.0);
+
+    // The regularized branch must connect continuously to n^alpha at n=eps.
+    EXPECT_NEAR(power.g(reg_eps), std::pow(reg_eps, 0.65), 1e-18);
+    EXPECT_NEAR(power.dg(reg_eps), 0.65 * std::pow(reg_eps, -0.35), 1e-10);
+    EXPECT_NEAR(muller.g(reg_eps), std::sqrt(reg_eps), 1e-18);
+    EXPECT_NEAR(muller.dg(reg_eps), 0.5 / std::sqrt(reg_eps), 1e-10);
+}
