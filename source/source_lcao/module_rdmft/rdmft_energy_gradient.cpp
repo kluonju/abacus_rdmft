@@ -2041,12 +2041,33 @@ double EnergyGradient<TK, TR>::compute(
             }
         }
 
-        // Orbital gradient w.r.t. LCAO coefficients (before X transform):
-        //   TK = std::complex<...>: Wirtinger ∂E/∂C* as wk * [n * (H_one + V_H) * C + g(n) * H_exx * C].
-        //   TK = double (real gamma-only LCAO): for n * C^T H C with symmetric H,
-        //   ∂E/∂C_μ = 2 wk n (H C)_μ (same H·C factors); apply the factor below.
-        // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
-        // GU: ∂J_ii/∂C is omitted here (would require RI response); see rdmft_derivation.md.
+        // Orbital gradient w.r.t. LCAO coefficients (before X transform).
+        //
+        //   Complex TK (multi-k LCAO):  E = wk * n * C^H H C  (Hermitian H)
+        //     dE = wk * n * [C^H H dC + dC^H H C] = 2 wk * n * Re[(HC)^H dC]
+        //     so the derivative wrt the real-valued objective along ANY direction
+        //     deltaC is `2 Re[<HC, deltaC>]`.  The conventional Wirtinger
+        //     derivative  partial_E / partial_C^*  = wk * n * H * C  is HALF
+        //     of this slope; using it as the line-search "gradient" leaves the
+        //     Armijo condition `f(alpha) <= f0 + c1*alpha*dd` permissive by
+        //     exactly a factor of two.
+        //
+        //   Real TK (gamma-only / Gamma-point real LCAO):  E = wk * n * C^T H C
+        //   with symmetric H gives dE/dC = 2 wk * n * H * C - the comment in
+        //   the previous version of this code already noted this but the
+        //   multiplication was not applied.
+        //
+        // Apply factor 2 in BOTH branches so the line-search slope `dd =
+        // <G, dir>` matches the true `dE/dalpha`.  The finite-difference
+        // orbital directional-derivative check (`rdmft_grad_check 1`)
+        // previously caught this as a ~100 % relative error (`fd_fwd =
+        // -2 <G_R, G_R>` while `analytic_dd = -<G_R, G_R>`). The
+        // undercounted gradient corrupted the line search slope by exactly
+        // a factor of two and let the Armijo condition accept overshoots
+        // that the true slope would reject.  See `rdmft_derivation.md` for
+        // the derivation.  GU: dJ_ii / dC is omitted here (would require
+        // RI response); see same reference.
+        constexpr double k_orb_grad_factor = 2.0;
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {
             int ib_global = ParaV_->local2global_col(ib_local);
@@ -2072,6 +2093,7 @@ double EnergyGradient<TK, TR>::compute(
             const TK* hx_ptr = &Hpsi_x[ib_local * nbs_local];
             const TK* hxc_ptr = &Hpsi_xc[ib_local * nbs_local];
 
+            const double prefactor = wk * k_orb_grad_factor;
             for (int mu = 0; mu < nbs_local; ++mu)
             {
                 TK acc = TK(0);
@@ -2094,7 +2116,7 @@ double EnergyGradient<TK, TR>::compute(
                         acc += TK(ex_scale * gn) * hx_ptr[mu];
                     }
                 }
-                grad_ptr[mu] = wk * acc;
+                grad_ptr[mu] = TK(prefactor) * acc;
             }
         }
     }

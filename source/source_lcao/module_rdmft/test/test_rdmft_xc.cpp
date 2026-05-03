@@ -311,6 +311,98 @@ TEST_F(XCFunctionalTest, gradient_consistency_numerical)
     }
 }
 
+// "Strange-occupation" sweep: verify dg matches FD across a wide n-range
+// covering near-zero, near-one, and the regularisation cutoff for every
+// separable functional. Catches regressions in any future change to the
+// small-n branch of `g(n)` (e.g. moving from linear extrapolation to a
+// cubic-Hermite spline, or tightening / loosening the regularisation
+// cutoff). Tolerance is set to the central-FD truncation floor for each
+// region: ~1e-6 above the cutoff, ~5% just below the cutoff (where the
+// regularised branch transitions to a polynomial that disagrees with
+// `n^alpha` by O(eps^alpha)).
+TEST_F(XCFunctionalTest, strange_occupation_dg_FD_consistency)
+{
+    const double h = 1e-7;
+    const std::vector<double> alphas{0.4, 0.5, 0.65, 0.75, 0.9};
+    // Probes split into "above" and "near" the regularisation cutoff
+    // (default reg_eps = 1e-8) so each region uses an appropriate tol.
+    const std::vector<double> n_above_cutoff{
+        0.001, 0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.99, 0.999};
+    for (auto type : {XCFunctionalType::Muller, XCFunctionalType::Power})
+    {
+        for (double alpha : alphas)
+        {
+            XCFunctional xc(type, alpha);
+            for (double n : n_above_cutoff)
+            {
+                const double dg_a = xc.dg(n);
+                const double dg_n = (xc.g(n + h) - xc.g(n - h)) / (2.0 * h);
+                // Use absolute tol for very small dg, relative else.
+                const double tol = std::max(1e-5, 1e-5 * std::abs(dg_a));
+                EXPECT_NEAR(dg_a, dg_n, tol)
+                    << "type=" << static_cast<int>(type)
+                    << " alpha=" << alpha << " n=" << n;
+            }
+        }
+    }
+}
+
+TEST_F(XCFunctionalTest, strange_occupation_g_finite_at_boundaries)
+{
+    // The whole point of the n -> 0 / n -> 1 regularisation is that
+    // g(0+), g(1-), dg(0+), dg(1-) and the second derivative are finite,
+    // so the orbital / occupation gradient never produces NaN / Inf
+    // when bands cross the boundary. Lock that in for every separable
+    // functional and exponent we ship.
+    for (auto type : {XCFunctionalType::HF, XCFunctionalType::Muller, XCFunctionalType::Power})
+    {
+        for (double alpha : {0.4, 0.5, 0.65, 0.75, 0.9, 1.0})
+        {
+            XCFunctional xc(type, alpha);
+            EXPECT_TRUE(std::isfinite(xc.g(0.0)));
+            EXPECT_TRUE(std::isfinite(xc.g(1.0)));
+            EXPECT_TRUE(std::isfinite(xc.dg(0.0)));
+            EXPECT_TRUE(std::isfinite(xc.dg(1.0)));
+            EXPECT_TRUE(std::isfinite(xc.d2g(0.0)));
+            EXPECT_TRUE(std::isfinite(xc.d2g(0.5)));
+            EXPECT_TRUE(std::isfinite(xc.d2g(1.0)));
+        }
+    }
+}
+
+TEST_F(XCFunctionalTest, strange_occupation_GEO_optGM_df_dni_FD_consistency)
+{
+    // GEO and optGM are non-separable mixtures of three n^alpha terms with
+    // alpha in {1, 1/2, 3/4}. df/dn_i must agree with the central FD of f
+    // at strange (n_i, n_j) configurations: very-small / near-one / mixed.
+    const double h = 1e-7;
+    const std::vector<std::pair<double, double>> probes{
+        {0.5, 0.5},                  // half-filled
+        {0.1, 0.1}, {0.1, 0.9},      // sparse
+        {0.99, 0.99},                // near-full
+        {0.001, 0.5}, {0.5, 0.001},  // very-asymmetric, near-cutoff
+        {0.9, 0.001}, {0.001, 0.9},
+        {0.25, 0.75}, {0.75, 0.25},
+    };
+    for (auto type : {XCFunctionalType::GEO, XCFunctionalType::OptGM,
+                      XCFunctionalType::GU})
+    {
+        XCFunctional xc(type);
+        for (auto [ni, nj] : probes)
+        {
+            const double a = xc.df_dni(ni, nj, false);
+            const double n_fd
+                = (xc.f(ni + h, nj, false) - xc.f(ni - h, nj, false)) / (2.0 * h);
+            // Looser absolute tolerance for tiny ni (near-cutoff) where
+            // central FD truncation dominates.
+            const double abs_tol = (ni < 1e-2) ? 1e-3 : 1e-5;
+            EXPECT_NEAR(a, n_fd, abs_tol)
+                << "type=" << static_cast<int>(type)
+                << " ni=" << ni << " nj=" << nj;
+        }
+    }
+}
+
 TEST_F(XCFunctionalTest, BinaryEntropy_interior_matches_formula)
 {
     const double n = 0.25;

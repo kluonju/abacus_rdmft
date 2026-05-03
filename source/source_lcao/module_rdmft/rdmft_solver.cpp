@@ -30,10 +30,27 @@ double sum_abs_diff(const std::vector<double>& a, const std::vector<double>& b)
     return s;
 }
 
-/// Line search in RDMFT: Strong Wolfe only for LBFGS; Armijo (backtracking) for sd / cg / adam.
+/// Line search in RDMFT: Strong Wolfe for LBFGS *and* nonlinear CG; Armijo
+/// (backtracking) for SD / Adam.
+///
+/// Nonlinear CG on a non-convex objective (e.g. RDMFT Müller / Power
+/// exchange on the Stiefel manifold) requires Strong Wolfe (Nocedal &
+/// Wright §3.5): the curvature condition `|g(alpha)| <= c2 |g(0)|`
+/// rejects line-search trials that overshoot the linear regime, which
+/// pure Armijo cannot detect. Pure Armijo accepts any trial that beats
+/// `f(0) + c1*alpha*g(0)` with no upper bound on the size of the
+/// "downhill" overshoot, and on this landscape the Power / Müller
+/// exchange has spurious low-energy regions far from the physical
+/// basin. The bug shows up immediately on the user's NiO test (clean
+/// KS init, nelec_delta=0): the second orbital line-search trial
+/// accepts alpha=1.0 with one feval and drops E from -338 Ry to
+/// -806 Ry on a `dd ~ -6`, then PR+ amplifies the gradient mismatch
+/// by 6 orders of magnitude on the next iter, and the iterate is in
+/// the wrong basin permanently.
 inline bool line_search_uses_strong_wolfe(const OptimizerType opt)
 {
-    return opt == OptimizerType::LBFGS;
+    return opt == OptimizerType::LBFGS
+        || opt == OptimizerType::ConjugateGradient;
 }
 
 /// Stop augmented-Lagrangian occupation inner loop when the total occupation change is small.
@@ -3063,6 +3080,130 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     return result;
 }
 
+// Run an occupation- and orbital-gradient FD check at a single given (occ, wfc)
+// point. Logs to GlobalV::ofs_running and returns true iff every per-band
+// occupation FD and the orbital directional-derivative FD pass `tolerance`.
+template <typename TK, typename TR>
+static bool grad_check_at_point(
+    rdmft::EnergyGradient<TK, TR>& energy_grad,
+    const std::vector<double>& occ_flat,
+    const psi::Psi<TK>& wfc,
+    const std::string& label,
+    double epsilon,
+    double tolerance)
+{
+    GlobalV::ofs_running << "\n----- Probe: " << label << " -----" << std::endl;
+    bool all_pass = true;
+
+    // Print a short occupation summary at this probe so the log shows what
+    // configuration we are testing.
+    {
+        const std::size_t n = occ_flat.size();
+        const std::size_t n_print = std::min<std::size_t>(n, 12);
+        std::ostringstream os;
+        os << "  occ summary [first " << n_print << " of " << n << "]: ";
+        os << std::fixed << std::setprecision(4);
+        for (std::size_t i = 0; i < n_print; ++i) os << occ_flat[i] << ' ';
+        double s = 0.0, mn = (n > 0 ? occ_flat[0] : 0.0), mx = mn;
+        for (std::size_t i = 0; i < n; ++i)
+        {
+            s += occ_flat[i];
+            mn = std::min(mn, occ_flat[i]);
+            mx = std::max(mx, occ_flat[i]);
+        }
+        os << " sum=" << s << "  min=" << mn << "  max=" << mx;
+        GlobalV::ofs_running << os.str() << std::endl;
+    }
+
+    // Analytic gradients at the probe point.
+    std::vector<double> grad_occ;
+    psi::Psi<TK> grad_wfc;
+    double E0 = energy_grad.compute(
+        const_cast<std::vector<double>&>(occ_flat),
+        const_cast<psi::Psi<TK>&>(wfc),
+        grad_occ, grad_wfc);
+
+    // ---- Occupation gradient FD ----
+    GlobalV::ofs_running << "  -- Occupation gradient --" << std::endl;
+    const std::size_t n_occ_check = std::min<std::size_t>(occ_flat.size(), 10);
+    for (std::size_t idx = 0; idx < n_occ_check; ++idx)
+    {
+        std::vector<double> occ_plus(occ_flat);
+        std::vector<double> occ_minus(occ_flat);
+        const double n_orig = occ_flat[idx];
+        if (n_orig + epsilon > 1.0 || n_orig - epsilon < 0.0) continue;
+        occ_plus[idx] += epsilon;
+        occ_minus[idx] -= epsilon;
+
+        const double E_plus
+            = energy_grad.compute_energy(occ_plus, const_cast<psi::Psi<TK>&>(wfc));
+        const double Ep_one = energy_grad.E_one_body();
+        const double Ep_h = energy_grad.E_hartree();
+        const double Ep_x = energy_grad.E_xc();
+        const double E_minus
+            = energy_grad.compute_energy(occ_minus, const_cast<psi::Psi<TK>&>(wfc));
+        const double Em_one = energy_grad.E_one_body();
+        const double Em_h = energy_grad.E_hartree();
+        const double Em_x = energy_grad.E_xc();
+
+        const double fd_grad = (E_plus - E_minus) / (2.0 * epsilon);
+        const double fd_one = (Ep_one - Em_one) / (2.0 * epsilon);
+        const double fd_h = (Ep_h - Em_h) / (2.0 * epsilon);
+        const double fd_x = (Ep_x - Em_x) / (2.0 * epsilon);
+
+        const double analytic = grad_occ[idx];
+        const double rel_err = (std::abs(analytic) > 1e-10)
+                                   ? std::abs(fd_grad - analytic) / std::abs(analytic)
+                                   : std::abs(fd_grad - analytic);
+        const bool pass = rel_err < tolerance;
+        if (!pass) all_pass = false;
+
+        GlobalV::ofs_running << std::fixed << std::setprecision(8)
+            << "    occ[" << idx << "]"
+            << "  n=" << n_orig
+            << "  analytic=" << analytic
+            << "  fd=" << fd_grad
+            << "  (fd_one=" << fd_one
+            << "  fd_h=" << fd_h
+            << "  fd_x=" << fd_x << ")"
+            << "  rel_err=" << rel_err
+            << (pass ? "  PASS" : "  FAIL") << std::endl;
+    }
+
+    // ---- Orbital directional-derivative FD ----
+    // Project the Euclidean gradient onto the Stiefel tangent (matching
+    // optimize_orbitals), then forward-differentiate along R(- t * G_R).
+    GlobalV::ofs_running << "  -- Orbital directional derivative --" << std::endl;
+    energy_grad.project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), grad_wfc);
+    psi::Psi<TK> G_dir(grad_wfc);
+    const double gnorm2 = energy_grad.s_inner_product(grad_wfc, grad_wfc);
+    const double analytic_dd = -gnorm2;
+
+    auto f_at = [&](double step) -> double {
+        psi::Psi<TK> wfc_trial(wfc);
+        energy_grad.retract_orbitals(wfc_trial, G_dir, step);
+        energy_grad.invalidate_hone_cache();
+        return energy_grad.compute_energy(occ_flat, wfc_trial);
+    };
+    const double fd = (f_at(epsilon) - E0) / epsilon;
+
+    const double orb_rel_err = (std::abs(analytic_dd) > 1e-10)
+                                   ? std::abs(fd - analytic_dd) / std::abs(analytic_dd)
+                                   : std::abs(fd - analytic_dd);
+    const bool orb_pass = orb_rel_err < tolerance;
+    if (!orb_pass) all_pass = false;
+
+    GlobalV::ofs_running << std::fixed << std::setprecision(8)
+        << "    analytic_dd=" << analytic_dd
+        << "  fd_fwd=" << fd
+        << "  ||G_R||^2=" << gnorm2
+        << "  rel_err=" << orb_rel_err
+        << (orb_pass ? "  PASS" : "  FAIL") << std::endl;
+
+    energy_grad.invalidate_hone_cache();
+    return all_pass;
+}
+
 template <typename TK, typename TR>
 bool RDMFTSolver<TK, TR>::check_gradient_consistency(
     const std::vector<double>& occ_flat,
@@ -3071,107 +3212,126 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
     double tolerance)
 {
     GlobalV::ofs_running << "\n===== RDMFT Gradient Consistency Check =====" << std::endl;
-
-    // Compute analytic gradients
-    std::vector<double> grad_occ;
-    psi::Psi<TK> grad_wfc;
-    double E0 = energy_grad_->compute(
-        const_cast<std::vector<double>&>(occ_flat),
-        const_cast<psi::Psi<TK>&>(wfc),
-        grad_occ, grad_wfc);
-
     bool all_pass = true;
 
-    // Check occupation gradients by finite difference
-    GlobalV::ofs_running << "\n-- Occupation gradient check --" << std::endl;
-    int n_occ_check = std::min(static_cast<int>(occ_flat.size()), 10);
+    // 1. Probe at the input (KS-derived) occupations
+    all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ_flat, wfc,
+                                             "input occupations", epsilon, tolerance);
 
-    for (int idx = 0; idx < n_occ_check; ++idx)
+    // Build several "strange" occupation configurations on top of the input
+    // (so the orbital iterate / k-weights / nbands match), each renormalised
+    // to the input weighted electron count. They probe regions of n that
+    // RDMFT optimisation can visit (uniform spread, near-zero, near-one,
+    // randomly perturbed, inverted), where the n^alpha coupling and its
+    // regularisation matter.
+    const int nk = wfc.get_nk();
+    const int nb = nbands_;
+    const std::size_t total = static_cast<std::size_t>(nk) * static_cast<std::size_t>(nb);
+    if (occ_flat.size() == total && nk > 0 && nb > 0)
     {
-        std::vector<double> occ_plus(occ_flat);
-        std::vector<double> occ_minus(occ_flat);
-
-        double n_orig = occ_flat[idx];
-        if (n_orig + epsilon > 1.0 || n_orig - epsilon < 0.0)
-            continue;
-
-        occ_plus[idx] += epsilon;
-        occ_minus[idx] -= epsilon;
-
-        double E_plus = energy_grad_->compute_energy(occ_plus,
-                            const_cast<psi::Psi<TK>&>(wfc));
-        double Ep_one = energy_grad_->E_one_body();
-        double Ep_h = energy_grad_->E_hartree();
-        double Ep_x = energy_grad_->E_xc();
-
-        double E_minus = energy_grad_->compute_energy(occ_minus,
-                            const_cast<psi::Psi<TK>&>(wfc));
-        double Em_one = energy_grad_->E_one_body();
-        double Em_h = energy_grad_->E_hartree();
-        double Em_x = energy_grad_->E_xc();
-
-        double fd_grad = (E_plus - E_minus) / (2.0 * epsilon);
-        double fd_one = (Ep_one - Em_one) / (2.0 * epsilon);
-        double fd_h   = (Ep_h - Em_h) / (2.0 * epsilon);
-        double fd_x   = (Ep_x - Em_x) / (2.0 * epsilon);
-
-        double analytic = grad_occ[idx];
-        double rel_err = (std::abs(analytic) > 1e-10)
-                         ? std::abs(fd_grad - analytic) / std::abs(analytic)
-                         : std::abs(fd_grad - analytic);
-
-        bool pass = rel_err < tolerance;
-        if (!pass) all_pass = false;
-
-        GlobalV::ofs_running << std::fixed << std::setprecision(8)
-            << "  occ[" << idx << "]: analytic=" << analytic
-            << "  fd=" << fd_grad
-            << "  (fd_one=" << fd_one
-            << "  fd_h=" << fd_h
-            << "  fd_x=" << fd_x << ")"
-            << "  rel_err=" << rel_err
-            << (pass ? "  PASS" : "  FAIL")
-            << std::endl;
-    }
-
-    // ---- Orbital gradient check (directional derivative along Riemannian G) ----
-    GlobalV::ofs_running << "\n-- Orbital gradient check --" << std::endl;
-    {
-        // Match optimize_orbitals: project the Euclidean gradient in-place to G_R,
-        // then compare the Armijo slope -||G_R||^2 to a finite difference along the
-        // same retract used in the line search (Y = X - step*G_R, then polar).
-        //
-        // A symmetric central difference in ±t can disagree badly with -||G_R||^2 for
-        // this polar/Cholesky retraction (nonlinear asymmetry in t); use a forward
-        // difference (E(t)-E0)/t, which matches the Armijo first-order model at t=0+.
-        energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), grad_wfc);
-        psi::Psi<TK> G_dir(grad_wfc);
-        const double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
-        const double analytic_dd = -gnorm2;
-
-        auto f_at = [&](double step) -> double {
-            psi::Psi<TK> wfc_trial(wfc);
-            energy_grad_->retract_orbitals(wfc_trial, G_dir, step);
-            energy_grad_->invalidate_hone_cache();
-            return energy_grad_->compute_energy(occ_flat, wfc_trial);
+        const auto& kw = (kv_ != nullptr) ? kv_->wk : std::vector<double>(nk, 1.0);
+        // Reference electron count Σ_k w_k Σ_b n_kb (matches the constraint).
+        auto weighted_sum = [&](const std::vector<double>& occ) {
+            double s = 0.0;
+            for (int ik = 0; ik < nk; ++ik)
+            {
+                const double w = (ik < static_cast<int>(kw.size())) ? kw[ik] : 1.0;
+                for (int ib = 0; ib < nb; ++ib)
+                    s += w * occ[ik * nb + ib];
+            }
+            return s;
         };
-        const double t = epsilon;
-        const double fd = (f_at(t) - E0) / t;
+        const double Ne_target = weighted_sum(occ_flat);
 
-        double rel_err = (std::abs(analytic_dd) > 1e-10)
-                             ? std::abs(fd - analytic_dd) / std::abs(analytic_dd)
-                             : std::abs(fd - analytic_dd);
-        bool pass = rel_err < tolerance;
-        if (!pass) all_pass = false;
-        GlobalV::ofs_running << std::fixed << std::setprecision(8)
-            << "  orb dir deriv: analytic=" << analytic_dd
-            << "  fd_fwd=" << fd
-            << "  ||G_R||^2=" << gnorm2
-            << "  rel_err=" << rel_err
-            << (pass ? "  PASS" : "  FAIL") << std::endl;
+        // Affinely rescale `occ` (clipped to [eps, 1-eps]) to a target weighted sum.
+        // Uses one bisection on a uniform shift x s.t. Σ w_k Σ_b clip(occ_kb + x) = N_e.
+        auto rescale_to_Ne = [&](std::vector<double>& occ, double Ne) {
+            const double clip_eps = 1e-6;
+            auto clip = [&](double n) {
+                return std::min(1.0 - clip_eps, std::max(clip_eps, n));
+            };
+            auto S = [&](double x) {
+                double s = 0.0;
+                for (int ik = 0; ik < nk; ++ik)
+                {
+                    const double w = (ik < static_cast<int>(kw.size())) ? kw[ik] : 1.0;
+                    for (int ib = 0; ib < nb; ++ib)
+                        s += w * clip(occ[ik * nb + ib] + x);
+                }
+                return s;
+            };
+            double lo = -1.0, hi = 1.0;
+            for (int it = 0; it < 100; ++it)
+            {
+                const double mid = 0.5 * (lo + hi);
+                ((S(mid) > Ne) ? hi : lo) = mid;
+                if (hi - lo < 1e-12) break;
+            }
+            const double xstar = 0.5 * (lo + hi);
+            for (auto& n : occ) n = clip(n + xstar);
+        };
 
-        // Restore state: invalidate cache so next compute() recomputes correctly.
-        energy_grad_->invalidate_hone_cache();
+        // Probe (a): uniform smear (n = N_e / (Σ w · nbands) clipped per-band).
+        {
+            std::vector<double> occ(total, 0.0);
+            const double w_sum_nb = [&]() {
+                double s = 0.0;
+                for (int ik = 0; ik < nk; ++ik)
+                    s += ((ik < static_cast<int>(kw.size())) ? kw[ik] : 1.0) * nb;
+                return s;
+            }();
+            const double n_uniform = (w_sum_nb > 0.0) ? (Ne_target / w_sum_nb) : 0.5;
+            std::fill(occ.begin(), occ.end(), n_uniform);
+            rescale_to_Ne(occ, Ne_target);
+            all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ, wfc,
+                                                     "uniform smear", epsilon, tolerance);
+        }
+
+        // Probe (b): near-zero with one band per k near 1 (sparsest configuration).
+        {
+            std::vector<double> occ(total, 1e-3);
+            for (int ik = 0; ik < nk; ++ik) occ[ik * nb + 0] = 1.0 - 1e-3;
+            rescale_to_Ne(occ, Ne_target);
+            all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ, wfc,
+                                                     "near-empty (one nearly-full per k)",
+                                                     epsilon, tolerance);
+        }
+
+        // Probe (c): inverted (1 - n) - swap occupied / virtual, renormalised.
+        {
+            std::vector<double> occ(occ_flat);
+            for (auto& n : occ) n = 1.0 - n;
+            rescale_to_Ne(occ, Ne_target);
+            all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ, wfc,
+                                                     "inverted (1 - n)", epsilon, tolerance);
+        }
+
+        // Probe (d): pseudo-random perturbation (deterministic, reproducible).
+        {
+            std::vector<double> occ(occ_flat);
+            // LCG-based pseudo-random in [0, 1); deterministic & MPI-independent.
+            std::uint64_t s = 0x9E3779B97F4A7C15ULL;
+            for (std::size_t i = 0; i < occ.size(); ++i)
+            {
+                s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+                const double r = static_cast<double>((s >> 32) & 0xFFFFFFFFULL)
+                                 / static_cast<double>(0x100000000ULL);
+                occ[i] += 0.2 * (r - 0.5); // +/- 0.1 perturbation
+            }
+            rescale_to_Ne(occ, Ne_target);
+            all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ, wfc,
+                                                     "random perturbation +/- 0.1",
+                                                     epsilon, tolerance);
+        }
+
+        // Probe (e): half-filled fractional (every band at 0.5, rescaled).
+        {
+            std::vector<double> occ(total, 0.5);
+            rescale_to_Ne(occ, Ne_target);
+            all_pass &= grad_check_at_point<TK, TR>(*energy_grad_, occ, wfc,
+                                                     "half-filled (n = 0.5)",
+                                                     epsilon, tolerance);
+        }
     }
 
     GlobalV::ofs_running << "\nGradient check " << (all_pass ? "PASSED" : "FAILED") << std::endl;
