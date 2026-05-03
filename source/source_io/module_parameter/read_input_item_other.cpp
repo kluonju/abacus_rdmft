@@ -881,7 +881,8 @@ void ReadInput::item_others()
                            "power (power functional, uses rdmft_power_alpha), gu (Goedecker-Umrigar), "
                            "bbc3 (BBC3-inspired rank-separated), geo "
                            "(f(n_p, n_q) = [n_p n_q + sqrt(n_p n_q) + 2 (n_p n_q)^{3/4}]/4), "
-                           "optgm (same three powers as geo with calibrated mixture weights). "
+                           "optgm (HF + Power(α) convex combination: "
+                           "K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α with fixed λ, α). "
                            "If empty, the old single-step RDMFT code path is used.";
         item.default_value = "";
         item.unit = "";

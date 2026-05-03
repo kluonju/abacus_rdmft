@@ -25,8 +25,8 @@ enum class XCFunctionalType
     /// and powers (1, 1/2, 3/4).  Non-separable in the single-g(n) sense; evaluated as
     /// a sum of three Power-like exchange contributions.
     GEO,
-    /// optGM: same exponent mixture as GEO (1, 1/2, 3/4) with calibrated weights
-    /// (0.00675, 0.64213, 0.35112) instead of GEO's (1/4, 1/4, 1/2).
+    /// optGM: convex combination of HF and Power(α) two-body kernels,
+    ///   K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α  with fixed (λ, α).
     OptGM
 };
 

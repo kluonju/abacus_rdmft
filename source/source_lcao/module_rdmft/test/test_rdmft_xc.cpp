@@ -238,34 +238,30 @@ TEST_F(XCFunctionalTest, OptGM_is_nonseparable)
     EXPECT_FALSE(xc.is_separable());
 }
 
-TEST_F(XCFunctionalTest, OptGM_decomposition_constants)
+TEST_F(XCFunctionalTest, OptGM_convex_combination_constants)
 {
-    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(0), 0.00675);
-    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(1), 0.64213);
-    EXPECT_DOUBLE_EQ(XCFunctional::optgm_coef(2), 0.35112);
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_power_weight(), 0.94012500);
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_hf_weight(), 1.0 - 0.94012500);
+    EXPECT_DOUBLE_EQ(XCFunctional::optgm_power_exponent(), 0.54242188);
+    EXPECT_NEAR(XCFunctional::optgm_hf_weight() + XCFunctional::optgm_power_weight(), 1.0, 1e-14);
     XCFunctional xc_geo(XCFunctionalType::GEO);
-    XCFunctional xc_opt(XCFunctionalType::OptGM);
     for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
     {
         EXPECT_DOUBLE_EQ(xc_geo.mixture_coef(t), XCFunctional::geo_coef(t));
-        EXPECT_DOUBLE_EQ(xc_opt.mixture_coef(t), XCFunctional::optgm_coef(t));
     }
-    double sum = 0.0;
-    for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
-        sum += XCFunctional::optgm_coef(t);
-    EXPECT_NEAR(sum, 1.0, 1e-12);
 }
 
 TEST_F(XCFunctionalTest, OptGM_full_coupling_formula)
 {
     XCFunctional xc(XCFunctionalType::OptGM);
+    const double lam = XCFunctional::optgm_power_weight();
+    const double al = XCFunctional::optgm_power_exponent();
     for (double np : {0.1, 0.3, 0.7})
     {
         for (double nq : {0.2, 0.5, 0.9})
         {
-            const double prod = np * nq;
-            const double expected = 0.00675 * prod + 0.64213 * std::sqrt(prod)
-                                    + 0.35112 * std::pow(prod, 0.75);
+            const double expected = (1.0 - lam) * np * nq
+                                    + lam * std::pow(np, al) * std::pow(nq, al);
             EXPECT_NEAR(xc.f(np, nq, false), expected, 1e-12)
                 << "n_p=" << np << " n_q=" << nq;
         }
@@ -372,8 +368,8 @@ TEST_F(XCFunctionalTest, strange_occupation_g_finite_at_boundaries)
 
 TEST_F(XCFunctionalTest, strange_occupation_GEO_optGM_df_dni_FD_consistency)
 {
-    // GEO and optGM are non-separable mixtures of three n^alpha terms with
-    // alpha in {1, 1/2, 3/4}. df/dn_i must agree with the central FD of f
+    // GEO is a non-separable mixture of three n^alpha terms; optGM is
+    // (1−λ) HF + λ Power(α). df/dn_i must agree with central FD of f at
     // at strange (n_i, n_j) configurations: very-small / near-one / mixed.
     const double h = 1e-7;
     const std::vector<std::pair<double, double>> probes{

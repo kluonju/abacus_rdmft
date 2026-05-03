@@ -103,18 +103,18 @@ class EnergyGradient
 
     /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|.
     /// When `alpha_override > 0`, use n^alpha_override instead of the functional's g(n).
-    /// This is needed by non-separable functionals (e.g. GEO / optGM) whose energy is the sum of
+    /// This is needed by non-separable functionals (e.g. GEO) whose energy is the sum of
     /// several separable Power-like terms: each call evaluates one term.
     void build_DM_xc(const std::vector<double>& occ_flat,
                      const psi::Psi<TK>& wfc,
                      std::vector<std::vector<TK>>& DM_XC,
                      double alpha_override = 0.0);
 
-    /// GEO / optGM: evaluate the three separable Power-like exchange contributions and
+    /// GEO: evaluate the three separable Power-like exchange contributions and
     /// fill per-k accumulators usable in the main energy / gradient assembly:
     ///
     ///   vx_diag_E_acc[ik][ib]  = Σ_t c_t · n_{ik,ib}^{α_t} · ⟨φ| H_exx[γ^t] |φ⟩
-    ///   vx_diag_G_acc[ik][ib]  = Σ_t c_t · α_t n_{ik,ib}^{α_t-1} · ⟨φ| H_exx[γ^t] |φ⟩
+    ///   vx_diag_G_acc[ik][ib]  = Σ_t c_t · d/dn (n^{α_t}) · ⟨φ| H_exx[γ^t] |φ⟩
     ///   Hpsi_x_acc[ik](ib,μ)   = Σ_t c_t · n_{ik,ib}^{α_t} · (H_exx[γ^t] · φ)_μ
     ///
     /// where (c_t, α_t) ∈ {(1/4, 1), (1/4, 1/2), (1/2, 3/4)} is the GEO decomposition
@@ -126,6 +126,15 @@ class EnergyGradient
                                         std::vector<std::vector<double>>& vx_diag_G_acc,
                                         std::vector<std::vector<TK>>& Hpsi_x_acc,
                                         bool compute_orb_grad);
+
+    /// optGM: two-term EXX assembly for K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α
+    /// (same accumulator layout as GEO).
+    void compute_optgm_exx_contributions(const std::vector<double>& occ_flat,
+                                         const psi::Psi<TK>& wfc,
+                                         std::vector<std::vector<double>>& vx_diag_E_acc,
+                                         std::vector<std::vector<double>>& vx_diag_G_acc,
+                                         std::vector<std::vector<TK>>& Hpsi_x_acc,
+                                         bool compute_orb_grad);
 
     /// Compute one-body Hamiltonian * wfc and diagonal elements
     void compute_one_body(const psi::Psi<TK>& wfc,
