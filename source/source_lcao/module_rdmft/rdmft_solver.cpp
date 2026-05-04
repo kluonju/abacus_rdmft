@@ -1353,28 +1353,32 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        // Outer stop: both inner sub-problems converged, and |dE| < tol when rdmft_energy_tol > 0.
+        // Outer stop: converge when EITHER both inner sub-problems converged
+        // OR |dE| < rdmft_energy_tol (when rdmft_energy_tol > 0).
         const bool inner_both = occ_result.converged && orb_result.converged;
         const bool energy_ok
             = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
-        const bool outer_converged = (iter > 0) && inner_both
-                                     && (config_.energy_tol <= 0.0 || energy_ok);
+        const bool outer_converged = (iter > 0) && (inner_both || energy_ok);
         if (outer_converged)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
             last_result_.final_energy = E;
             last_result_.grad_norm = std::max(occ_result.grad_norm, orb_result.grad_norm);
-            if (config_.energy_tol > 0.0)
+            if (inner_both && energy_ok)
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged and "
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop converged (OCC&ORB inner converged AND "
                                         "|dE| < rdmft_energy_tol)"
+                                     << std::endl;
+            }
+            else if (inner_both)
+            {
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop converged (OCC&ORB inner converged)"
                                      << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged; "
-                                        "rdmft_energy_tol <= 0: no outer energy criterion)"
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop converged (|dE| < rdmft_energy_tol)"
                                      << std::endl;
             }
             break;
@@ -2089,12 +2093,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;
 
-        // Outer stop: both occ/orb stationarity flags, and |dE| < tol when rdmft_energy_tol > 0.
+        // Outer stop: converge when EITHER both occ/orb stationarity flags
+        // OR |dE| < rdmft_energy_tol (when rdmft_energy_tol > 0).
         const bool inner_both_joint = occ_conv_joint && orb_conv_joint;
         const bool energy_ok_joint
             = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
-        const bool outer_converged_joint = (iter > 0) && inner_both_joint
-                                           && (config_.energy_tol <= 0.0 || energy_ok_joint);
+        const bool outer_converged_joint = (iter > 0) && (inner_both_joint || energy_ok_joint);
         if (outer_converged_joint)
         {
             last_result_.converged = true;
@@ -2102,16 +2106,20 @@ double RDMFTSolver<TK, TR>::solve_joint(
             last_result_.final_energy = E_new;
             last_result_.grad_norm = gnorm_total;
             E = E_new;
-            if (config_.energy_tol > 0.0)
+            if (inner_both_joint && energy_ok_joint)
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags and "
+                GlobalV::ofs_running << "  RDMFT joint: outer loop converged (OCC&ORB flags AND "
                                         "|dE| < rdmft_energy_tol)"
+                                     << std::endl;
+            }
+            else if (inner_both_joint)
+            {
+                GlobalV::ofs_running << "  RDMFT joint: outer loop converged (OCC&ORB flags)"
                                      << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags; "
-                                        "rdmft_energy_tol <= 0: no outer energy criterion)"
+                GlobalV::ofs_running << "  RDMFT joint: outer loop converged (|dE| < rdmft_energy_tol)"
                                      << std::endl;
             }
             break;
@@ -2779,6 +2787,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     psi::Psi<TK> prev_grad(wfc);
     psi::Psi<TK> prev_dir(wfc);
     bool have_prev = false;
+    double prev_gnorm2 = 0.0;
+    double prev_accepted_alpha = 0.0;
 
     double prev_orb_E = 0.0;
 
@@ -2846,29 +2856,41 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
         else if (use_cg && have_prev)
         {
-            // Polak-Ribiere+ CG with vector transport by tangent-space
-            // projection of (G_R^{prev}, D_{prev}) onto T_{X_k}.
-            psi::Psi<TK> g_prev_T(prev_grad);
-            energy_grad_->project_orbital_gradient(wfc, g_prev_T);
-            const double gn2_prev = frob2(g_prev_T);
-            if (gn2_prev > 1e-30)
+            // Riemannian Polak-Ribiere+ CG (Absil et al. "Optimization
+            // Algorithms on Matrix Manifolds", §8.1, Eq. 8.11).
+            // Vector transport by projection; Powell restart (§8.3).
+            bool cg_restart = false;
+            if (prev_gnorm2 > 1e-30)
             {
-                psi::Psi<TK> y(grad_wfc);
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
-                double beta_pr = frob_inner(grad_wfc, y) / gn2_prev;
-                beta_pr = std::max(0.0, beta_pr);
-                psi::Psi<TK> d_prev_T(prev_dir);
-                energy_grad_->project_orbital_gradient(wfc, d_prev_T);
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
-                                              + TK(beta_pr) * d_prev_T(ik, ib, mu);
-                energy_grad_->project_orbital_gradient(wfc, dir);
+                psi::Psi<TK> g_prev_T(prev_grad);
+                energy_grad_->project_orbital_gradient(wfc, g_prev_T);
+
+                const double overlap_new_old = frob_inner(grad_wfc, g_prev_T);
+                if (std::abs(overlap_new_old) >= 0.2 * gnorm2)
+                {
+                    cg_restart = true;
+                }
+                else
+                {
+                    psi::Psi<TK> y(grad_wfc);
+                    for (int ik = 0; ik < nk; ++ik)
+                        for (int ib = 0; ib < nb_local; ++ib)
+                            for (int mu = 0; mu < nbs_local; ++mu)
+                                y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
+                    double beta_pr = frob_inner(grad_wfc, y) / prev_gnorm2;
+                    beta_pr = std::max(0.0, beta_pr);
+
+                    psi::Psi<TK> d_prev_T(prev_dir);
+                    energy_grad_->project_orbital_gradient(wfc, d_prev_T);
+                    for (int ik = 0; ik < nk; ++ik)
+                        for (int ib = 0; ib < nb_local; ++ib)
+                            for (int mu = 0; mu < nbs_local; ++mu)
+                                dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
+                                                  + TK(beta_pr) * d_prev_T(ik, ib, mu);
+                    energy_grad_->project_orbital_gradient(wfc, dir);
+                }
             }
+            (void)cg_restart;
         }
 
         // Descent safeguard: with our convention `retract_orbitals(W, S, a)`
@@ -2903,14 +2925,37 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
 
         // ---- 3. Line search along the retracted curve ----
-        // L-BFGS / Adam set their own scale; their natural initial step is
-        // alpha_init = 1.0. SD / CG use the user's line_search_alpha_init.
+        // Adaptive initial step for CG (Nocedal & Wright §5.2).
         const double alpha_init_cfg = (config_.line_search_alpha_init > 0.0)
                                           ? config_.line_search_alpha_init : 1.0;
-        const double alpha_init = (use_lbfgs || use_adam) ? 1.0 : alpha_init_cfg;
+        double alpha_init;
+        if (use_lbfgs || use_adam)
+        {
+            alpha_init = 1.0;
+        }
+        else if (use_cg && prev_accepted_alpha > 0.0 && prev_gnorm2 > 1e-30 && gnorm2 > 1e-30)
+        {
+            alpha_init = prev_accepted_alpha * std::sqrt(prev_gnorm2 / gnorm2);
+            alpha_init = std::min(alpha_init, 10.0 * alpha_init_cfg);
+            alpha_init = std::max(alpha_init, 0.01 * alpha_init_cfg);
+        }
+        else
+        {
+            alpha_init = alpha_init_cfg;
+        }
         const double c1  = config_.line_search_c1;
         const double rho = (config_.line_search_rho > 0.0 && config_.line_search_rho < 1.0)
                                ? config_.line_search_rho : 0.5;
+
+        // Step-size safeguard: cap alpha_init so ||alpha * dir||_F stays bounded.
+        {
+            const double dir_norm = std::sqrt(std::max(1e-30, frob2(dir)));
+            const double max_step_norm = std::sqrt(static_cast<double>(nk * nb_local));
+            if (alpha_init * dir_norm > max_step_norm && dir_norm > 1e-10)
+            {
+                alpha_init = max_step_norm / dir_norm;
+            }
+        }
 
         auto eval_at_step = [&](double a) -> double {
             for (int ik = 0; ik < nk; ++ik)
@@ -2925,12 +2970,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         LineSearchResult ls;
         if (use_strong_wolfe)
         {
-            // Strong Wolfe: phi(a) returns (E(a), <G_R(X(a)), D>_F). The
-            // gradient slope is computed by retracting, evaluating
-            // grad_wfc at the trial point, projecting onto T_{X(a)}, and
-            // taking <G_R, D>_F (D fixed in the ambient space). This is the
-            // standard Wolfe along the retracted curve when D is treated
-            // as a constant ambient direction.
+            // Strong Wolfe with c2=0.1 for CG (tight curvature to prevent
+            // overshooting on non-convex Stiefel landscapes), c2=config for LBFGS.
+            const double c2_eff = use_cg ? 0.1 : config_.line_search_c2;
             psi::Psi<TK> grad_trial(wfc);
             std::vector<double> grad_occ_trial;
             auto phi = [&](double a) -> std::pair<double, double> {
@@ -2948,8 +2990,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 return {E_a, slope};
             };
             ls = strong_wolfe_line_search(
-                phi, E, dd, alpha_init, c1, config_.line_search_c2,
+                phi, E, dd, alpha_init, c1, c2_eff,
                 config_.line_search_max_iter, config_.line_search_max_zoom);
+            // Armijo fallback when Strong Wolfe fails for CG
+            if (!ls.success && use_cg)
+            {
+                ls = armijo_line_search(
+                    eval_at_step, E, dd, alpha_init, c1, rho,
+                    config_.line_search_max_iter, config_.line_search_polynomial);
+            }
         }
         else
         {
@@ -2960,6 +3009,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         const double lambda = ls.success ? ls.step : 0.0;
         const double E_new = ls.success ? ls.f_new : E;
+        if (ls.success && lambda > 0.0)
+        {
+            prev_accepted_alpha = lambda;
+        }
 
         {
             std::ostringstream orb_ls;
@@ -2976,8 +3029,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             GlobalV::ofs_running << orb_ls.str() << std::endl;
         }
 
-        // Save (G_R^k, D_k) BEFORE the move so prev_grad / prev_dir refer
-        // to the *previous* iterate when CG transports them next round.
+        // Save (G_R^k, D_k) and ||G_R^k||^2 BEFORE the move.
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
@@ -2985,6 +3037,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                     prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
                     prev_dir(ik, ib, mu) = dir(ik, ib, mu);
                 }
+        prev_gnorm2 = gnorm2;
         have_prev = true;
 
         if (!ls.success)
