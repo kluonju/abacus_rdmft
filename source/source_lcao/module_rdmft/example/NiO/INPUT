@@ -20,7 +20,6 @@ rdmft_functional    power
 rdmft_solver_strategy  alternating
 rdmft_constraint projected_gradient
 rdmft_occ_init_mode perturbed
-rdmft_occ_init_nbands_top 4
 rdmft_occ_init_perturb   1e-3
 
 nelec_delta -0.2

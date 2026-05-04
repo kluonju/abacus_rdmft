@@ -681,7 +681,7 @@ struct Input_para
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
     std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, binary, uniform
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
-    int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
+    int rdmft_occ_init_nbands_top = 0;             // binary/uniform: K above + K below Fermi (not perturbed)
     double rdmft_energy_tol = 1e-8;                // outer |dE| AND occ+orb inner converged; <=0: inner flags only
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables

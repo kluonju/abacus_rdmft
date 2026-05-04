@@ -244,14 +244,14 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `uniform`. |
+| `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `binary`, `uniform`. |
 | `rdmft_occ_init_perturb` | real | `0.0` | Perturbation magnitude `delta` used by `rdmft_occ_init_mode = perturbed`. |
-| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` used by `perturbed`/`uniform`: select `K` bands above and `K` bands below the Fermi boundary (per k-point). |
+| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` used by `binary`/`uniform`: select `K` bands above and `K` bands below the Fermi boundary (per k-point). Ignored by `perturbed` (all bands are shifted). |
 
 - `ks`: use KS occupations directly as RDMFT initial occupations.
-- `perturbed`: for each k-point and selected Fermi-window bands, apply `+delta` to bands above Fermi and `-delta` to bands below Fermi, then project back to the feasible set.
+- `perturbed`: for each k-point, apply `+delta` to every band above the Fermi boundary and `-delta` to every band at or below it, then project back to the feasible set.
 - `uniform`: for each k-point, compute `N_top` over the selected `2K` Fermi-window bands and set each selected occupation to `N_top / (2K)` (or `N_top / N_selected` near band edges), then project.
-- If `K <= 0`, `perturbed` and `uniform` fall back to `ks`.
+- If `K <= 0`, `binary` and `uniform` fall back to `ks`. If `delta <= 0`, `perturbed` falls back to `ks`.
 
 ### Line search and optimiser tuning
 

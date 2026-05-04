@@ -225,28 +225,28 @@ struct RDMFTConfig
     int orb_maxiter = 50;
     /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
-    /// Alternating / joint outer: when >0, require |dE| < this between outer iters
-    /// **and** occupation+orbital inner `converged` flags. When <=0, outer stops on inner flags only
-    /// (after first outer iter). Same field as INPUT `rdmft_energy_tol`.
+    /// Alternating / joint outer: always require occupation+orbital inner `converged` flags.
+    /// When >0, also require |dE| < this between outer iters. When <=0, no outer energy check
+    /// (inner convergence alone). Same field as INPUT `rdmft_energy_tol`.
     double energy_tol = 1e-8;
     /// Inner orbital step: Riemannian gradient norm ||G_R|| must fall below this
     /// for convergence (and, when orb_energy_tol > 0, the energy change criterion
     /// must also be satisfied).
-    double orb_grad_tol = 1e-6;
+    double orb_grad_tol = 1e-4;
     /// Alternating orbital inner loop: when > 0, convergence additionally requires
     /// |E_k - E_{k-1}| before the step and |E_new - E| after an accepted line search
     /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
-    double orb_energy_tol = 1e-8;
+    double orb_energy_tol = 1e-6;
     /// Occupation inner: stop the inner loop when sum_i |Δn_i| in one iteration is below this
     /// (Augmented Lagrangian, projected_gradient, and active_set; same convergence criterion as
     /// the orbital inner energy/gradient pair).
     double rdmft_occ_tol = 1e-6;
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
-    double occ_energy_tol = 1e-8;
+    double occ_energy_tol = 1e-6;
     /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:
     /// initial trial α₀ pre-step, accepted Armijo α post-step, line_search_alpha_init on SD fallback).
     /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
-    double occ_grad_tol = 1e-6;
+    double occ_grad_tol = 1e-4;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
 
@@ -325,7 +325,7 @@ struct RDMFTConfig
     /// OccInitMode::Perturbed.
     double occ_init_perturb = 0.0;
     /// Number of bands in the Fermi window per side (above/below Fermi),
-    /// used by OccInitMode::Perturbed and OccInitMode::Uniform.
+    /// used by OccInitMode::Binary and OccInitMode::Uniform (not Perturbed: that perturbs all bands).
     int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.

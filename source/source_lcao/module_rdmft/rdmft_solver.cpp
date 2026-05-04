@@ -1008,13 +1008,12 @@ double RDMFTSolver<TK, TR>::solve(
     else if (config_.occ_init_mode == OccInitMode::Perturbed)
     {
         occ_flat = occ_ks_seed;
-        const int K = std::min(config_.occ_init_nbands_top, nbands_);
         const double delta = config_.occ_init_perturb;
 
-        if (K <= 0 || delta <= 0.0)
+        if (delta <= 0.0)
         {
             log_init_common("perturbed",
-                            "note=K<=0 or delta<=0, fallback=ks");
+                            "note=delta<=0, fallback=ks");
         }
         else
         {
@@ -1026,25 +1025,20 @@ double RDMFTSolver<TK, TR>::solve(
                 const double wk = occ_constraint_->kweights()[ik];
                 const double n_target_k = n_electrons_ * wk / sum_k_weights;
                 const int ib_fermi = find_init_fermi_boundary(occ_ks_seed, ik, nbands_, wk, n_target_k);
-                for (int t = 0; t < K; ++t)
+                for (int ib = 0; ib < nbands_; ++ib)
                 {
-                    const int ib_above = ib_fermi + 1 + t;
-                    if (ib_above >= 0 && ib_above < nbands_)
+                    const int idx = ik * nbands_ + ib;
+                    if (ib > ib_fermi)
                     {
-                        const int idx = ik * nbands_ + ib_above;
                         occ_flat[idx] = occ_ks_seed[idx] + delta;
-                        touched[idx] = true;
                         ++n_plus;
                     }
-
-                    const int ib_below = ib_fermi - t;
-                    if (ib_below >= 0 && ib_below < nbands_)
+                    else
                     {
-                        const int idx = ik * nbands_ + ib_below;
                         occ_flat[idx] = occ_ks_seed[idx] - delta;
-                        touched[idx] = true;
                         ++n_minus;
                     }
+                    touched[idx] = true;
                 }
             }
 
@@ -1054,7 +1048,7 @@ double RDMFTSolver<TK, TR>::solve(
             const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
             std::ostringstream os;
-            os << "K=" << K
+            os << "nbands=" << nbands_
                << ", delta=" << delta
                << ", n_plus=" << n_plus
                << ", n_minus=" << n_minus
@@ -1359,31 +1353,28 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        // Outer stop: energy change below tol (if tol > 0) or both inner sub-problems converged.
+        // Outer stop: both inner sub-problems converged, and |dE| < tol when rdmft_energy_tol > 0.
         const bool inner_both = occ_result.converged && orb_result.converged;
         const bool energy_ok
             = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
-        const bool outer_converged = (iter > 0) && (energy_ok || inner_both);
+        const bool outer_converged = (iter > 0) && inner_both
+                                     && (config_.energy_tol <= 0.0 || energy_ok);
         if (outer_converged)
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
             last_result_.final_energy = E;
             last_result_.grad_norm = std::max(occ_result.grad_norm, orb_result.grad_norm);
-            if (energy_ok && inner_both)
+            if (config_.energy_tol > 0.0)
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol and "
-                                        "OCC&ORB inner converged)"
-                                     << std::endl;
-            }
-            else if (energy_ok)
-            {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (|dE| < rdmft_energy_tol)"
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged and "
+                                        "|dE| < rdmft_energy_tol)"
                                      << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged)"
+                GlobalV::ofs_running << "  RDMFT alternating: outer loop stopped (OCC&ORB inner converged; "
+                                        "rdmft_energy_tol <= 0: no outer energy criterion)"
                                      << std::endl;
             }
             break;
@@ -2098,11 +2089,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
         joint_gn_tot = gnorm_total;
         joint_outer_done = iter + 1;
 
-        // Outer stop: energy change below tol (if tol > 0) or both occ/orb stationarity flags.
+        // Outer stop: both occ/orb stationarity flags, and |dE| < tol when rdmft_energy_tol > 0.
         const bool inner_both_joint = occ_conv_joint && orb_conv_joint;
         const bool energy_ok_joint
             = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
-        const bool outer_converged_joint = (iter > 0) && (energy_ok_joint || inner_both_joint);
+        const bool outer_converged_joint = (iter > 0) && inner_both_joint
+                                           && (config_.energy_tol <= 0.0 || energy_ok_joint);
         if (outer_converged_joint)
         {
             last_result_.converged = true;
@@ -2110,20 +2102,17 @@ double RDMFTSolver<TK, TR>::solve_joint(
             last_result_.final_energy = E_new;
             last_result_.grad_norm = gnorm_total;
             E = E_new;
-            if (energy_ok_joint && inner_both_joint)
+            if (config_.energy_tol > 0.0)
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol and OCC&ORB "
-                                        "flags)"
-                                     << std::endl;
-            }
-            else if (energy_ok_joint)
-            {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol)"
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags and "
+                                        "|dE| < rdmft_energy_tol)"
                                      << std::endl;
             }
             else
             {
-                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags)" << std::endl;
+                GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (OCC&ORB flags; "
+                                        "rdmft_energy_tol <= 0: no outer energy criterion)"
+                                     << std::endl;
             }
             break;
         }

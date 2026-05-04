@@ -1090,10 +1090,13 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "ks: use KS occupations directly. "
-                   "perturbed: in a Fermi window, apply +/-delta based on the KS occupation. "
-                   "binary: in the same Fermi window, set to 1-delta if occ>=0.5, or delta if occ<0.5. "
-                   "uniform: in the same Fermi window, set all selected occupations "
-                   "to the local average N_top / N_selected.";
+                   "perturbed: at each k, add +delta to every band above the Fermi boundary and -delta to every "
+                   "band at or below it (see solver), then project to the feasible set; requires "
+                   "rdmft_occ_init_perturb > 0. "
+                   "binary: in the Fermi window set by rdmft_occ_init_nbands_top, set to 1-delta if occ>=0.5, "
+                   "or delta if occ<0.5. "
+                   "uniform: in that Fermi window, set all selected occupations to the local average "
+                   "N_top / N_selected.";
         item.default_value = "ks";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1141,9 +1144,10 @@ void ReadInput::item_others()
         item.annotation = "Initial occupation Fermi-window half-width";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Fermi-window half-width K used by rdmft_occ_init_mode = perturbed/uniform. "
-                           "For each k-point, select K bands above and K bands below the Fermi boundary. "
-                           "K <= 0 disables these windowed initialisation modes and falls back to KS occupations.";
+        item.description = "Fermi-window half-width K used by rdmft_occ_init_mode = binary/uniform (not perturbed: "
+                           "that mode shifts every band at each k). For each k-point, select K bands above and K "
+                           "bands below the Fermi boundary. K <= 0 disables binary/uniform windowed initialisation "
+                           "and falls back to KS occupations.";
         item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1166,10 +1170,10 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop declares "
-                           "convergence if |E - E_prev| (Ry) < rdmft_energy_tol (used only when > 0) **or** both "
-                           "occupation- and orbital-inner criteria are met (alternating: inner `converged` flags; "
-                           "joint: occ/orb stationarity flags). If <= 0, the energy test is omitted and outer "
-                           "convergence uses the inner criteria only.";
+                           "convergence only when both occupation- and orbital-inner criteria are met "
+                           "(alternating: inner `converged` flags; joint: occ/orb stationarity flags) and, when "
+                           "rdmft_energy_tol > 0, also |E - E_prev| (Ry) < rdmft_energy_tol. If <= 0, the outer "
+                           "energy test is omitted (inner convergence alone suffices).";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
