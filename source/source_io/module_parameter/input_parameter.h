@@ -685,7 +685,6 @@ struct Input_para
     double rdmft_energy_tol = 1e-8; // outer: occ+orb inner converged AND (<=0 skips) |dE| vs prev outer
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: |ΔE| vs previous inner iter (Ry); OR with orb_grad_tol; <=0 disables energy branch.
-    /// Legacy INPUT keyword `rdmft_orb_energy_tol` also sets this.
     double rdmft_orb_tol = 1e-5;
     /// Occupation inner: |ΔE| OR with occ_grad_tol; <=0 disables energy branch (not sum|Δn|)
     double rdmft_occ_tol = 1e-6;

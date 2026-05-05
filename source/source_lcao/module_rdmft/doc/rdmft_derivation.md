@@ -626,8 +626,7 @@ Alternate between:
   No Barzilai–Borwein spectral step, no non-monotone history, no
   Wen–Yin trust radius, no suspicious-descent guard. Convergence
   criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, or (when
-  `rdmft_orb_tol` $>0$) $|ΔE|$ below `rdmft_orb_tol` (legacy INPUT name
-  `rdmft_orb_energy_tol` sets the same value).
+  `rdmft_orb_tol` $>0$) $|ΔE|$ below `rdmft_orb_tol`.
 
   **Caveat for regularised functionals (Müller / Power / GEO).**  Because
   the regularised functionals at fractional occupations have no global

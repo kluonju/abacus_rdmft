@@ -231,8 +231,8 @@ struct RDMFTConfig
     double energy_tol = 1e-8;
     /// Orbital inner: Riemannian gradient norm ||G_R|| threshold (OR branch).
     double orb_grad_tol = 1e-4;
-    /// Orbital inner: |ΔE| threshold (Ry); OR with orb_grad_tol when > 0. INPUT `rdmft_orb_tol`
-    /// (legacy `rdmft_orb_energy_tol`). <= 0 disables the energy branch.
+    /// Orbital inner: |ΔE| threshold (Ry); OR with orb_grad_tol when > 0. INPUT `rdmft_orb_tol`.
+    /// <= 0 disables the energy branch.
     double orb_energy_tol = 1e-6;
     /// Occupation inner: |ΔE| threshold (Ry); OR with occ_grad_tol when > 0. <= 0 disables
     /// the energy branch. Same field as INPUT `rdmft_occ_tol`.

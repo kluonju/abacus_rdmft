@@ -1207,18 +1207,6 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_orb_energy_tol");
-        item.annotation = "Deprecated alias for rdmft_orb_tol";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Real";
-        item.description = "Deprecated: use rdmft_orb_tol. If present, sets the same orbital inner |ΔE| tolerance (Ry).";
-        item.default_value = "1e-8";
-        item.unit = "Ry";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_orb_tol);
-        this->add_item(item);
-    }
-    {
         Input_Item item("rdmft_occ_tol");
         item.annotation = "RDMFT occupation inner: |ΔE| tolerance (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
