@@ -2648,11 +2648,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     //      pre-step values, identical to the ALM occupation inner loop.
     //   2. Build the search direction D in the tangent space at X_k:
     //        SD    : D = -G_R.
-    //        CG    : Polak-Ribiere+ with vector transport by tangent-space
-    //                projection of the previous (G_R, D) onto T_{X_k} St:
-    //                  beta = max(0, <G_R, G_R - T(G_R^{prev})> / <T(G_R^{prev}), T(G_R^{prev})>)
-    //                  D    = -G_R + beta * T(D_{prev})
-    //                Re-project D to be safe against numerical drift.
+    //        CG    : Polak-Ribiere+ on the Stiefel manifold (AMS Ch. 8, Eq. 8.11):
+    //                With g_{k-1}^# := P_{T_{X_k}}(flat G_R^{k-1}) the vector
+    //                transport of the previous Riemannian gradient by tangent
+    //                projection, y_k := G_R^k - g_{k-1}^#, and beta_k the PR+
+    //                beta using denominator ||g_{k-1}^#||_F^2 (not ||G_R^{k-1}||^2).
+    //                  beta_k = max(0, <G_R^k, y_k>_F / ||g_{k-1}^#||_F^2)
+    //                  D_k    = -G_R^k + beta_k * P_{T_{X_k}}(flat D_{k-1})
+    //                Powell restart (AMS §8.3): if |<G_R^k, g_{k-1}^#>| >= 0.2 ||G_R^k||^2,
+    //                take beta_k = 0 (steepest descent).
+    //                Re-project D_k for numerical drift.
     //        LBFGS : two-loop recursion in flat Euclidean coordinates
     //                produces a quasi-Newton direction; project onto
     //                T_{X_k} St. (Riemannian L-BFGS by projection.)
@@ -2792,41 +2797,36 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
         else if (use_cg && have_prev)
         {
-            // Riemannian Polak-Ribiere+ CG (Absil et al. "Optimization
-            // Algorithms on Matrix Manifolds", §8.1, Eq. 8.11).
-            // Vector transport by projection; Powell restart (§8.3).
-            bool cg_restart = false;
-            if (prev_gnorm2 > 1e-30)
+            // Riemannian Polak-Ribiere+ CG (Absil et al., §8.1, Eq. 8.11).
+            // g_prev stores flat G_R^{k-1}; g_prev_T is its transport P_{T_{X_k}}(·).
+            psi::Psi<TK> g_prev_T(prev_grad);
+            energy_grad_->project_orbital_gradient(wfc, g_prev_T);
+            const double g_prev_T_norm2 = frob2(g_prev_T);
+
+            const double overlap_grad_transport = frob_inner(grad_wfc, g_prev_T);
+            const bool powell_restart = (gnorm2 > 1e-30)
+                && (std::abs(overlap_grad_transport) >= 0.2 * gnorm2);
+
+            if (!powell_restart && g_prev_T_norm2 > 1e-30)
             {
-                psi::Psi<TK> g_prev_T(prev_grad);
-                energy_grad_->project_orbital_gradient(wfc, g_prev_T);
+                psi::Psi<TK> y(grad_wfc);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
+                double beta_pr = frob_inner(grad_wfc, y) / g_prev_T_norm2;
+                beta_pr = std::max(0.0, beta_pr);
 
-                const double overlap_new_old = frob_inner(grad_wfc, g_prev_T);
-                if (std::abs(overlap_new_old) >= 0.2 * gnorm2)
-                {
-                    cg_restart = true;
-                }
-                else
-                {
-                    psi::Psi<TK> y(grad_wfc);
-                    for (int ik = 0; ik < nk; ++ik)
-                        for (int ib = 0; ib < nb_local; ++ib)
-                            for (int mu = 0; mu < nbs_local; ++mu)
-                                y(ik, ib, mu) = grad_wfc(ik, ib, mu) - g_prev_T(ik, ib, mu);
-                    double beta_pr = frob_inner(grad_wfc, y) / prev_gnorm2;
-                    beta_pr = std::max(0.0, beta_pr);
-
-                    psi::Psi<TK> d_prev_T(prev_dir);
-                    energy_grad_->project_orbital_gradient(wfc, d_prev_T);
-                    for (int ik = 0; ik < nk; ++ik)
-                        for (int ib = 0; ib < nb_local; ++ib)
-                            for (int mu = 0; mu < nbs_local; ++mu)
-                                dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
-                                                  + TK(beta_pr) * d_prev_T(ik, ib, mu);
-                    energy_grad_->project_orbital_gradient(wfc, dir);
-                }
+                psi::Psi<TK> d_prev_T(prev_dir);
+                energy_grad_->project_orbital_gradient(wfc, d_prev_T);
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            dir(ik, ib, mu) = -grad_wfc(ik, ib, mu)
+                                              + TK(beta_pr) * d_prev_T(ik, ib, mu);
+                energy_grad_->project_orbital_gradient(wfc, dir);
             }
-            (void)cg_restart;
+            // else: powell_restart or tiny transported prev grad → leave dir = -G_R (SD).
         }
 
         // Descent safeguard: with our convention `retract_orbitals(W, S, a)`

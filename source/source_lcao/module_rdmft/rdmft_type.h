@@ -200,9 +200,10 @@ struct RDMFTConfig
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
     /// Alternating orbital sub-problem on the Stiefel manifold.
     /// Selects the Riemannian optimiser used by `optimize_orbitals`.
-    /// Allowed: SD, CG (Polak-Ribiere+), LBFGS (Riemannian by projection),
-    /// Adam. Line search: monotone Armijo backtracking for sd / cg / adam,
-    /// Strong Wolfe for lbfgs.
+    /// Allowed: SD, CG (nonlinear Polak-Ribiere+ on the manifold, AMS Ch. 8; beta uses
+    /// the transported previous gradient in the denominator), LBFGS (Riemannian
+    /// by projection), Adam. Line search: Strong Wolfe for CG and LBFGS; Armijo
+    /// for SD and Adam.
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Retraction used by every orbital step (alternating and joint).
     /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
