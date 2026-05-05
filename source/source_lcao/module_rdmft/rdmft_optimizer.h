@@ -23,7 +23,7 @@ struct OptResult
     bool converged = false;
 };
 
-/// Result of a line search (non-monotone Strong Wolfe, etc.)
+/// Result of a line search (Strong Wolfe, etc.)
 struct LineSearchResult
 {
     /// Accepted or last-tried step size
@@ -235,11 +235,11 @@ inline double cubic_local_min_t(
 
 } // namespace detail
 
-/// Non-monotone Strong Wolfe line search (Nocedal & Wright, Algorithms 3.5–3.6),
-/// with the sufficient-decrease test
-/// \f$\varphi(\alpha)\le f_{\text{ref}}+c_1\alpha\varphi'(0)\f$
-/// where \f$f_{\text{ref}}\f$ is a reference value (set \f$f_{\text{ref}}=\varphi(0)\f$
-/// for monotone Armijo). Requires \f$\varphi'(0)<0\f$, \f$0<c_1<c_2<1\f$.
+/// Strong Wolfe line search (Nocedal & Wright, Algorithms 3.5–3.6),
+/// with sufficient decrease
+/// \f$\varphi(\alpha)\le f_{\text{ref}}+c_1\alpha\varphi'(0)\f$.
+/// Pass \f$f_{\text{ref}}=\varphi(0)\f$ for the standard monotone Armijo
+/// condition. Requires \f$\varphi'(0)<0\f$, \f$0<c_1<c_2<1\f$.
 ///
 /// `phi` evaluates \f$\varphi(\alpha)\f$; `deriv_phi` evaluates
 /// \f$\varphi'(\alpha)\f$ (directional derivative along the search ray).

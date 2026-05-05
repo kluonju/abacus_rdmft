@@ -17,7 +17,6 @@
 #include <chrono>
 #include <limits>
 #include <stdexcept>
-#include <deque>
 
 namespace rdmft
 {
@@ -676,7 +675,6 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         add_kv(keys, vals, "line_search_rho", as_sci(cfg.line_search_rho));
         add_kv(keys, vals, "line_search_max_iter", std::to_string(cfg.line_search_max_iter));
         add_kv(keys, vals, "line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
-        add_kv(keys, vals, "line_search_nm_memory", std::to_string(cfg.line_search_nm_memory));
         add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
         emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
     }
@@ -1329,7 +1327,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 // orbital gradient dE/dC^k at the current C^k. The produced search direction
 // is split back into an occupation block (linear update on parameters p) and
 // an orbital block (projected and retracted onto each Stiefel fibre) before a
-// single non-monotone Strong Wolfe line search along the packed direction commits
+// single monotone Strong Wolfe line search along the packed direction commits
 // the step. The
 // augmented-Lagrangian multiplier is refreshed once per outer iteration.
 // ----------------------------------------------------------------------------
@@ -1406,7 +1404,6 @@ double RDMFTSolver<TK, TR>::solve_joint(
     // effectively steepest descent). If line search fails again on that
     // recovery iteration, stop the outer loop.
     bool joint_ls_failed_prev = false;
-    std::deque<double> joint_nm_E_hist;
 
     auto total_energy = [&](const std::vector<double>& occ_in,
                             const psi::Psi<TK>& wfc_in) -> double {
@@ -1621,22 +1618,12 @@ double RDMFTSolver<TK, TR>::solve_joint(
                         wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
         }
 
-        // Joint line search: non-monotone Strong Wolfe on the product manifold.
+        // Joint line search: monotone Strong Wolfe on the product manifold.
         const double alpha_init = config_.line_search_alpha_init;
         const double joint_ls_alpha0 = alpha_init;
         const double c1 = config_.line_search_c1;
         const double c2 = config_.line_search_c2;
-        const int nm_M = std::max(1, config_.line_search_nm_memory);
-        if (static_cast<int>(joint_nm_E_hist.size()) >= nm_M)
-        {
-            joint_nm_E_hist.pop_front();
-        }
-        joint_nm_E_hist.push_back(E);
-        double f_ref_joint = E;
-        for (const double ev : joint_nm_E_hist)
-        {
-            f_ref_joint = std::max(f_ref_joint, ev);
-        }
+        const double f_ref_joint = E;
 
         std::vector<double> occ_flat_new;
         std::vector<double> params_new(params.size());
@@ -1734,7 +1721,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         if (ls_success)
         {
             GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
-                                 << "  line search (joint NM Strong Wolfe): alpha_init=" << std::scientific
+                                 << "  line search (joint Strong Wolfe): alpha_init=" << std::scientific
                                  << joint_ls_alpha0 << " step=" << alpha << " n_phi/deriv_eval=" << joint_ls.n_feval
                                  << "  E0=" << E << " E1=" << E_new << "  dd0=" << dd_total
                                  << "  f_ref=" << f_ref_joint << "  c1=" << std::defaultfloat << c1 << " c2=" << c2
@@ -1766,7 +1753,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             joint_opt.init(packed_size);
 
             GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
-                << "  line search (joint NM Strong Wolfe) failed: alpha_init="
+                << "  line search (joint Strong Wolfe) failed: alpha_init="
                 << std::scientific << joint_ls_alpha0 << " last_step=" << alpha
                 << " n_phi/deriv_eval=" << joint_ls.n_feval
                 << "  E_last=" << E_new << std::defaultfloat
@@ -2040,7 +2027,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             double L_prev = 0.0;
             bool have_L_prev = false;
             std::vector<double> occ_snap_start;
-            std::deque<double> alm_nm_L_hist;
             double alm_gnorm0 = 0.0;
             bool have_alm_gnorm0 = false;
 
@@ -2141,17 +2127,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     return dsum;
                 };
 
-                const int nm_M_alm = std::max(1, config_.line_search_nm_memory);
-                if (static_cast<int>(alm_nm_L_hist.size()) >= nm_M_alm)
-                {
-                    alm_nm_L_hist.pop_front();
-                }
-                alm_nm_L_hist.push_back(L);
-                double f_ref_alm = L;
-                for (const double lv : alm_nm_L_hist)
-                {
-                    f_ref_alm = std::max(f_ref_alm, lv);
-                }
+                const double f_ref_alm = L;
 
                 const double alm_alpha0 = config_.alm_bb_enabled
                                               ? bb_step.suggest(params, grad_params, config_.line_search_alpha_init)
@@ -2170,7 +2146,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 ls.alpha_init = alm_alpha0;
 
                 {
-                    GlobalV::ofs_running << "      occ line search (ALM NM Strong Wolfe): alpha_init=" << std::scientific
+                    GlobalV::ofs_running << "      occ line search (ALM Strong Wolfe): alpha_init=" << std::scientific
                         << ls.alpha_init << " step=" << ls.step << " n_phi/deriv_eval=" << ls.n_feval << "  L0=" << L
                         << " L1=" << ls.f_new << " dd=" << dd << "  f_ref=" << f_ref_alm
                         << "  c1=" << std::defaultfloat << config_.line_search_c1
@@ -2188,7 +2164,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 if (!ls.success)
                 {
                     GlobalV::ofs_running << "      ALM occ inner: "
-                                         << "NM Strong Wolfe"
+                                         << "Strong Wolfe"
                                          << " line search failed at inner=" << (inner + 1)
                                          << "; accepting best-effort step (step=" << std::scientific
                                          << ls.step << ")" << std::defaultfloat << std::endl;
@@ -2533,7 +2509,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     //                Re-project D_k for numerical drift.
     //      Descent safeguard: if <G_R, D>_F >= 0, reset D = -G_R.
     //   3. Line search along the retracted curve X(alpha) = R_{X_k}(alpha * D):
-    //      non-monotone Strong Wolfe (`nonmonotone_strong_wolfe_line_search`).
+    //      monotone Strong Wolfe (`nonmonotone_strong_wolfe_line_search`).
     //      Initial step: user-tunable `line_search_alpha_init` (with CG scaling
     //      from the previous accepted step when available).
     //   4. Commit X_{k+1}. Snapshot (G_R, D) for CG.
@@ -2583,7 +2559,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     double prev_accepted_alpha = 0.0;
 
     double prev_orb_E = 0.0;
-    std::deque<double> orb_nm_E_hist;
     double orb_gnorm0 = -1.0;
 
     for (int inner = 0; inner < config_.orb_maxiter; ++inner)
@@ -2746,17 +2721,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             return energy_grad_->s_inner_product(gw, dir);
         };
 
-        const int nm_M_orb = std::max(1, config_.line_search_nm_memory);
-        if (static_cast<int>(orb_nm_E_hist.size()) >= nm_M_orb)
-        {
-            orb_nm_E_hist.pop_front();
-        }
-        orb_nm_E_hist.push_back(E);
-        double f_ref_orb = E;
-        for (const double ev : orb_nm_E_hist)
-        {
-            f_ref_orb = std::max(f_ref_orb, ev);
-        }
+        const double f_ref_orb = E;
 
         LineSearchResult ls = nonmonotone_strong_wolfe_line_search(eval_at_step,
             dphi_orb,
@@ -2779,7 +2744,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         {
             std::ostringstream orb_ls;
-            orb_ls << "      orb line search (NM Strong Wolfe): optim=" << orb_opt_name
+            orb_ls << "      orb line search (Strong Wolfe): optim=" << orb_opt_name
                    << " alpha_init=" << std::scientific << alpha_init
                    << " lambda=" << lambda
                    << " n_phi/deriv_eval=" << ls.n_feval

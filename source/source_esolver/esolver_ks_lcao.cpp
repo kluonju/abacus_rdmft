@@ -646,7 +646,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
         rdmft_config.line_search_max_iter = std::max(1, inp.rdmft_line_search_max_iter);
         rdmft_config.line_search_max_zoom = std::max(1, inp.rdmft_line_search_max_zoom);
-        rdmft_config.line_search_nm_memory = std::max(1, inp.rdmft_line_search_nm_memory);
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;

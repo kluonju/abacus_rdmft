@@ -705,8 +705,6 @@ struct Input_para
     int rdmft_line_search_max_iter = 30;
     /// Strong Wolfe: max zoom (interval refinement) iterations
     int rdmft_line_search_max_zoom = 30;
-    /// Non-monotone memory M for Strong Wolfe (f_ref = max of last M energies); not used by SPG occupations
-    int rdmft_line_search_nm_memory = 10;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates

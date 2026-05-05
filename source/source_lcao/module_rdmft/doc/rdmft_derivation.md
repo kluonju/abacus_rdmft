@@ -597,9 +597,8 @@ Alternate between:
   3. Line search along the retracted curve
      $X(\alpha) = R_{X_k}(\alpha\,D)$ where $R$ is one of three Stiefel
      retractions selected by `rdmft_orb_retraction` (§5.4; default
-     `polar`): **non-monotone Strong Wolfe** (`nonmonotone_strong_wolfe_line_search`
-     in `rdmft_optimizer.h`), i.e. sufficient decrease vs a reference
-     $f_{\mathrm{ref}}$ from the last $M$ energies and a curvature bound on
+     `polar`): **monotone Strong Wolfe** (`nonmonotone_strong_wolfe_line_search`
+     in `rdmft_optimizer.h`), i.e. sufficient decrease vs $\varphi(0)$ and a curvature bound on
      $|\varphi'(\alpha)|$. Initial trial uses INPUT `rdmft_alpha_step` (mapped to
      `line_search_alpha_init` in code; with CG scaling from the previous accepted
      step when available).
@@ -664,7 +663,7 @@ keyword (default `cg`), drives its evolution. Each outer iteration:
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
    is not negative;
-5. performs a single **non-monotone Strong Wolfe** line search along the packed
+5. performs a single **monotone Strong Wolfe** line search along the packed
    direction: the occupation parameters are updated linearly
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
@@ -690,7 +689,7 @@ $$
 x_{t+1} = R_{x_t}(-\alpha_t  \mathrm{grad} f(x_t))
 $$
 
-with step size $\alpha_t$ chosen by line search (here: non-monotone Strong Wolfe
+with step size $\alpha_t$ chosen by line search (here: monotone Strong Wolfe
 along the retraction / product update, except SPG occupations which use BB + monotone Armijo).
 
 ### 8.2 Conjugate Gradient (CG)

@@ -199,7 +199,7 @@ struct RDMFTConfig
     /// Alternating orbital sub-problem on the Stiefel manifold.
     /// Selects the Riemannian optimiser used by `optimize_orbitals`.
     /// SD or nonlinear Polak-Ribiere+ CG on the manifold (AMS Ch. 8).
-    /// Line search: non-monotone Strong Wolfe (except SPG occupations; see below).
+    /// Line search: monotone Strong Wolfe (except SPG occupations; see below).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Retraction used by every orbital step (alternating and joint).
     /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
@@ -210,7 +210,7 @@ struct RDMFTConfig
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: non-monotone Strong Wolfe on the product manifold.
+    /// Joint line search: monotone Strong Wolfe on the product manifold.
     OptimizerType joint_optimizer = OptimizerType::ConjugateGradient;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
@@ -258,10 +258,6 @@ struct RDMFTConfig
     int line_search_max_iter = 30;
     /// Max inner iterations in the Strong Wolfe zoom phase.
     int line_search_max_zoom = 30;
-    /// Non-monotone memory \f$M\f$ for Strong Wolfe: reference value
-    /// \f$f_{\text{ref}}=\max_{0\le j<\min(k,M)} f_{k-j}\f$ at the current iterate.
-    /// Set to 1 for monotone sufficient decrease w.r.t. \f$\varphi(0)\f$ only.
-    int line_search_nm_memory = 10;
 
     /// ALM occupation line-search seed policy.
     /// When enabled, Strong Wolfe initial trial \f$\alpha_0\f$ uses a Barzilai-Borwein estimate

@@ -1452,7 +1452,7 @@ void ReadInput::item_others()
         item.annotation = "Initial line-search step length for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Initial trial step length for the non-monotone Strong Wolfe line search (joint strategy, "
+        item.description = "Initial trial step length for the Strong Wolfe line search (joint strategy, "
                            "ALM occupations, alternating orbitals). The SPG (projected_gradient / active_set) "
                            "occupation block uses Barzilai–Borwein plus monotone Armijo and does not use "
                            "this keyword.";
@@ -1467,8 +1467,8 @@ void ReadInput::item_others()
         item.annotation = "Sufficient-decrease c1 for RDMFT line searches";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Constant in (0, 1): non-monotone Armijo test "
-                           "phi(alpha) <= f_ref + c1 * alpha * phi'(0) for Strong Wolfe (joint, ALM, alternating "
+        item.description = "Constant in (0, 1): Armijo test "
+                           "phi(alpha) <= phi(0) + c1 * alpha * phi'(0) for Strong Wolfe (joint, ALM, alternating "
                            "orbitals), and the same role in SPG monotone Armijo along the projected spectral "
                            "direction (projected_gradient / active_set).";
         item.default_value = "1e-4";
@@ -1551,30 +1551,6 @@ void ReadInput::item_others()
                 if (para.input.rdmft_line_search_max_zoom < 1)
                 {
                     ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_max_zoom must be >= 1");
-                }
-            }
-        };
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_line_search_nm_memory");
-        item.annotation = "Non-monotone memory M for Strong Wolfe in RDMFT";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Int";
-        item.description = "History length M for the non-monotone reference f_ref = max of the last M energies at the "
-                           "line-search iterate (joint, ALM, alternating orbitals). Use 1 for monotone decrease vs "
-                           "the current energy only. SPG occupations use monotone Armijo vs the current energy only "
-                           "and do not use this keyword.";
-        item.default_value = "10";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_int(input.rdmft_line_search_nm_memory);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                if (para.input.rdmft_line_search_nm_memory < 1)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_nm_memory must be >= 1");
                 }
             }
         };

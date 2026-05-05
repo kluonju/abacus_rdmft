@@ -192,7 +192,7 @@ consulted; the others are ignored.
 `rdmft_orb_optimizer` chooses the Riemannian optimiser used by the
 `alternating` orbital sub-problem (Stiefel SD or CG; see *Optimiser semantics*
 below).  Both are first-order Riemannian methods on `St(N_b, N_basis)` with
-non-monotone Strong Wolfe line search along the retraction.
+monotone Strong Wolfe line search along the retraction.
 
 `rdmft_orb_retraction` selects the Stiefel retraction used by every orbital
 step (both `alternating` and `joint`):
@@ -248,18 +248,17 @@ one of the modes below.
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
 | `rdmft_alpha_step` | real | `1.0` | Initial trial step \(\alpha_0\) for **Strong Wolfe** on alternating **orbitals**, **ALM** occupations, and **joint** steps (when ALM BB seed is off, orbitals/joint use this directly). The SPG occupation block (`projected_gradient` / `active_set`) uses Barzilai–Borwein plus **monotone** Armijo and does not consult this keyword. |
-| `rdmft_line_search_c1` | real | `1e-4` | Sufficient-decrease \(c_1\in(0,1)\): \(\varphi(\alpha)\le f_{\mathrm{ref}}+c_1\alpha\varphi'(0)\) in Strong Wolfe (joint / ALM / orbitals), and the same constant in **SPG** monotone Armijo (here \(f_{\mathrm{ref}}=E(\mathbf{n}_k)\) at the current iterate). Smaller is stricter. |
+| `rdmft_line_search_c1` | real | `1e-4` | Sufficient-decrease \(c_1\in(0,1)\): \(\varphi(\alpha)\le \varphi(0)+c_1\alpha\varphi'(0)\) in Strong Wolfe (joint / ALM / orbitals), and the same constant in **SPG** monotone Armijo (here the reference is \(E(\mathbf{n}_k)\) at the current iterate). Smaller is stricter. |
 | `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature: \(|\varphi'(\alpha)|\le c_2|\varphi'(0)|\). Must satisfy `rdmft_line_search_c1` \(< c_2 < 1\). Not used by SPG. |
 | `rdmft_line_search_max_iter` | int | `30` | Max **bracket expansion** steps in Strong Wolfe (joint, ALM, orbitals). |
 | `rdmft_line_search_max_zoom` | int | `30` | Max **zoom** (interval refinement) iterations inside Strong Wolfe. |
-| `rdmft_line_search_nm_memory` | int | `10` | Non-monotone memory \(M\) for Strong Wolfe: \(f_{\mathrm{ref}}=\max\) of the last \(M\) energies at the line-search iterate. Use `1` for monotone decrease vs the current energy only. Not used by SPG occupations (monotone Armijo vs the current energy only). |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` seed the **Strong Wolfe** initial step for **ALM** occupations in occupation-parameter space. **ALM**, alternating **orbitals**, and **joint** use **non-monotone Strong Wolfe** with `rdmft_line_search_c1`, `rdmft_line_search_c2`, and the bracket/zoom iteration caps. The **SPG** path (`projected_gradient` / `active_set`) keeps the standard **BB1 spectral step + monotone Armijo** along the projected direction; it does **not** use Strong Wolfe or `rdmft_occ_optimizer`.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` seed the **Strong Wolfe** initial step for **ALM** occupations in occupation-parameter space. **ALM**, alternating **orbitals**, and **joint** use **monotone Strong Wolfe** with `rdmft_line_search_c1`, `rdmft_line_search_c2`, and the bracket/zoom iteration caps. The **SPG** path (`projected_gradient` / `active_set`) keeps the standard **BB1 spectral step + monotone Armijo** along the projected direction; it does **not** use Strong Wolfe or `rdmft_occ_optimizer`.
 
-The **alternating orbital** sub-problem is Riemannian SD or Polak–Ribière⁺ CG on the Stiefel manifold (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*, Princeton 2008), with **non-monotone Strong Wolfe** along `rdmft_orb_retraction` (default `polar`). For ill-conditioned regularised functionals (Müller / Power / GEO), reduce `rdmft_alpha_step` or switch to `rdmft_solver_strategy = joint` if the alternating map diverges (see `rdmft_derivation.md` §7.1).
+The **alternating orbital** sub-problem is Riemannian SD or Polak–Ribière⁺ CG on the Stiefel manifold (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*, Princeton 2008), with **monotone Strong Wolfe** along `rdmft_orb_retraction` (default `polar`). For ill-conditioned regularised functionals (Müller / Power / GEO), reduce `rdmft_alpha_step` or switch to `rdmft_solver_strategy = joint` if the alternating map diverges (see `rdmft_derivation.md` §7.1).
 
 ### Debugging
 

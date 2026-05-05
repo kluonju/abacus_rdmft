@@ -52,7 +52,7 @@ class RDMFTSolver
     /// Run orbital optimization only (occupations fixed).
     /// Riemannian gradient method on the Stiefel manifold with the
     /// optimiser selected by config_.orb_optimizer (sd or cg).
-    /// Line search: non-monotone Strong Wolfe along the retraction.
+    /// Line search: monotone Strong Wolfe along the retraction.
     /// Inner convergence: \(\|G_R\|_F \le \varepsilon_g \max(1,\|G_R(x_0)\|_F)\)
     /// with \(x_0\) the iterate at the start of this orbital inner solve.
     OptResult optimize_orbitals(const std::vector<double>& occ_flat,
