@@ -235,12 +235,13 @@ one of the modes below.
 |---------|------|---------|-------------|
 | `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `binary`, `uniform`. |
 | `rdmft_occ_init_perturb` | real | `0.0` | Perturbation magnitude `delta` used by `rdmft_occ_init_mode = perturbed`. |
-| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` used by `binary`/`uniform`: select `K` bands above and `K` bands below the Fermi boundary (per k-point). Ignored by `perturbed` (all bands are shifted). |
+| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` (per k-point): `K` bands above and `K` bands below the Fermi boundary. Used by `perturbed`, `binary`, and `uniform`. For `perturbed`, `K > 0` sets the window; `K <= 0` uses an automatic small window (default half-width 3, capped by `nbands`). For `binary`/`uniform`, `K <= 0` falls back to `ks`. |
 
 - `ks`: use KS occupations directly as RDMFT initial occupations.
-- `perturbed`: for each k-point, apply `+delta` to every band above the Fermi boundary and `-delta` to every band at or below it, then project back to the feasible set.
+- `perturbed` (ELK/Exciting-style): for each k-point, apply `+delta` to selected empty-side bands and `-delta` to selected occupied-side bands **only within the Fermi window** around the boundary (same band set as `binary`/`uniform` for a given `K`), then project back to the feasible set. This avoids shifting deep valence and high empty bands, which is closer to only perturbing fractional `OCCSV` near the Fermi level in codes such as ELK.
+- `binary`: same Fermi window as above; set occupations to `1-delta` if the KS value is `>= 0.5`, otherwise `delta`, then project.
 - `uniform`: for each k-point, compute `N_top` over the selected `2K` Fermi-window bands and set each selected occupation to `N_top / (2K)` (or `N_top / N_selected` near band edges), then project.
-- If `K <= 0`, `binary` and `uniform` fall back to `ks`. If `delta <= 0`, `perturbed` falls back to `ks`.
+- If `K <= 0`, `binary` and `uniform` fall back to `ks`. If `delta <= 0`, `perturbed` falls back to `ks`. When `K <= 0` and `perturbed` is active, a default Fermi window is used (see table).
 
 ### Line search and optimiser tuning
 

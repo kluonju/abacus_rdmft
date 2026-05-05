@@ -1161,9 +1161,9 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "ks: use KS occupations directly. "
-                   "perturbed: at each k, add +delta to every band above the Fermi boundary and -delta to every "
-                   "band at or below it (see solver), then project to the feasible set; requires "
-                   "rdmft_occ_init_perturb > 0. "
+                   "perturbed: at each k, add +delta to selected bands above the Fermi boundary and -delta to "
+                   "selected bands at or below it within the Fermi window (rdmft_occ_init_nbands_top), then "
+                   "project to the feasible set; requires rdmft_occ_init_perturb > 0. "
                    "binary: in the Fermi window set by rdmft_occ_init_nbands_top, set to 1-delta if occ>=0.5, "
                    "or delta if occ<0.5. "
                    "uniform: in that Fermi window, set all selected occupations to the local average "
@@ -1191,9 +1191,9 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Perturbation delta used when rdmft_occ_init_mode = perturbed. "
-                           "In each k-point, selected bands above Fermi are increased by +delta "
-                           "and selected bands below Fermi are reduced by -delta, then projected "
-                           "to the feasible set. 0 disables the perturbation.";
+                           "In each k-point, within the Fermi window (see rdmft_occ_init_nbands_top), "
+                           "bands above the boundary are increased by +delta and bands at or below it are decreased "
+                           "by delta, then projected to the feasible set. 0 disables the perturbation.";
         item.default_value = "0.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1215,10 +1215,10 @@ void ReadInput::item_others()
         item.annotation = "Initial occupation Fermi-window half-width";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Fermi-window half-width K used by rdmft_occ_init_mode = binary/uniform (not perturbed: "
-                           "that mode shifts every band at each k). For each k-point, select K bands above and K "
-                           "bands below the Fermi boundary. K <= 0 disables binary/uniform windowed initialisation "
-                           "and falls back to KS occupations.";
+        item.description = "Fermi-window half-width K (bands above and below the Fermi boundary per k-point). "
+                           "Used by perturbed, binary, and uniform. For perturbed, K > 0 sets the window width; "
+                           "K <= 0 selects an automatic small window (default half-width 3, capped by nbands). "
+                           "For binary/uniform, K <= 0 disables windowed initialisation and falls back to KS occupations.";
         item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

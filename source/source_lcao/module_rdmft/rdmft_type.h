@@ -309,8 +309,9 @@ struct RDMFTConfig
     /// Optional additive perturbation magnitude (delta) used by
     /// OccInitMode::Perturbed.
     double occ_init_perturb = 0.0;
-    /// Number of bands in the Fermi window per side (above/below Fermi),
-    /// used by OccInitMode::Binary and OccInitMode::Uniform (not Perturbed: that perturbs all bands).
+    /// Bands per side in the Fermi window (above and below the boundary).
+    /// Used by Perturbed, Binary, and Uniform. For Perturbed, value <= 0 selects
+    /// an automatic small window (same default width as the solver).
     int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.

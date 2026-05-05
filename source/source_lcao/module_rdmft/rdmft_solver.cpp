@@ -883,11 +883,21 @@ double RDMFTSolver<TK, TR>::solve(
     {
         occ_flat = occ_ks_seed;
         const double delta = config_.occ_init_perturb;
+        const int K_req = config_.occ_init_nbands_top;
+        // ELK/Exciting-style: only OCCSV near the Fermi level is meaningfully
+        // fractional; perturb a narrow window around the Fermi boundary (same band
+        // selection as binary/uniform). K_req<=0 uses a small default window.
+        const int K = (K_req > 0) ? std::min(K_req, nbands_) : std::min(3, nbands_);
 
         if (delta <= 0.0)
         {
             log_init_common("perturbed",
                             "note=delta<=0, fallback=ks");
+        }
+        else if (K <= 0)
+        {
+            log_init_common("perturbed",
+                            "note=nbands<=0, fallback=ks");
         }
         else
         {
@@ -899,20 +909,25 @@ double RDMFTSolver<TK, TR>::solve(
                 const double wk = occ_constraint_->kweights()[ik];
                 const double n_target_k = n_electrons_ * wk / sum_k_weights;
                 const int ib_fermi = find_init_fermi_boundary(occ_ks_seed, ik, nbands_, wk, n_target_k);
-                for (int ib = 0; ib < nbands_; ++ib)
+                for (int t = 0; t < K; ++t)
                 {
-                    const int idx = ik * nbands_ + ib;
-                    if (ib > ib_fermi)
+                    const int ib_above = ib_fermi + 1 + t;
+                    if (ib_above >= 0 && ib_above < nbands_)
                     {
+                        const int idx = ik * nbands_ + ib_above;
                         occ_flat[idx] = occ_ks_seed[idx] + delta;
+                        touched[idx] = true;
                         ++n_plus;
                     }
-                    else
+
+                    const int ib_below = ib_fermi - t;
+                    if (ib_below >= 0 && ib_below < nbands_)
                     {
+                        const int idx = ik * nbands_ + ib_below;
                         occ_flat[idx] = occ_ks_seed[idx] - delta;
+                        touched[idx] = true;
                         ++n_minus;
                     }
-                    touched[idx] = true;
                 }
             }
 
@@ -922,7 +937,9 @@ double RDMFTSolver<TK, TR>::solve(
             const double sum_abs_init_change = sum_abs_diff(occ_flat, occ_ks_seed);
 
             std::ostringstream os;
-            os << "nbands=" << nbands_
+            os << "K_req=" << K_req
+               << ", K=" << K
+               << (K_req <= 0 ? " (auto_Fermi_window)" : "")
                << ", delta=" << delta
                << ", n_plus=" << n_plus
                << ", n_minus=" << n_minus
