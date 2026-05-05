@@ -35,4 +35,9 @@ if(ENABLE_LCAO AND BUILD_TESTING)
         LIBS base ${math_libs} device parameter
         SOURCES test_rdmft_occ_optimizer.cpp
     )
+    AddTest(
+        TARGET rdmft_psi_flat_test
+        LIBS parameter ${math_libs} base device psi
+        SOURCES test_rdmft_psi_flat.cpp
+    )
 endif()

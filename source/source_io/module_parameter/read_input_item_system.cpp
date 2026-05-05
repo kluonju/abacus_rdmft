@@ -1260,7 +1260,9 @@ Available options are:
         item.category = "Input files";
         item.type = "Boolean";
         item.description = "If restart_save is set to true and an electronic iteration is finished, calculations can be "
-                          "restarted from the charge density file, which are saved in the former calculation.";
+                          "restarted from the charge density file, which are saved in the former calculation. "
+                          "For rdmft==True with a non-empty rdmft_functional, the RDMFT checkpoint in restart/ is read "
+                          "before the RDMFT optimisation (use rdmft_occ_init_mode=ks; same MPI process count as the saving run).";
         item.default_value = "False";
         item.availability = "Used only when numerical atomic orbitals are employed as basis set.";
         read_sync_bool(input.restart_load);

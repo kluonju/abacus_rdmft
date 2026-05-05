@@ -15,6 +15,7 @@
 #endif
 #ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h"
+#include "source_lcao/module_rdmft/rdmft_restart_io.h"
 #include "source_lcao/module_rdmft/rdmft_solver.h"
 #endif
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
@@ -573,6 +574,42 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             }
         }
 
+        // RDMFT electron target N_e (needed for restart validation and config)
+        double sum_wg = 0.0;
+        for (int ik = 0; ik < nk; ++ik)
+        {
+            for (int ib = 0; ib < nbands; ++ib)
+            {
+                sum_wg += this->pelec->wg(ik, ib);
+            }
+        }
+        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
+        const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
+        if (n_electrons <= 0.0)
+        {
+            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
+                                     "RDMFT electron target N_e must be positive. Check rdmft_nelec_use_input, "
+                                     "nelec, sum(wg), and rdmft_nelec_delta.");
+        }
+
+        bool loaded_rdmft_checkpoint = false;
+        if (GlobalC::restart.info_load.load_rdmft)
+        {
+            rdmft::read_rdmft_restart<TK>(this->pv,
+                                          nk,
+                                          nbands,
+                                          inp.nspin,
+                                          inp.gamma_only,
+                                          n_electrons,
+                                          inp.rdmft_functional,
+                                          occ_flat,
+                                          *this->psi);
+            loaded_rdmft_checkpoint = true;
+            GlobalV::ofs_running << "\n RDMFT: loaded restart checkpoint (occupations + wavefunctions) from restart/.\n"
+                                 << "        Occupation init mode is forced to ks for this run.\n"
+                                 << std::endl;
+        }
+
         // Build RDMFTConfig from input parameters
         rdmft::RDMFTConfig rdmft_config;
         rdmft_config.xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
@@ -581,7 +618,11 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
         // Non-positive occ_maxiter would run zero PG/ALM/AS inner iterations; clamp to 1.
         rdmft_config.occ_maxiter = std::max(1, inp.rdmft_occ_maxiter);
-        if (inp.rdmft_occ_init_mode == "perturbed")
+        if (loaded_rdmft_checkpoint)
+        {
+            rdmft_config.occ_init_mode = rdmft::OccInitMode::KS;
+        }
+        else if (inp.rdmft_occ_init_mode == "perturbed")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
         else if (inp.rdmft_occ_init_mode == "binary")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Binary;
@@ -697,24 +738,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         }
         rdmft_config.grad_check = inp.rdmft_grad_check;
 
-        // RDMFT equality target N_e: default base is sum wg (matches loaded occupations);
-        // optional base PARAM.inp.nelec plus rdmft_nelec_delta (see INPUT).
-        double sum_wg = 0.0;
-        for (int ik = 0; ik < nk; ++ik)
-        {
-            for (int ib = 0; ib < nbands; ++ib)
-            {
-                sum_wg += this->pelec->wg(ik, ib);
-            }
-        }
-        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
-        const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
-        if (n_electrons <= 0.0)
-        {
-            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
-                                     "RDMFT electron target N_e must be positive. Check rdmft_nelec_use_input, "
-                                     "nelec, sum(wg), and rdmft_nelec_delta.");
-        }
         rdmft::RDMFTNelectronTargetMeta nelec_meta;
         nelec_meta.sum_initial_wg = sum_wg;
         nelec_meta.input_nelec = inp.nelec;
@@ -739,6 +762,24 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // Update the total energy record
         this->pelec->f_en.etot = etot_rdmft;
+
+        if (GlobalC::restart.info_save.save_rdmft)
+        {
+            rdmft::write_rdmft_restart<TK>(this->pv,
+                                           nk,
+                                           nbands,
+                                           inp.nspin,
+                                           inp.gamma_only,
+                                           n_electrons,
+                                           inp.rdmft_functional,
+                                           occ_flat,
+                                           *this->psi);
+            if (GlobalV::MY_RANK == 0)
+            {
+                GlobalV::ofs_running << "\n RDMFT: wrote restart checkpoint to " << GlobalC::restart.folder
+                                     << std::endl;
+            }
+        }
 
         ModuleBase::timer::end("ESolver_KS_LCAO", "rdmft_solve");
     }

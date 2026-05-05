@@ -15,6 +15,7 @@ public:
 	{
 		bool save_charge = false;
         bool save_H = false;    // save H means save Hexx now, will be changed in the future.
+        bool save_rdmft = false; ///< RDMFT: Restart_rdmft.txt + occupations + WFC binaries in restart/
 	};
 	Info_Save info_save;
 	
@@ -25,6 +26,7 @@ public:
 		bool load_H = false;
 		bool load_H_finish = false;
         bool restart_exx = false;   // to avoid the repeated load in MD/Relax
+        bool load_rdmft = false;    ///< RDMFT: read checkpoint before RDMFT solve (same MPI layout as save)
 	};
 	Info_Load info_load;
 	

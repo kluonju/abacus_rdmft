@@ -53,8 +53,13 @@ class RDMFTSolver
     /// Riemannian gradient method on the Stiefel manifold with the
     /// optimiser selected by config_.orb_optimizer (sd, cg, lbfgs, adam).
     /// Line search: monotone Armijo (sd / cg / adam) or Strong Wolfe (lbfgs).
+    /// \param E_at_orb_block_start Total energy after occupations in this outer
+    ///        macro (start of orbital block); used when line search fails to
+    ///        optionally deem the orbital inner loop converged if |E - E_at_orb_block_start|
+    ///        is below `orb_energy_tol` (> 0).
     OptResult optimize_orbitals(const std::vector<double>& occ_flat,
-                                 psi::Psi<TK>& wfc);
+                                 psi::Psi<TK>& wfc,
+                                 double E_at_orb_block_start);
 
     /// Verify gradient consistency by finite differences
     bool check_gradient_consistency(const std::vector<double>& occ_flat,

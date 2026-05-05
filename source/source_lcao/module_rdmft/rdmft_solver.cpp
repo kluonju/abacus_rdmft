@@ -1,4 +1,5 @@
 #include "rdmft_solver.h"
+#include "rdmft_psi_flat.h"
 #include "source_base/constants.h"
 #include "source_base/formatter.h"
 #include "source_base/timer.h"
@@ -804,89 +805,9 @@ void print_rdmft_optimization_summary_joint(const int outer_iters,
 inline double abs2(double x) { return x * x; }
 inline double abs2(std::complex<double> x) { return std::norm(x); }
 
-// ------------------------------------------------------------------------
-// Flatten / unflatten helpers for the Stiefel-manifold orbital optimiser.
-// To reuse the Euclidean lbfgs / Adam optimiser working on a flat
-// std::vector<double>, we map psi::Psi<TK> onto a real-valued flat array:
-//   * TK = double              -> size = N, 1 double per entry
-//   * TK = complex<double>     -> size = 2N, (Re, Im) per entry
-// With this layout the Euclidean inner product on the flattened vector
-// equals Re Tr(X^H Y) in Psi space, which is the Frobenius inner product
-// the EuclideanOptimizer expects (up to overlap S -- see note below).
-//
-// Note on the Riemannian metric: the Stiefel manifold uses the S-weighted
-// inner product  <X, Y>_S = Re Tr(X^H S Y).  The flattened Euclidean dot
-// product coincides with the Riemannian one only when S = I (PW basis or
-// already S-orthonormalised LCAO columns).  For S != I we still get a
-// valid descent direction after projecting back onto the tangent space,
-// but the lbfgs preconditioning is an approximation.  This matches the
-// standard "Riemannian lbfgs by projection" prescription used by the
-// ROPTLITE library and is adequate for the current applications.
-// ------------------------------------------------------------------------
-inline void psi_to_flat(const psi::Psi<double>& P, std::vector<double>& flat)
-{
-    const int nk = P.get_nk();
-    const int nb = P.get_nbands();
-    const int nbs = P.get_nbasis();
-    const int n = nk * nb * nbs;
-    flat.resize(n);
-    if (n == 0)
-    {
-        return;
-    }
-    const double* p = &P(0, 0, 0);
-    std::copy(p, p + n, flat.begin());
-}
-
-inline void psi_to_flat(const psi::Psi<std::complex<double>>& P,
-                        std::vector<double>& flat)
-{
-    const int nk = P.get_nk();
-    const int nb = P.get_nbands();
-    const int nbs = P.get_nbasis();
-    const int n = nk * nb * nbs;
-    flat.resize(2 * n);
-    if (n == 0)
-    {
-        return;
-    }
-    const std::complex<double>* p = &P(0, 0, 0);
-    for (int i = 0; i < n; ++i)
-    {
-        flat[2 * i]     = p[i].real();
-        flat[2 * i + 1] = p[i].imag();
-    }
-}
-
-inline void flat_to_psi(const std::vector<double>& flat, psi::Psi<double>& P)
-{
-    const int nk = P.get_nk();
-    const int nb = P.get_nbands();
-    const int nbs = P.get_nbasis();
-    const int n = nk * nb * nbs;
-    if (n == 0)
-    {
-        return;
-    }
-    double* p = &P(0, 0, 0);
-    for (int i = 0; i < n; ++i) p[i] = flat[i];
-}
-
-inline void flat_to_psi(const std::vector<double>& flat,
-                        psi::Psi<std::complex<double>>& P)
-{
-    const int nk = P.get_nk();
-    const int nb = P.get_nbands();
-    const int nbs = P.get_nbasis();
-    const int n = nk * nb * nbs;
-    if (n == 0)
-    {
-        return;
-    }
-    std::complex<double>* p = &P(0, 0, 0);
-    for (int i = 0; i < n; ++i)
-        p[i] = std::complex<double>(flat[2 * i], flat[2 * i + 1]);
-}
+// Flatten / unflatten: shared with RDMFT restart I/O (rdmft_psi_flat.h).
+using rdmft::flat_to_psi;
+using rdmft::psi_to_flat;
 
 template <typename TK, typename TR>
 void RDMFTSolver<TK, TR>::init(
@@ -1291,7 +1212,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
 
         // 2. Optimize orbitals with occupations fixed (every outer iteration).
         const auto t_orb0 = std::chrono::steady_clock::now();
-        OptResult orb_result = optimize_orbitals(occ_flat, wfc);
+        OptResult orb_result = optimize_orbitals(occ_flat, wfc, occ_result.final_energy);
         const auto t_orb1 = std::chrono::steady_clock::now();
         orb_time_sec += std::chrono::duration<double>(t_orb1 - t_orb0).count();
         ++orb_calls;
@@ -2698,7 +2619,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 template <typename TK, typename TR>
 OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const std::vector<double>& occ_flat,
-    psi::Psi<TK>& wfc)
+    psi::Psi<TK>& wfc,
+    double E_at_orb_block_start)
 {
     // Plain Riemannian gradient method on the Stiefel manifold
     // (Absil-Mahony-Sepulchre, "Optimization Algorithms on Matrix Manifolds",
@@ -3057,12 +2979,23 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         if (!ls.success)
         {
             // Roll back; line search failed (rare, usually a stationary
-            // iterate). Let the outer loop notice via gnorm.
+            // iterate). If total energy is unchanged from the start of this
+            // orbital block (within rdmft_orb_tol), treat the orbital inner
+            // loop as converged.
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
             energy_grad_->invalidate_hone_cache();
+            const double dE_occ_block = std::abs(E - E_at_orb_block_start);
+            if (config_.orb_energy_tol > 0.0
+                && rdmft_inner_abs_dE_converged(dE_occ_block, config_.orb_energy_tol))
+            {
+                result.converged = true;
+                GlobalV::ofs_running << "      orb line search failed but |E - E_occ_end|=" << std::scientific
+                                     << dE_occ_block << " < rdmft_orb_tol=" << config_.orb_energy_tol
+                                     << "  (orb inner deemed converged)" << std::defaultfloat << std::endl;
+            }
             result.iterations = inner + 1;
             result.final_energy = E;
             print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,

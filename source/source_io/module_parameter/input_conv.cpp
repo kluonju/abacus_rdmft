@@ -288,6 +288,10 @@ void Input_Conv::Convert()
         else {
             GlobalC::restart.info_save.save_charge = true;
         }
+        if (PARAM.inp.rdmft && !PARAM.inp.rdmft_functional.empty())
+        {
+            GlobalC::restart.info_save.save_rdmft = true;
+        }
     }
     if (PARAM.inp.restart_load)
     {
@@ -318,6 +322,10 @@ void Input_Conv::Convert()
         }
         else {
             GlobalC::restart.info_load.load_charge = true;
+        }
+        if (PARAM.inp.rdmft && !PARAM.inp.rdmft_functional.empty())
+        {
+            GlobalC::restart.info_load.load_rdmft = true;
         }
     }
 

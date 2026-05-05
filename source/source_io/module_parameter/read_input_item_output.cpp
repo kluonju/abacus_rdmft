@@ -860,7 +860,9 @@ The circle order of the charge density on real space grids is: x is the outer lo
         item.description = R"(Whether to save charge density files per ionic step, which are used to restart calculations. According to the value of read_file_dir:
 * auto: These files are saved in folder OUT.{read_file_dir}/restart/.
 
-If EXX(exact exchange) is calculated (i.e. dft_fuctional==hse/hf/pbe0/scan0 or rpa==True), the Hexx(R) files for each processor will also be saved in the above folder, which can be read in EXX calculation with restart_load==True.)";
+If EXX(exact exchange) is calculated (i.e. dft_fuctional==hse/hf/pbe0/scan0 or rpa==True), the Hexx(R) files for each processor will also be saved in the above folder, which can be read in EXX calculation with restart_load==True.
+
+If rdmft==True and rdmft_functional is non-empty (new RDMFT engine), RDMFT checkpoint files (Restart_rdmft.txt, fractional occupations, and per-rank wavefunction coefficients) are also written there after the RDMFT stage.)";
         item.default_value = "False";
         item.unit = "";
         item.availability = "Numerical atomic orbital basis";
