@@ -343,8 +343,45 @@ double run_riemannian_sd_cg(Rayleigh& problem,
             }
             return problem.eval(C_trial);
         };
-        const auto ls = armijo_line_search(f_at, E_cur, dd, alpha_init,
-                                            1e-4, 0.5, 30, /*use_polynomial=*/false);
+        auto d_at = [&](double a) -> double {
+            C_trial.assign(n * p, 0.0);
+            switch (retr)
+            {
+                case HelperRetraction::Polar:
+                    manifold.retract(C_out.data(), dir.data(), a,
+                                     C_trial.data(), n, p);
+                    break;
+                case HelperRetraction::QR:
+                    manifold.retract_qr(C_out.data(), dir.data(), a,
+                                        C_trial.data(), n, p);
+                    break;
+                case HelperRetraction::Cayley:
+                {
+                    std::vector<double> Gconv(n * p, 0.0);
+                    for (int i = 0; i < n * p; ++i) Gconv[i] = -dir[i];
+                    manifold.retract_cayley(C_out.data(), Gconv.data(), a,
+                                            C_trial.data(), n, p);
+                    break;
+                }
+            }
+            std::vector<double> Gn = problem.grad(C_trial);
+            std::vector<double> GRn(n * p, 0.0);
+            manifold.project_tangent(C_trial.data(), Gn.data(), GRn.data(), n, p);
+            double s = 0.0;
+            for (int i = 0; i < n * p; ++i)
+                s += GRn[i] * dir[i];
+            return s;
+        };
+        const auto ls = nonmonotone_strong_wolfe_line_search(f_at,
+            d_at,
+            E_cur,
+            dd,
+            E_cur,
+            alpha_init,
+            1e-4,
+            0.9,
+            40,
+            40);
         // Commit to C_trial at the accepted (or last-tried) step.
         C_trial.assign(n * p, 0.0);
         switch (retr)

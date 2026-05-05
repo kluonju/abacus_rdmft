@@ -634,16 +634,17 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
-        rdmft_config.orb_energy_tol = inp.rdmft_orb_tol;
-        rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
-        rdmft_config.occ_energy_tol = inp.rdmft_occ_energy_tol;
         rdmft_config.occ_grad_tol = inp.rdmft_occ_grad_tol;
+        rdmft_config.occ_proj_tol = inp.rdmft_occ_proj_tol;
         rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
-        rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
         rdmft_config.line_search_c1 = inp.rdmft_line_search_c1;
+        rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
+        rdmft_config.line_search_max_iter = std::max(1, inp.rdmft_line_search_max_iter);
+        rdmft_config.line_search_max_zoom = std::max(1, inp.rdmft_line_search_max_zoom);
+        rdmft_config.line_search_nm_memory = std::max(1, inp.rdmft_line_search_nm_memory);
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;

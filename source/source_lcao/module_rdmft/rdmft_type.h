@@ -198,7 +198,8 @@ struct RDMFTConfig
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
     /// Alternating orbital sub-problem on the Stiefel manifold.
     /// Selects the Riemannian optimiser used by `optimize_orbitals`.
-    /// SD or nonlinear Polak-Ribiere+ CG on the manifold (AMS Ch. 8). Line search: Armijo.
+    /// SD or nonlinear Polak-Ribiere+ CG on the manifold (AMS Ch. 8).
+    /// Line search: non-monotone Strong Wolfe (except SPG occupations; see below).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Retraction used by every orbital step (alternating and joint).
     /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
@@ -209,7 +210,7 @@ struct RDMFTConfig
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: simple Armijo backtracking on the product manifold.
+    /// Joint line search: non-monotone Strong Wolfe on the product manifold.
     OptimizerType joint_optimizer = OptimizerType::ConjugateGradient;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
@@ -225,20 +226,18 @@ struct RDMFTConfig
     /// |E - E_prev| between outer iterations < this (Ry). When <= 0, outer energy check omitted.
     /// Same field as INPUT `rdmft_energy_tol`.
     double energy_tol = 1e-8;
-    /// Orbital inner: Riemannian gradient norm ||G_R|| threshold (OR branch).
+    /// Orbital inner: relative gradient factor \(\varepsilon_g\) — stop when
+    /// \(\|G_R\|_F \le \varepsilon_g \max(1, \|G_R(x_0)\|_F)\) with \(x_0\) the
+    /// orbital iterate at the start of the orbital inner loop. Same role for
+    /// the orbital block in joint (reference gradient norms taken at joint outer iter 0).
     double orb_grad_tol = 1e-4;
-    /// Orbital inner: |ΔE| threshold (Ry); OR with orb_grad_tol when > 0. INPUT `rdmft_orb_tol`.
-    /// <= 0 disables the energy branch.
-    double orb_energy_tol = 1e-6;
-    /// Occupation inner: |ΔE| threshold (Ry); OR with occ_grad_tol when > 0. <= 0 disables
-    /// the energy branch. Same field as INPUT `rdmft_occ_tol`.
-    double rdmft_occ_tol = 1e-6;
-    /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
-    double occ_energy_tol = 1e-6;
-    /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:
-    /// initial trial α₀ pre-step, accepted Armijo α post-step, line_search_alpha_init on SD fallback).
-    /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
+    /// ALM / joint occupation block: \(\varepsilon_g\) for
+    /// \(\|\nabla_p L\| \le \varepsilon_g \max(1, \|\nabla_p L(x_0)\|)\) with \(x_0\)
+    /// the parameter vector at the **first** inner ALM iteration (or joint outer iter 0).
     double occ_grad_tol = 1e-4;
+    /// SPG / active-set occupations: \(\varepsilon_{\mathrm{proj}}\) for Bertsekas residual
+    /// \(\|n - P_\Omega(n-\nabla_n E)\|_\infty \le \varepsilon_{\mathrm{proj}}\).
+    double occ_proj_tol = 1e-4;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
 
@@ -248,18 +247,24 @@ struct RDMFTConfig
     double aug_lag_lambda_init = 0.0;
 
     double line_search_alpha_init = 1.0;
+    /// Sufficient decrease (Armijo) constant in (0, 1); also used in SPG non-monotone Armijo.
     double line_search_c1 = 1e-4;
+    /// Curvature constant for Strong Wolfe: require \f$|\varphi'(\alpha)|\le c_2|\varphi'(0)|\f$.
+    /// Must satisfy \f$c_1 < c_2 < 1\f$.
+    double line_search_c2 = 0.9;
+    /// Backtracking factor for SPG occupation line search only (\f$\lambda \leftarrow \rho\lambda\f$).
     double line_search_rho = 0.5;
-    int line_search_max_iter = 20;
-    /// If true, backtracking after a failed Armijo trial uses a quadratic
-    /// model on the first failure and a cubic on later failures; if false, use
-    /// geometric reduction (multiply by `line_search_rho` only). Polynomial
-    /// suggestions are safeguarded inside the line search (fixed 0.1--0.5 of
-    /// the last failed step; see `armijo_line_search` in `rdmft_optimizer.h`).
-    bool line_search_polynomial = true;
+    /// Max bracketing steps in Strong Wolfe (joint, ALM, alternating orbitals).
+    int line_search_max_iter = 30;
+    /// Max inner iterations in the Strong Wolfe zoom phase.
+    int line_search_max_zoom = 30;
+    /// Non-monotone memory \f$M\f$ for Strong Wolfe: reference value
+    /// \f$f_{\text{ref}}=\max_{0\le j<\min(k,M)} f_{k-j}\f$ at the current iterate.
+    /// Set to 1 for monotone sufficient decrease w.r.t. \f$\varphi(0)\f$ only.
+    int line_search_nm_memory = 10;
 
     /// ALM occupation line-search seed policy.
-    /// When enabled, Armijo starts from a Barzilai-Borwein step estimate
+    /// When enabled, Strong Wolfe initial trial \f$\alpha_0\f$ uses a Barzilai-Borwein estimate
     /// computed in occupation-parameter space (fallback to
     /// line_search_alpha_init when unavailable).
     bool alm_bb_enabled = true;
@@ -274,7 +279,7 @@ struct RDMFTConfig
     /// and C are the orbital coefficients. The natural scale of dE/dp
     /// depends on the Jacobian dn/dp (which can range from 0 to 1 across
     /// the Brillouin zone and band index), while dE/dC scales with the
-    /// Hamiltonian matrix elements. In a single-alpha Armijo line search
+    /// Hamiltonian matrix elements. In a single-scalar Strong Wolfe line search
     /// this block-scale mismatch manifests as either (a) well-behaved
     /// occupation steps together with far too aggressive orbital steps,
     /// or (b) vice versa. Multiplying the orbital gradient (as fed to

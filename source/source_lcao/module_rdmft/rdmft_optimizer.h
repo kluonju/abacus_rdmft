@@ -23,7 +23,7 @@ struct OptResult
     bool converged = false;
 };
 
-/// Result of Armijo backtracking (and similar) line search
+/// Result of a line search (non-monotone Strong Wolfe, etc.)
 struct LineSearchResult
 {
     /// Accepted or last-tried step size
@@ -31,10 +31,10 @@ struct LineSearchResult
     /// Objective at `step` (or last energy evaluation on failure)
     double f_new = 0.0;
     bool success = false;
-    /// Initial trial step (the `alpha_init` argument to `armijo_line_search`)
+    /// Initial trial step passed into the line search
     double alpha_init = 0.0;
-    /// Number of objective evaluations in `f_at_step` (one per trial, plus
-    /// one on the failure finalisation path when `success` is false).
+    /// Number of scalar objective evaluations `phi(alpha)` plus derivative
+    /// evaluations `phi'(alpha)` (each counted once).
     int n_feval = 0;
 };
 
@@ -235,100 +235,204 @@ inline double cubic_local_min_t(
 
 } // namespace detail
 
-/// Armijo backtracking line search. When `use_polynomial` is true, a failed
-/// trial is followed by: (1) a quadratic model using \f$(0,f_0,\phi'_0)\f$ and
-/// the first failed \f$(\alpha,f(\alpha))\f$, and (2) on later failures, a
-/// cubic through \f$(0,f_0,\phi'_0)\f$ and the last two \f$(\alpha,f(\alpha))\f$
-/// pairs. The polynomial suggestion is then clamped to \f$[0.1,0.5]\f$ times the
-/// last failed step length (Nocedal & Wright style), then capped by
-/// \f$0.99\,\alpha_{\text{fail}}\f$. Otherwise use pure geometric backtracking:
-/// multiply by `rho` only.
-inline LineSearchResult armijo_line_search(
-    std::function<double(double step)> f_at_step,
-    double f0,
-    double directional_deriv,
-    double alpha_init = 0.1,
-    double c1 = 1e-4,
-    double rho = 0.5,
-    int max_iter = 30,
-    bool use_polynomial = true)
+/// Non-monotone Strong Wolfe line search (Nocedal & Wright, Algorithms 3.5–3.6),
+/// with the sufficient-decrease test
+/// \f$\varphi(\alpha)\le f_{\text{ref}}+c_1\alpha\varphi'(0)\f$
+/// where \f$f_{\text{ref}}\f$ is a reference value (set \f$f_{\text{ref}}=\varphi(0)\f$
+/// for monotone Armijo). Requires \f$\varphi'(0)<0\f$, \f$0<c_1<c_2<1\f$.
+///
+/// `phi` evaluates \f$\varphi(\alpha)\f$; `deriv_phi` evaluates
+/// \f$\varphi'(\alpha)\f$ (directional derivative along the search ray).
+inline LineSearchResult nonmonotone_strong_wolfe_line_search(
+    const std::function<double(double)>& phi,
+    const std::function<double(double)>& deriv_phi,
+    double phi0,
+    double derphi0,
+    double f_ref_nm,
+    double alpha_init,
+    double c1,
+    double c2,
+    int max_bracket_iter,
+    int max_zoom_iter,
+    double alpha_expand_cap = 1e10)
 {
-    // Safeguard multipliers for the polynomial trial (fixed; not user-tunable).
-    constexpr double k_poly_clamp_lo = 0.1;
-    constexpr double k_poly_clamp_hi = 0.5;
     LineSearchResult result;
     result.alpha_init = alpha_init;
-    double alpha = alpha_init;
-    double prev_fail_alpha = -1.0;
-    double prev_fail_f = 0.0;
+    result.f_new = phi0;
+    result.step = 0.0;
+    result.success = false;
+    result.n_feval = 0;
 
-    for (int i = 0; i < max_iter; ++i)
+    if (!(derphi0 < 0.0) || !std::isfinite(derphi0) || !std::isfinite(phi0) || !std::isfinite(f_ref_nm)
+        || !(alpha_init > 0.0) || !(c1 > 0.0 && c1 < 1.0) || !(c2 > c1 && c2 < 1.0)
+        || max_bracket_iter <= 0 || max_zoom_iter <= 0)
     {
-        const double fail_alpha = alpha;
-        const double f_new = f_at_step(fail_alpha);
-        ++result.n_feval;
-        if (f_new <= f0 + c1 * fail_alpha * directional_deriv)
+        return result;
+    }
+
+    const auto armijo_nm = [&](double a, double fa) {
+        return fa <= f_ref_nm + c1 * a * derphi0;
+    };
+    const auto curvature_ok = [&](double gp) {
+        return std::abs(gp) <= -c2 * derphi0;
+    };
+
+    // Precondition: alpha_lo < alpha_hi and phi_lo_known = phi(alpha_lo).
+    auto zoom = [&](double alpha_lo,
+                    double alpha_hi,
+                    double phi_lo_known,
+                    double& alpha_out,
+                    double& f_out,
+                    bool& ok_zoom) {
+        ok_zoom = false;
+        alpha_out = alpha_lo;
+        f_out = phi_lo_known;
+        double lo = alpha_lo;
+        double hi = alpha_hi;
+        double flo = phi_lo_known;
+        if (!(lo < hi) || !std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(flo))
         {
-            result.step = fail_alpha;
-            result.f_new = f_new;
+            return;
+        }
+        constexpr double tol = 1e-12;
+        for (int z = 0; z < max_zoom_iter; ++z)
+        {
+            if (hi - lo <= tol * (1.0 + std::abs(hi)))
+            {
+                break;
+            }
+            const double alpha_j = 0.5 * (lo + hi);
+            const double phi_j = phi(alpha_j);
+            ++result.n_feval;
+            if (!std::isfinite(phi_j))
+            {
+                hi = alpha_j;
+                continue;
+            }
+            if (!armijo_nm(alpha_j, phi_j) || phi_j >= flo)
+            {
+                hi = alpha_j;
+                continue;
+            }
+            const double der_j = deriv_phi(alpha_j);
+            ++result.n_feval;
+            if (!std::isfinite(der_j))
+            {
+                hi = alpha_j;
+                continue;
+            }
+            if (curvature_ok(der_j))
+            {
+                alpha_out = alpha_j;
+                f_out = phi_j;
+                ok_zoom = true;
+                return;
+            }
+            if (der_j * (hi - lo) >= 0.0)
+            {
+                hi = lo;
+            }
+            lo = alpha_j;
+            flo = phi_j;
+        }
+    };
+
+    double alpha_prev = 0.0;
+    double phi_prev = phi0;
+    double alpha = alpha_init;
+
+    for (int i = 0; i < max_bracket_iter; ++i)
+    {
+        const double phi_a = phi(alpha);
+        ++result.n_feval;
+        if (!std::isfinite(phi_a))
+        {
+            alpha *= 0.5;
+            if (alpha < 1e-30 * std::max(alpha_init, 1.0))
+            {
+                return result;
+            }
+            continue;
+        }
+
+        if (!armijo_nm(alpha, phi_a) || (phi_a >= phi_prev && alpha_prev > 0.0))
+        {
+            double z_alpha = 0.0;
+            double z_f = 0.0;
+            bool zok = false;
+            if (alpha_prev < alpha)
+            {
+                zoom(alpha_prev, alpha, phi_prev, z_alpha, z_f, zok);
+            }
+            else if (alpha_prev > alpha)
+            {
+                zoom(alpha, alpha_prev, phi_a, z_alpha, z_f, zok);
+            }
+            else
+            {
+                zok = false;
+            }
+            result.step = z_alpha;
+            result.f_new = z_f;
+            result.success = zok;
+            return result;
+        }
+
+        const double der_a = deriv_phi(alpha);
+        ++result.n_feval;
+        if (!std::isfinite(der_a))
+        {
+            alpha *= 0.5;
+            if (alpha < 1e-30 * std::max(alpha_init, 1.0))
+            {
+                return result;
+            }
+            continue;
+        }
+
+        if (curvature_ok(der_a))
+        {
+            result.step = alpha;
+            result.f_new = phi_a;
             result.success = true;
             return result;
         }
 
-        double alpha_next = 0.0;
-        if (use_polynomial)
+        if (der_a >= 0.0)
         {
-            double t_s = std::numeric_limits<double>::quiet_NaN();
-            if (prev_fail_alpha > 0.0 && std::isfinite(prev_fail_f)
-                && std::abs(fail_alpha - prev_fail_alpha)
-                       > 1.0e-20 * (1.0 + std::abs(fail_alpha) + std::abs(prev_fail_alpha)))
+            double z_alpha = 0.0;
+            double z_f = 0.0;
+            bool zok = false;
+            if (alpha_prev < alpha)
             {
-                const double cap = std::min(fail_alpha, prev_fail_alpha);
-                t_s = detail::cubic_local_min_t(
-                    f0, directional_deriv, prev_fail_alpha, prev_fail_f, fail_alpha, f_new, cap);
+                zoom(alpha_prev, alpha, phi_prev, z_alpha, z_f, zok);
+            }
+            else if (alpha_prev > alpha)
+            {
+                zoom(alpha, alpha_prev, phi_a, z_alpha, z_f, zok);
             }
             else
             {
-                t_s = detail::quadratic_unconstrained_min_t(
-                    f0, directional_deriv, fail_alpha, f_new);
+                zok = false;
             }
-            if (!std::isfinite(t_s) || t_s <= 0.0)
-            {
-                alpha_next = rho * fail_alpha;
-            }
-            else
-            {
-                const double lo = k_poly_clamp_lo * fail_alpha;
-                const double hi = k_poly_clamp_hi * fail_alpha;
-                if (lo <= hi)
-                    t_s = std::min(hi, std::max(lo, t_s));
-                else
-                    t_s = std::min(lo, std::max(hi, t_s));
-                t_s = std::min(t_s, 0.99 * fail_alpha);
-                if (t_s <= 0.0 || t_s >= fail_alpha * (1.0 - 1.0e-10))
-                    alpha_next = rho * fail_alpha;
-                else
-                    alpha_next = t_s;
-            }
-        }
-        else
-        {
-            alpha_next = rho * fail_alpha;
+            result.step = z_alpha;
+            result.f_new = z_f;
+            result.success = zok;
+            return result;
         }
 
-        prev_fail_alpha = fail_alpha;
-        prev_fail_f = f_new;
-        alpha = alpha_next;
-        const double alpha_floor = 1.0e-16 * std::max(alpha_init, 1.0);
-        if (alpha < alpha_floor)
+        alpha_prev = alpha;
+        phi_prev = phi_a;
+        const double alpha_next = std::min(2.0 * alpha, alpha_expand_cap);
+        if (alpha_next <= alpha * (1.0 + 1e-14))
         {
-            alpha = alpha_floor;
+            return result;
         }
+        alpha = alpha_next;
     }
 
-    result.step = alpha;
-    result.f_new = f_at_step(alpha);
-    ++result.n_feval;
+    result.step = alpha_prev;
+    result.f_new = phi_prev;
     result.success = false;
     return result;
 }

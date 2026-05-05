@@ -84,8 +84,18 @@ TEST_F(OptimizerTest, CG_converges_quadratic)
             for (size_t i = 0; i < xt.size(); ++i) xt[i] += step * dir[i];
             return q.eval(xt);
         };
+        auto d_at = [&](double step) -> double {
+            std::vector<double> xt(x);
+            for (size_t i = 0; i < xt.size(); ++i) xt[i] += step * dir[i];
+            auto g = q.grad(xt);
+            double s = 0.0;
+            for (size_t i = 0; i < g.size(); ++i) s += g[i] * dir[i];
+            return s;
+        };
 
-        auto ls = armijo_line_search(f_at, q.eval(x), dd, 1.0);
+        const double f0 = q.eval(x);
+        auto ls = nonmonotone_strong_wolfe_line_search(
+            f_at, d_at, f0, dd, f0, 1.0, 1e-4, 0.9, 40, 40);
         std::vector<double> step_vec(x.size());
         for (size_t i = 0; i < x.size(); ++i)
         {
@@ -101,16 +111,17 @@ TEST_F(OptimizerTest, CG_converges_quadratic)
         EXPECT_NEAR(x[i], q.b[i], 1e-6);
 }
 
-TEST_F(OptimizerTest, armijo_line_search_works)
+TEST_F(OptimizerTest, strong_wolfe_line_search_works_on_quadratic)
 {
     auto f = [](double step) -> double { return (step - 1.0) * (step - 1.0); };
-    double f0 = f(0.0);
-    double deriv = -2.0; // f'(0) = 2*(0-1) = -2
+    auto fp = [](double step) -> double { return 2.0 * (step - 1.0); };
+    const double f0 = f(0.0);
+    const double deriv = fp(0.0); // -2
 
-    auto result = armijo_line_search(f, f0, deriv, 2.0);
+    auto result = nonmonotone_strong_wolfe_line_search(f, fp, f0, deriv, f0, 2.0, 1e-4, 0.9, 40, 40);
     EXPECT_TRUE(result.success);
-    EXPECT_GT(result.step, 0.0);
-    EXPECT_LT(result.f_new, f0);
+    EXPECT_NEAR(result.step, 1.0, 1e-2);
+    EXPECT_NEAR(result.f_new, 0.0, 1e-6);
 }
 
 // ============================================================================
@@ -266,9 +277,30 @@ double run_stiefel_optimizer(Rayleigh& problem, OPT& opt, int iters,
                               C_trial.data(), problem.n, problem.p);
             return problem.eval(C_trial);
         };
+        auto d_at = [&](double alpha) -> double {
+            C_trial.assign(problem.n * problem.p, 0.0);
+            manifold.retract(C_out.data(), dir_proj.data(), alpha,
+                              C_trial.data(), problem.n, problem.p);
+            std::vector<double> Gn = problem.grad(C_trial);
+            std::vector<double> GRn(problem.n * problem.p, 0.0);
+            manifold.project_tangent(C_trial.data(), Gn.data(), GRn.data(),
+                                      problem.n, problem.p);
+            double s = 0.0;
+            for (int i = 0; i < problem.n * problem.p; ++i)
+                s += GRn[i] * dir_proj[i];
+            return s;
+        };
 
-        auto ls = armijo_line_search(f_at, E_cur, dd, ls_alpha_init,
-                                      1e-4, 0.5, 30);
+        auto ls = nonmonotone_strong_wolfe_line_search(f_at,
+            d_at,
+            E_cur,
+            dd,
+            E_cur,
+            ls_alpha_init,
+            1e-4,
+            0.9,
+            40,
+            40);
 
         C_trial.assign(problem.n * problem.p, 0.0);
         manifold.retract(C_out.data(), dir_proj.data(), ls.step,

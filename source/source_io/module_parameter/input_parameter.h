@@ -683,15 +683,12 @@ struct Input_para
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
     int rdmft_occ_init_nbands_top = 0;             // binary/uniform: K above + K below Fermi (not perturbed)
     double rdmft_energy_tol = 1e-8; // outer: occ+orb inner converged AND (<=0 skips) |dE| vs prev outer
-    double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
-    /// Orbital inner: |ΔE| vs previous inner iter (Ry); OR with orb_grad_tol; <=0 disables energy branch.
-    double rdmft_orb_tol = 1e-5;
-    /// Occupation inner: |ΔE| OR with occ_grad_tol; <=0 disables energy branch (not sum|Δn|)
-    double rdmft_occ_tol = 1e-6;
-    /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
-    double rdmft_occ_energy_tol = 1e-5;
-    /// PG: ||(n-P(n-τ∇E))/τ||_inf; also ALM/AS/joint thresholds as in solver
+    /// Orbital inner: ε_g in ||G_R|| ≤ ε_g max(1, ||G_R(x_0)||) (Frobenius); joint orbital block uses same rule vs iter-0 ref.
+    double rdmft_orb_grad_tol = 1e-5;
+    /// ALM / joint occupation block: ε_g for ||∇_p L|| ≤ ε_g max(1, ||∇_p L(x_0)||)
     double rdmft_occ_grad_tol = 1e-5;
+    /// SPG / active-set occupations: ε_proj for ||n − P_Ω(n−∇E)||_∞ ≤ ε_proj
+    double rdmft_occ_proj_tol = 1e-5;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic, sigma_shift
@@ -699,11 +696,17 @@ struct Input_para
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
-    double rdmft_alpha_step = 1.0;                 // initial occupation/orbital line-search step length
-    /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
-    bool rdmft_line_search_polynomial = true;
-    /// Armijo sufficient-decrease parameter c1 (RDMFT occupation/orbital line searches, joint Armijo)
+    double rdmft_alpha_step = 1.0;                 // initial Strong Wolfe trial step (joint / ALM / orbitals)
+    /// Armijo / sufficient-decrease c1 in (0,1): SPG non-monotone Armijo and Strong Wolfe decrease vs f_ref
     double rdmft_line_search_c1 = 1e-4;
+    /// Strong Wolfe curvature c2: require |phi'| <= c2 |phi'(0)|; must satisfy c1 < c2 < 1
+    double rdmft_line_search_c2 = 0.9;
+    /// Strong Wolfe: max bracket expansion steps (joint, ALM, alternating orbitals)
+    int rdmft_line_search_max_iter = 30;
+    /// Strong Wolfe: max zoom (interval refinement) iterations
+    int rdmft_line_search_max_zoom = 30;
+    /// Non-monotone memory M for Strong Wolfe (f_ref = max of last M energies); SPG uses fixed M=10 internally
+    int rdmft_line_search_nm_memory = 10;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates

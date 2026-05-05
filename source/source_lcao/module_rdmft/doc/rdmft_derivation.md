@@ -518,8 +518,8 @@ $|ΔE|$ is below `rdmft_occ_tol` between inner iterations or after a successful
 step, whichever fires first.  The iteration cap is `rdmft_occ_maxiter`.
 
 **INPUT keywords (SPG path):** `rdmft_occ_grad_tol`, `rdmft_occ_tol`,
-`rdmft_occ_maxiter`, `rdmft_line_search_c1`, `rdmft_line_search_rho`,
-`rdmft_line_search_max_iter`.
+`rdmft_occ_maxiter`, `rdmft_line_search_c1`.  Backtracking uses a fixed ratio
+from `RDMFTConfig::line_search_rho` (default `0.5`; not a separate INPUT keyword).
 
 Pseudocode (SPG occupation inner loop; `P` denotes $P_{\mathcal{C}}$; no spin
 labels):
@@ -603,14 +603,14 @@ Alternate between:
   3. Line search along the retracted curve
      $X(\alpha) = R_{X_k}(\alpha\,D)$ where $R$ is one of three Stiefel
      retractions selected by `rdmft_orb_retraction` (§5.4; default
-     `polar`): **monotone Armijo** backtracking with optional polynomial
-     (quadratic / cubic) safeguarded interpolation
-     (`armijo_line_search` in `rdmft_optimizer.h`). Initial trial step
-     uses `line_search_alpha_init` (with CG scaling from the previous
-     accepted step when available).
+     `polar`): **non-monotone Strong Wolfe** (`nonmonotone_strong_wolfe_line_search`
+     in `rdmft_optimizer.h`), i.e. sufficient decrease vs a reference
+     $f_{\mathrm{ref}}$ from the last $M$ energies and a curvature bound on
+     $|\varphi'(\alpha)|$. Initial trial uses `line_search_alpha_init` (with
+     CG scaling from the previous accepted step when available).
   4. Commit $X_{k+1} = R_{X_k}(\alpha\,D)$ with the accepted $\alpha$.
 
-  No Barzilai–Borwein spectral step, no non-monotone history, no
+  No Barzilai–Borwein spectral step on this path (unlike SPG occupations), no
   Wen–Yin trust radius, no suspicious-descent guard. Convergence
   criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, or (when
   `rdmft_orb_tol` $>0$) $|ΔE|$ below `rdmft_orb_tol`.
@@ -619,7 +619,7 @@ Alternate between:
   the regularised functionals at fractional occupations have no global
   lower bound as a function of $X$ (the exchange Coulomb integral
   $K_{ij} = \langle \phi_i\phi_j|r_{12}^{-1}|\phi_i\phi_j\rangle$ can be
-  made arbitrarily large by orbital concentration), monotone Armijo can
+  made arbitrarily large by orbital concentration), an aggressive line search can
   in principle accept huge "descents" $E_{\mathrm{trial}} - E \sim -10^4$
   Ry into a spurious unphysical basin. Mitigations: (i) tighten
   `rdmft_orb_grad_tol` only as far as the physical basin's descent map
@@ -668,7 +668,7 @@ keyword (default `cg`), drives its evolution. Each outer iteration:
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
    is not negative;
-5. performs a single Armijo backtracking line search along the packed
+5. performs a single **non-monotone Strong Wolfe** line search along the packed
    direction: the occupation parameters are updated linearly
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
@@ -694,7 +694,8 @@ $$
 x_{t+1} = R_{x_t}(-\alpha_t  \mathrm{grad} f(x_t))
 $$
 
-with step size $\alpha_t$ chosen by line search (Armijo backtracking).
+with step size $\alpha_t$ chosen by line search (here: non-monotone Strong Wolfe
+along the retraction / product update, except SPG occupations which use BB + non-monotone Armijo).
 
 ### 8.2 Conjugate Gradient (CG)
 
