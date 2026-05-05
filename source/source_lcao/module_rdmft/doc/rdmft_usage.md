@@ -150,7 +150,7 @@ with `joint`).
    points, hence automatically feasible — **no per-trial re-projection**.
 
 `rdmft_occ_optimizer` is **not** consulted on this path: SPG already has a
-proven globally convergent step, so no SD/CG/L-BFGS direction or curvature
+proven globally convergent step, so no SD/CG direction or curvature
 history is used.
 
 **Closed form of \(P_{\mathcal{C}}\).**  The Euclidean foot point on
@@ -181,10 +181,10 @@ when the inner flags alone indicate convergence.
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
-| `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg` |
+| `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg` |
 | `rdmft_orb_retraction` | string | `polar` | `polar`, `qr`, `cayley` (`qr` / `cayley` serial-only; MPI builds fall back to `polar` with a one-time warning) |
-| `rdmft_joint_optimizer` | string | `lbfgs` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_joint_optimizer` | string | `cg` | `sd`, `cg` |
 
 `rdmft_occ_optimizer` and `rdmft_orb_optimizer` control the two sub-problem
 optimisers used by the `alternating` strategy.  `rdmft_joint_optimizer`
@@ -193,12 +193,9 @@ packed `(p, C)` variable.  Only the keyword matching the active strategy is
 consulted; the others are ignored.
 
 `rdmft_orb_optimizer` chooses the Riemannian optimiser used by the
-`alternating` orbital sub-problem (clean Stiefel SD, CG, L-BFGS, or Adam;
-see *Optimiser semantics* below).  All four are textbook Riemannian methods
-on `St(N_b, N_basis)` with no Barzilai–Borwein spectral step, no
-non-monotone history, and no trust radius.  Line search: monotone Armijo
-backtracking (`armijo_line_search`) for `sd` / `cg` / `adam`, Strong Wolfe
-(`strong_wolfe_line_search`) for `lbfgs`.
+`alternating` orbital sub-problem (Stiefel SD or CG; see *Optimiser semantics*
+below).  Both are first-order Riemannian methods on `St(N_b, N_basis)` with
+monotone Armijo backtracking (`armijo_line_search`).
 
 `rdmft_orb_retraction` selects the Stiefel retraction used by every orbital
 step (both `alternating` and `joint`):
@@ -216,12 +213,9 @@ sub-problems:
 |-------|-----------|-------|
 | `sd` | Steepest descent | Most robust, slowest convergence |
 | `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability. For **orbitals**, if an Armijo line search fails, the next inner iteration restarts along steepest descent (-G_R). |
-| `lbfgs` | limited-memory lbfgs | Fast for smooth landscapes, uses `rdmft_lbfgs_memory` history vectors. For the orbital sub-problem, the quasi-Newton direction is projected back onto the Stiefel tangent space (Riemannian lbfgs by projection). |
-| `adam` | Adam | Adaptive learning rate, useful for noisy or ill-conditioned problems. For the orbital sub-problem Adam's Euclidean update is projected onto the tangent space and retracted onto the Stiefel manifold at each step. |
 
-All four optimisers are available for both `rdmft_occ_optimizer` and
-`rdmft_orb_optimizer` and may be mixed freely (e.g. `cg` on occupations and
-`lbfgs` on orbitals).
+Both optimisers are available for `rdmft_occ_optimizer` and `rdmft_orb_optimizer`
+and may be mixed (e.g. `cg` on occupations and `sd` on orbitals).
 
 ### Convergence control
 
@@ -257,19 +251,15 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Initial Armijo trial step for the **orbital** sub-problem (non–quasi-Newton optimisers) and for **ALM** occupations (when no BB seed is configured). The SPG occupation block (`projected_gradient` / `active_set`) manages its own spectral (Barzilai–Borwein) step length and does not consult this keyword. |
-| `rdmft_line_search_c1` | real | `1e-4` | Armijo sufficient-decrease \(c_1\) in \((0,1)\): smaller is stricter. Used for alternating **orbital** Armijo, ALM / PG / AS **occupation** line searches, and joint Armijo; also the Armijo side of **Strong Wolfe** when \(c_2\) is used. |
-| `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature \(c_2\): used when **Strong Wolfe** runs (`rdmft_occ_optimizer = lbfgs` with ALM, or `rdmft_joint_optimizer = lbfgs` in joint mode). Require \(\lvert g^\top d\rvert \le c_2 \lvert g_0^\top d\rvert\). |
-| `rdmft_line_search_max_zoom` | int | `20` | Maximum **zoom** iterations in Strong Wolfe (Nocedal & Wright). |
-| `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by lbfgs. |
-| `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
+| `rdmft_alpha_step` | real | `1.0` | Initial Armijo trial step for the **orbital** sub-problem and for **ALM** occupations (when no BB seed is configured). The SPG occupation block (`projected_gradient` / `active_set`) manages its own spectral (Barzilai–Borwein) step length and does not consult this keyword. |
+| `rdmft_line_search_c1` | real | `1e-4` | Armijo sufficient-decrease \(c_1\) in \((0,1)\): smaller is stricter. Used for alternating **orbital** Armijo, ALM occupation Armijo, SPG non-monotone Armijo, and joint Armijo. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true). **Strong Wolfe** (bracket + zoom) is used for lbfgs in ALM occupations and for the **joint** strategy when `rdmft_joint_optimizer = lbfgs`; otherwise **Armijo** applies with `rdmft_line_search_c1`.  **ALM** occupation Armijo may use optional **polynomial** suggestions when `rdmft_line_search_polynomial` is true.  The **SPG** path (`projected_gradient` / `active_set`) uses its own non-monotone Armijo with its own Barzilai–Borwein (BB1) spectral step and does not consult any of the BB / polynomial / `rdmft_occ_optimizer` knobs.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true). **ALM** occupations, alternating orbitals, and the **joint** strategy use **Armijo** backtracking controlled primarily by `rdmft_line_search_c1` (and the solver defaults for backtracking length / iteration cap). **ALM** occupation Armijo may use optional **polynomial** suggestions when `rdmft_line_search_polynomial` is true.  The **SPG** path (`projected_gradient` / `active_set`) uses its own non-monotone Armijo with its own Barzilai–Borwein (BB1) spectral step and does not consult any of the BB / polynomial / `rdmft_occ_optimizer` knobs.
 
-The **alternating orbital** sub-problem is a Riemannian Spectral Projected Gradient on the Stiefel manifold (Iannazzo–Porcelli, *IMA J. Numer. Anal.* **38** (2018) 495), with a Barzilai–Borwein (BB1) spectral step length, an adaptive Stiefel **trust radius** `‖λ·dir‖_F ≤ τ_orb · ‖X‖_F` (Wen–Yin, *Math. Prog.* **142** (2013) 397), and the same Grippo–Lampariello–Lucidi non-monotone Armijo line search.  τ_orb shrinks (×0.25) whenever the Armijo first trial yields an energy drop more than `k_susp = 2` times the linear-model prediction `|λ·⟨G_R, dir⟩|` — this catches descents into spurious low-energy basins of regularised separable functionals (Müller / Power / GEO), where exchange Coulomb integrals are unbounded as a function of orbital concentration.  τ_orb grows (×1.5) when the first trial passes cleanly, recovering quickly in the well-behaved regime.  No INPUT keyword exposes τ_orb (the defaults τ_orb_init = 1e-3, τ_orb ∈ [1e-6, 1e-2] are conservative and self-tune).
+The **alternating orbital** sub-problem is Riemannian steepest descent or Polak–Ribière⁺ conjugate gradient on the Stiefel manifold (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*, Princeton 2008), with **monotone Armijo** backtracking along the retraction selected by `rdmft_orb_retraction` (default `polar`). Optional polynomial interpolation in the line search is controlled by `rdmft_line_search_polynomial`. For ill-conditioned regularised functionals (Müller / Power / GEO), reduce `rdmft_line_search_alpha_init` or switch to `rdmft_solver_strategy = joint` if the alternating map diverges (see `rdmft_derivation.md` §7.1).
 
 ### Debugging
 
@@ -301,7 +291,7 @@ This runs a KS-SCF with PBE to convergence, then optimises natural occupations
 (CG with augmented-Lagrangian constraint) and natural orbitals (CG on the Stiefel
 manifold) in an alternating fashion using the Müller functional.
 
-### Example 2: Power functional with lbfgs and gradient check
+### Example 2: Power functional with CG and gradient check
 
 ```
 INPUT_PARAMETERS
@@ -312,9 +302,8 @@ rdmft_functional     power
 rdmft               1
 rdmft_power_alpha       0.55
 rdmft_solver_strategy   alternating
-rdmft_occ_optimizer     lbfgs
-rdmft_orb_optimizer     lbfgs
-rdmft_lbfgs_memory      20
+rdmft_occ_optimizer     cg
+rdmft_orb_optimizer     cg
 rdmft_outer_maxiter        200
 rdmft_energy_tol        1e-8
 rdmft_grad_check        1
@@ -337,7 +326,7 @@ rdmft               1
 rdmft_solver_strategy   joint
 rdmft_occ_param         logistic
 rdmft_constraint        augmented_lagrangian
-rdmft_joint_optimizer   lbfgs
+rdmft_joint_optimizer   cg
 rdmft_alpha_step         0.01
 rdmft_outer_maxiter        300
 ```
@@ -348,11 +337,11 @@ can stabilise joint HF steps; omit it to use the default.
 Here occupations and orbitals are optimised simultaneously on the product
 manifold (new `joint` keyword; `product_manifold` is still accepted as a
 deprecated alias).  The packed variable `(p, C)` is handled by a single
-lbfgs optimiser (`rdmft_joint_optimizer lbfgs`): every outer iteration the
-solver evaluates the packed gradient `(dE/dp, G_R)`, asks lbfgs for a
-descent direction, re-projects the orbital block onto the Stiefel tangent
-space, and runs one Armijo line search along the packed direction (linear
-update for the occupation parameters, Stiefel retraction for the orbitals).
+optimiser (`rdmft_joint_optimizer` = `sd` or `cg`): every outer iteration the
+solver evaluates the packed gradient `(dE/dp, G_R)`, computes a descent
+direction, re-projects the orbital block onto the Stiefel tangent space, and
+runs one Armijo line search along the packed direction (linear update for the
+occupation parameters, Stiefel retraction for the orbitals).
 
 ### Example 4: Gamma-only solid with projected gradient
 
@@ -435,9 +424,8 @@ fallback (clip + dual rescaling); see
   \(n_{ik}\) with a Barzilai–Borwein spectral step and a Grippo–Lampariello–Lucidi
   non-monotone Armijo line search; no tuning is normally required.
 
-- **CG or lbfgs** are the recommended optimisers for production.  Steepest
-  descent is useful for debugging.  Adam can help with difficult convergence
-  but may require tuning `rdmft_adam_lr`.
+- **CG** is the recommended optimiser for production in most cases.  Steepest
+  descent is useful for debugging.
 
 - **For periodic systems with multiple k-points**, the constraint
   Σ_k w_k Σ_i n_{ik} = N_e is automatically handled using the k-point weights.

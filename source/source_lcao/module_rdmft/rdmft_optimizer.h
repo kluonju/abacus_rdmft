@@ -3,7 +3,6 @@
 
 #include "rdmft_type.h"
 #include <vector>
-#include <deque>
 #include <functional>
 #include <utility>
 #include <cmath>
@@ -334,164 +333,6 @@ inline LineSearchResult armijo_line_search(
     return result;
 }
 
-/// Strong Wolfe line search (Nocedal & Wright, Algorithm 3.5 + 3.6).
-///
-/// `phi(alpha)` returns `{ f(alpha), g(alpha) }` where `g(alpha) = f'(0)` along
-/// the line at `x + alpha d` = ((grad f at trial) . direction).
-/// `f0`, `g0` are the values at `alpha = 0` (`g0` must be < 0 for a descent
-/// direction). Returns a step satisfying strong Wolfe, or a best-effort
-/// `success == false` when the budget is exceeded.
-inline LineSearchResult strong_wolfe_line_search(
-    std::function<std::pair<double, double>(double)> phi,
-    double f0,
-    double g0,
-    double alpha_init = 1.0,
-    double c1 = 1e-4,
-    double c2 = 0.9,
-    int max_iter = 20,
-    int max_zoom = 20)
-{
-    LineSearchResult result;
-    result.alpha_init = alpha_init;
-    int n_feval = 0;
-    auto phi_wrap = [&](double a) -> std::pair<double, double> {
-        ++n_feval;
-        return phi(a);
-    };
-
-    if (!(g0 < 0.0))
-    {
-        result.step = 0.0;
-        result.f_new = f0;
-        result.n_feval = 0;
-        result.success = false;
-        return result;
-    }
-
-    // Cubic interpolation: bracket (a, fa, ga) and (b, fb, gb) -> local minimizer.
-    auto cubic_min = [](double a, double fa, double ga, double b, double fb, double gb) -> double
-    {
-        if (std::abs(b - a) <= std::numeric_limits<double>::epsilon()
-            * (std::abs(a) + std::abs(b) + 1.0))
-        {
-            return 0.5 * (a + b);
-        }
-        const double d1 = ga + gb - 3.0 * (fb - fa) / (b - a);
-        const double d2_sq = d1 * d1 - ga * gb;
-        if (d2_sq < 0.0)
-        {
-            return 0.5 * (a + b);
-        }
-        const double d2 = std::sqrt(d2_sq);
-        const double alpha_star = b - (b - a) * (gb + d2 - d1) / (gb - ga + 2.0 * d2);
-        const double lo = std::min(a, b);
-        const double hi = std::max(a, b);
-        const double margin = 0.1 * (hi - lo);
-        return std::min(std::max(alpha_star, lo + margin), hi - margin);
-    };
-
-    auto zoom = [&](double alpha_lo, double f_lo, double g_lo, double alpha_hi, double f_hi, double g_hi) -> LineSearchResult
-    {
-        LineSearchResult z_result;
-        for (int j = 0; j < max_zoom; ++j)
-        {
-            const double alpha_j = cubic_min(alpha_lo, f_lo, g_lo, alpha_hi, f_hi, g_hi);
-
-            std::pair<double, double> fg_j = phi_wrap(alpha_j);
-            double f_j = fg_j.first;
-            double g_j = fg_j.second;
-
-            if (f_j > f0 + c1 * alpha_j * g0 || f_j >= f_lo)
-            {
-                alpha_hi = alpha_j;
-                f_hi = f_j;
-                g_hi = g_j;
-            }
-            else
-            {
-                if (std::abs(g_j) <= c2 * std::abs(g0))
-                {
-                    z_result.step = alpha_j;
-                    z_result.f_new = f_j;
-                    z_result.n_feval = n_feval;
-                    z_result.alpha_init = alpha_init;
-                    z_result.success = true;
-                    return z_result;
-                }
-                if (g_j * (alpha_hi - alpha_lo) >= 0.0)
-                {
-                    alpha_hi = alpha_lo;
-                    f_hi = f_lo;
-                    g_hi = g_lo;
-                }
-                alpha_lo = alpha_j;
-                f_lo = f_j;
-                g_lo = g_j;
-            }
-        }
-        z_result.step = alpha_lo;
-        z_result.f_new = f_lo;
-        z_result.n_feval = n_feval;
-        z_result.alpha_init = alpha_init;
-        z_result.success = false;
-        return z_result;
-    };
-
-    const double alpha_max = alpha_init * 100.0;
-    double alpha_prev = 0.0;
-    double f_prev = f0;
-    double g_prev = g0;
-    double alpha = alpha_init;
-
-    for (int i = 0; i < max_iter; ++i)
-    {
-        std::pair<double, double> fg_i = phi_wrap(alpha);
-        double f_i = fg_i.first;
-        double g_i = fg_i.second;
-
-        if (f_i > f0 + c1 * alpha * g0 || (i > 0 && f_i >= f_prev))
-        {
-            LineSearchResult zr
-                = zoom(alpha_prev, f_prev, g_prev, alpha, f_i, g_i);
-            return zr;
-        }
-
-        if (std::abs(g_i) <= c2 * std::abs(g0))
-        {
-            result.step = alpha;
-            result.f_new = f_i;
-            result.n_feval = n_feval;
-            result.success = true;
-            return result;
-        }
-
-        if (g_i >= 0.0)
-        {
-            return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
-        }
-
-        double alpha_new = std::min(2.0 * alpha, alpha_max);
-        if (alpha_new <= alpha)
-        {
-            result.step = alpha;
-            result.f_new = f_i;
-            result.n_feval = n_feval;
-            result.success = false;
-            return result;
-        }
-        alpha_prev = alpha;
-        f_prev = f_i;
-        g_prev = g_i;
-        alpha = alpha_new;
-    }
-
-    result.step = alpha_prev;
-    result.f_new = f_prev;
-    result.n_feval = n_feval;
-    result.success = false;
-    return result;
-}
-
 /// Euclidean optimizer for occupation numbers (after parameterization).
 /// Works in unconstrained parameter space.
 class EuclideanOptimizer
@@ -509,17 +350,6 @@ class EuclideanOptimizer
         step_ = 0;
         prev_grad_.assign(n_, 0.0);
         prev_dir_.assign(n_, 0.0);
-
-        if (type_ == OptimizerType::Adam)
-        {
-            m_.assign(n_, 0.0);
-            v_.assign(n_, 0.0);
-        }
-        if (type_ == OptimizerType::LBFGS)
-        {
-            s_history_.clear();
-            y_history_.clear();
-        }
     }
 
     /// Compute search direction from current gradient.
@@ -537,42 +367,13 @@ class EuclideanOptimizer
             case OptimizerType::ConjugateGradient:
                 compute_cg_direction(grad, dir);
                 break;
-
-            case OptimizerType::LBFGS:
-                compute_lbfgs_direction(grad, dir);
-                break;
-
-            case OptimizerType::Adam:
-                compute_adam_direction(grad, dir);
-                break;
         }
         prev_grad_ = grad;
     }
 
-    /// Update state after a step (for lbfgs history, etc.)
-    void update(const std::vector<double>& new_grad, const std::vector<double>& step_vec)
+    /// Update state after a step (advances CG counters and stores the new gradient).
+    void update(const std::vector<double>& new_grad, const std::vector<double>& /*step_vec*/)
     {
-        if (type_ == OptimizerType::LBFGS)
-        {
-            std::vector<double> y(n_);
-            for (int i = 0; i < n_; ++i)
-                y[i] = new_grad[i] - prev_grad_[i];
-
-            double sy = 0.0;
-            for (int i = 0; i < n_; ++i)
-                sy += step_vec[i] * y[i];
-
-            if (sy > 1e-12)
-            {
-                s_history_.push_back(step_vec);
-                y_history_.push_back(y);
-                if (static_cast<int>(s_history_.size()) > config_.lbfgs_memory)
-                {
-                    s_history_.pop_front();
-                    y_history_.pop_front();
-                }
-            }
-        }
         prev_grad_ = new_grad;
         step_++;
     }
@@ -609,102 +410,12 @@ class EuclideanOptimizer
         prev_dir_ = dir;
     }
 
-    void compute_lbfgs_direction(const std::vector<double>& grad, std::vector<double>& dir)
-    {
-        dir = grad; // q = grad
-        int m = s_history_.size();
-
-        std::vector<double> alpha_hist(m);
-        std::vector<double> rho_hist(m);
-
-        // First loop
-        for (int i = m - 1; i >= 0; --i)
-        {
-            double sy = 0.0, yy = 0.0;
-            for (int j = 0; j < n_; ++j)
-            {
-                sy += s_history_[i][j] * y_history_[i][j];
-                yy += y_history_[i][j] * y_history_[i][j];
-            }
-            rho_hist[i] = (sy > 1e-30) ? 1.0 / sy : 0.0;
-
-            double a = 0.0;
-            for (int j = 0; j < n_; ++j)
-                a += s_history_[i][j] * dir[j];
-            alpha_hist[i] = rho_hist[i] * a;
-
-            for (int j = 0; j < n_; ++j)
-                dir[j] -= alpha_hist[i] * y_history_[i][j];
-        }
-
-        // Scale by gamma = s_k^T y_k / y_k^T y_k
-        if (m > 0)
-        {
-            double sy = 0.0, yy = 0.0;
-            for (int j = 0; j < n_; ++j)
-            {
-                sy += s_history_.back()[j] * y_history_.back()[j];
-                yy += y_history_.back()[j] * y_history_.back()[j];
-            }
-            double gamma = (yy > 1e-30) ? sy / yy : 1.0;
-            for (int j = 0; j < n_; ++j)
-                dir[j] *= gamma;
-        }
-
-        // Second loop
-        for (int i = 0; i < m; ++i)
-        {
-            double b = 0.0;
-            for (int j = 0; j < n_; ++j)
-                b += y_history_[i][j] * dir[j];
-            b *= rho_hist[i];
-            for (int j = 0; j < n_; ++j)
-                dir[j] += (alpha_hist[i] - b) * s_history_[i][j];
-        }
-
-        // Negate for descent
-        for (int j = 0; j < n_; ++j)
-            dir[j] = -dir[j];
-    }
-
-    void compute_adam_direction(const std::vector<double>& grad, std::vector<double>& dir)
-    {
-        step_++;
-        double beta1 = config_.adam_beta1;
-        double beta2 = config_.adam_beta2;
-        double eps = config_.adam_eps;
-
-        for (int i = 0; i < n_; ++i)
-        {
-            m_[i] = beta1 * m_[i] + (1.0 - beta1) * grad[i];
-            v_[i] = beta2 * v_[i] + (1.0 - beta2) * grad[i] * grad[i];
-        }
-
-        double bc1 = 1.0 - std::pow(beta1, step_);
-        double bc2 = 1.0 - std::pow(beta2, step_);
-
-        for (int i = 0; i < n_; ++i)
-        {
-            double m_hat = m_[i] / bc1;
-            double v_hat = v_[i] / bc2;
-            dir[i] = -config_.adam_lr * m_hat / (std::sqrt(v_hat) + eps);
-        }
-    }
-
     OptimizerType type_;
     RDMFTConfig config_;
     int n_ = 0;
     int step_ = 0;
     std::vector<double> prev_grad_;
     std::vector<double> prev_dir_;
-
-    // Adam state
-    std::vector<double> m_;
-    std::vector<double> v_;
-
-    // lbfgs history
-    std::deque<std::vector<double>> s_history_;
-    std::deque<std::vector<double>> y_history_;
 };
 
 } // namespace rdmft

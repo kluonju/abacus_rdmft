@@ -63,9 +63,7 @@ enum class ConstraintMethod
 enum class OptimizerType
 {
     SteepestDescent,
-    ConjugateGradient,
-    LBFGS,
-    Adam
+    ConjugateGradient
 };
 
 enum class SolverStrategy
@@ -196,14 +194,11 @@ struct RDMFTConfig
     OccParamType occ_param = OccParamType::CosineSq;
     ConstraintMethod constraint_method = ConstraintMethod::AugmentedLagrangian;
 
-    /// ALM occupation inner: Strong Wolfe line search if occ_optimizer is LBFGS, else Armijo.
+    /// ALM occupation inner: Armijo line search (with optional BB seed).
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
     /// Alternating orbital sub-problem on the Stiefel manifold.
     /// Selects the Riemannian optimiser used by `optimize_orbitals`.
-    /// Allowed: SD, CG (nonlinear Polak-Ribiere+ on the manifold, AMS Ch. 8; beta uses
-    /// the transported previous gradient in the denominator), LBFGS (Riemannian
-    /// by projection), Adam. Line search: Strong Wolfe for CG and LBFGS; Armijo
-    /// for SD and Adam.
+    /// SD or nonlinear Polak-Ribiere+ CG on the manifold (AMS Ch. 8). Line search: Armijo.
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Retraction used by every orbital step (alternating and joint).
     /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
@@ -214,8 +209,8 @@ struct RDMFTConfig
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: Strong Wolfe if joint_optimizer is LBFGS, else Armijo.
-    OptimizerType joint_optimizer = OptimizerType::LBFGS;
+    /// Joint line search: simple Armijo backtracking on the product manifold.
+    OptimizerType joint_optimizer = OptimizerType::ConjugateGradient;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
@@ -256,11 +251,6 @@ struct RDMFTConfig
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 20;
-    /// Curvature coefficient for Strong Wolfe: |g(alpha)| <= c2 * |g0|.
-    /// Typical: 0.9 (lbfgs), smaller for nonlinear CG (e.g. 0.1).
-    double line_search_c2 = 0.9;
-    /// Zoom iteration cap in `strong_wolfe_line_search` (Nocedal & Wright zoom).
-    int line_search_max_zoom = 20;
     /// If true, backtracking after a failed Armijo trial uses a quadratic
     /// model on the first failure and a cubic on later failures; if false, use
     /// geometric reduction (multiply by `line_search_rho` only). Polynomial
@@ -303,13 +293,6 @@ struct RDMFTConfig
     /// the orbital block; for systems where the orbital sub-problem is
     /// hard a value > 1 gives it more weight.
     double joint_orb_scale = 1.0;
-
-    double adam_lr = 0.001;
-    double adam_beta1 = 0.9;
-    double adam_beta2 = 0.999;
-    double adam_eps = 1e-8;
-
-    int lbfgs_memory = 10;
 
     bool use_roptlite = false;
 

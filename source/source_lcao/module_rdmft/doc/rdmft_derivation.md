@@ -461,7 +461,7 @@ earlier ABACUS PG/AS implementation.
    points; convexity of $\mathcal{C}$ guarantees $\mathbf{n}_k(\lambda) \in
    \mathcal{C}$ without re-projection.
 
-`rdmft_occ_optimizer` (sd / cg / lbfgs / adam) is **not** consulted on this
+`rdmft_occ_optimizer` (sd / cg) is **not** consulted on this
 path: SPG already has a proven globally convergent step length.
 
 The projector $P_{\mathcal{C}}$ is the same for all variants; it maps onto
@@ -598,30 +598,17 @@ Alternate between:
        - `cg`: Polak–Ribière⁺ with vector transport by tangent-space
          projection of $(G_R^{\mathrm{prev}}, D_{\mathrm{prev}})$ at
          $X_k$.
-       - `lbfgs`: limited-memory BFGS two-loop recursion over a history
-         of $(s, y)$ pairs in flat coordinates, the resulting direction
-         projected onto $T_{X_k}\mathrm{St}$ (Riemannian L-BFGS by
-         projection).
-       - `adam`: Euclidean Adam direction (Adam moments updated from the
-         Euclidean gradient $G$), projected onto $T_{X_k}\mathrm{St}$.
      Descent safeguard: if $\langle G_R, D\rangle \ge 0$ (or non-finite),
      reset $D = -G_R$.
   3. Line search along the retracted curve
      $X(\alpha) = R_{X_k}(\alpha\,D)$ where $R$ is one of three Stiefel
      retractions selected by `rdmft_orb_retraction` (§5.4; default
-     `polar`):
-       - **monotone Armijo** backtracking with optional polynomial
-         (quadratic / cubic) safeguarded interpolation
-         (`armijo_line_search` in `rdmft_optimizer.h`) for `sd` / `cg`
-         / `adam`.
-       - **Strong Wolfe** (Nocedal & Wright Algorithm 3.5 + 3.6,
-         `strong_wolfe_line_search`) for `lbfgs`.
-     Initial step $\alpha_0$: $1.0$ for `lbfgs` / `adam` (the optimiser
-     sets the natural scale), `line_search_alpha_init` for `sd` / `cg`.
+     `polar`): **monotone Armijo** backtracking with optional polynomial
+     (quadratic / cubic) safeguarded interpolation
+     (`armijo_line_search` in `rdmft_optimizer.h`). Initial trial step
+     uses `line_search_alpha_init` (with CG scaling from the previous
+     accepted step when available).
   4. Commit $X_{k+1} = R_{X_k}(\alpha\,D)$ with the accepted $\alpha$.
-     For `lbfgs`, append $s = \alpha\,D$ and
-     $y = G_R(X_{k+1}) - G_R(X_k)$ (transported by projection at
-     $X_{k+1}$) to the history.
 
   No Barzilai–Borwein spectral step, no non-monotone history, no
   Wen–Yin trust radius, no suspicious-descent guard. Convergence
@@ -665,7 +652,7 @@ In the implementation (`rdmft_solver.cpp::solve_joint`), the occupation
 parameters and orbital coefficients are packed into **one** vector
 $z = (\,p\,,\,\mathrm{flat}(C^1), \ldots, \mathrm{flat}(C^{N_k})\,)$ and a
 **single** Euclidean optimiser, selected via the `rdmft_joint_optimizer`
-keyword (default lbfgs), drives its evolution. Each outer iteration:
+keyword (default `cg`), drives its evolution. Each outer iteration:
 
 1. evaluates the energy $E$ and Euclidean gradients $(\nabla_n E, \nabla_C E)$;
 2. chain-rules $\nabla_n E \to \nabla_p E$ through the occupation
@@ -675,8 +662,8 @@ keyword (default lbfgs), drives its evolution. Each outer iteration:
    and asks the single unified optimiser for a packed descent direction
    $d = (d_p, \mathrm{flat}(d_{C^1}), \ldots)$;
 4. re-projects each orbital block $d_{C^{\mathbf{k}}}$ onto the tangent space
-   at the current $C^{\mathbf{k}}$ (necessary because Euclidean preconditioners
-   used by lbfgs / Adam generally leave the tangent space) and falls back to
+   at the current $C^{\mathbf{k}}$ (the packed direction may drift slightly off
+   the tangent space numerically) and falls back to
    the packed steepest-descent direction $d = -g$ if the joint directional
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
@@ -686,11 +673,9 @@ keyword (default lbfgs), drives its evolution. Each outer iteration:
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
    $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_{C^{\mathbf{k}}})$;
-6. builds the new packed gradient at the step's end-point and feeds
-   $(g_\text{new}, \alpha\, d)$ to the unified optimiser's `update()`, so its
-   history (lbfgs $(s,y)$ pairs, Adam moments, CG previous gradient) is
-   updated once with a coherent product-manifold view; then refreshes the
-   augmented-Lagrangian multiplier.
+6. when `rdmft_joint_optimizer` is `cg`, builds the new packed gradient at the
+   step's end-point and calls `update()` so the conjugate-gradient state is
+   advanced; then refreshes the augmented-Lagrangian multiplier.
 
 This is precisely Riemannian optimisation on the product manifold
 $\mathcal{M}$ with a single shared optimiser and line search, rather than
@@ -720,16 +705,6 @@ $$
 $$
 
 with Fletcher-Reeves or Polak-Ribière $\beta_t$.
-
-### 8.3 lbfgs
-
-limited-memory lbfgs adapted to Riemannian setting using vector transport
-to move previous gradients and steps to the current tangent space.
-
-### 8.4 Adam
-
-Riemannian Adam with bias-corrected first and second moment estimates,
-transported to the current tangent space.
 
 ---
 

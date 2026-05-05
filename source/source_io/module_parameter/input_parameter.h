@@ -672,10 +672,10 @@ struct Input_para
     // RDMFT solver parameters (new optimization engine)
     std::string rdmft_functional = "muller";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
-    std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
-    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer (Riemannian): sd, cg, lbfgs, adam
+    std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg
+    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer (Riemannian): sd, cg
     std::string rdmft_orb_retraction = "polar";    // Stiefel retraction: polar (default), qr, cayley (qr/cayley serial-only)
-    std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
+    std::string rdmft_joint_optimizer = "cg";   // joint-strategy single unified optimiser: sd, cg
     int rdmft_outer_maxiter = 50;                 // RDMFT outer loop (alternating / joint cycles)
     int rdmft_orb_maxiter = 20;                     // maximum iterations per orbital sub-problem (fixed n)
     int rdmft_occ_maxiter = 20;                     // maximum iterations per occupation sub-problem (fixed C)
@@ -704,16 +704,10 @@ struct Input_para
     bool rdmft_line_search_polynomial = true;
     /// Armijo sufficient-decrease parameter c1 (RDMFT occupation/orbital line searches, joint Armijo)
     double rdmft_line_search_c1 = 1e-4;
-    /// Strong Wolfe curvature parameter c2 (used with lbfgs + Strong Wolfe line search)
-    double rdmft_line_search_c2 = 0.9;
-    /// Strong Wolfe zoom iteration cap
-    int rdmft_line_search_max_zoom = 20;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates
     double rdmft_alm_bb_alpha_max = 10.0;          // BB seed upper bound for occupation-space updates
-    int rdmft_lbfgs_memory = 10;                   // lbfgs history vectors
-    double rdmft_adam_lr = 0.001;                  // Adam learning rate
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
     /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).
     bool rdmft_print_stiefel_gram = false;

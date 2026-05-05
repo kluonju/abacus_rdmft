@@ -455,10 +455,7 @@ TEST(RdmftConfigTest, constraint_method_roundtrip)
 TEST(RdmftConfigTest, occ_optimizer_type_roundtrip)
 {
     RDMFTConfig cfg;
-    for (OptimizerType t : {OptimizerType::SteepestDescent,
-                             OptimizerType::ConjugateGradient,
-                             OptimizerType::LBFGS,
-                             OptimizerType::Adam})
+    for (OptimizerType t : {OptimizerType::SteepestDescent, OptimizerType::ConjugateGradient})
     {
         cfg.occ_optimizer = t;
         EXPECT_EQ(cfg.occ_optimizer, t);

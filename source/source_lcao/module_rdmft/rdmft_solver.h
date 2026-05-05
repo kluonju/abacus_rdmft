@@ -51,8 +51,8 @@ class RDMFTSolver
 
     /// Run orbital optimization only (occupations fixed).
     /// Riemannian gradient method on the Stiefel manifold with the
-    /// optimiser selected by config_.orb_optimizer (sd, cg, lbfgs, adam).
-    /// Line search: monotone Armijo (sd / cg / adam) or Strong Wolfe (lbfgs).
+    /// optimiser selected by config_.orb_optimizer (sd or cg).
+    /// Line search: monotone Armijo backtracking.
     /// \param E_at_orb_block_start Total energy after occupations in this outer
     ///        macro (start of orbital block); used when line search fails to
     ///        optionally deem the orbital inner loop converged if |E - E_at_orb_block_start|

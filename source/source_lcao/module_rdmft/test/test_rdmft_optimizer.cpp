@@ -101,76 +101,6 @@ TEST_F(OptimizerTest, CG_converges_quadratic)
         EXPECT_NEAR(x[i], q.b[i], 1e-6);
 }
 
-TEST_F(OptimizerTest, LBFGS_converges_quadratic)
-{
-    Quadratic q;
-    q.a = {1.0, 2.0, 3.0, 4.0, 5.0};
-    q.b = {1.0, -1.0, 0.5, 2.0, -0.5};
-
-    RDMFTConfig config;
-    config.lbfgs_memory = 5;
-    EuclideanOptimizer opt(OptimizerType::LBFGS, config);
-    opt.init(5);
-
-    std::vector<double> x(5, 0.0);
-    for (int iter = 0; iter < 50; ++iter)
-    {
-        auto g = q.grad(x);
-        std::vector<double> dir;
-        opt.compute_direction(g, dir);
-
-        double dd = 0.0;
-        for (size_t i = 0; i < g.size(); ++i) dd += dir[i] * g[i];
-
-        auto f_at = [&](double step) -> double {
-            std::vector<double> xt(x);
-            for (size_t i = 0; i < xt.size(); ++i) xt[i] += step * dir[i];
-            return q.eval(xt);
-        };
-
-        auto ls = armijo_line_search(f_at, q.eval(x), dd, 1.0);
-        std::vector<double> step_vec(x.size());
-        for (size_t i = 0; i < x.size(); ++i)
-        {
-            step_vec[i] = ls.step * dir[i];
-            x[i] += step_vec[i];
-        }
-
-        auto new_g = q.grad(x);
-        opt.update(new_g, step_vec);
-    }
-
-    for (size_t i = 0; i < x.size(); ++i)
-        EXPECT_NEAR(x[i], q.b[i], 1e-6);
-}
-
-TEST_F(OptimizerTest, Adam_converges_quadratic)
-{
-    Quadratic q;
-    q.a = {1.0, 2.0, 3.0};
-    q.b = {1.0, -1.0, 0.5};
-
-    RDMFTConfig config;
-    config.adam_lr = 0.1;
-    EuclideanOptimizer opt(OptimizerType::Adam, config);
-    opt.init(3);
-
-    std::vector<double> x = {0.0, 0.0, 0.0};
-    for (int iter = 0; iter < 500; ++iter)
-    {
-        auto g = q.grad(x);
-        std::vector<double> dir;
-        opt.compute_direction(g, dir);
-
-        // Adam already includes learning rate in the direction
-        for (size_t i = 0; i < x.size(); ++i)
-            x[i] += dir[i];
-    }
-
-    for (size_t i = 0; i < x.size(); ++i)
-        EXPECT_NEAR(x[i], q.b[i], 0.05);
-}
-
 TEST_F(OptimizerTest, armijo_line_search_works)
 {
     auto f = [](double step) -> double { return (step - 1.0) * (step - 1.0); };
@@ -192,8 +122,8 @@ TEST_F(OptimizerTest, armijo_line_search_works)
 // is the Rayleigh-quotient minimisation
 //     min_{C^T C = I}  Tr(C^T A C)
 // whose minimum is attained when C spans the invariant subspace associated
-// with the p smallest eigenvalues of A.  We verify that lbfgs and Adam
-// both converge to this minimum, matching the SD / CG baseline.
+// with the p smallest eigenvalues of A.  We verify that SD and CG
+// converge to this minimum.
 // ============================================================================
 
 namespace
@@ -291,8 +221,7 @@ template <typename OPT>
 double run_stiefel_optimizer(Rayleigh& problem, OPT& opt, int iters,
                              double ls_alpha_init,
                              const std::vector<double>& C0,
-                             std::vector<double>& C_out,
-                             bool adam_unit_step)
+                             std::vector<double>& C_out)
 {
     StiefelManifold<double> manifold(problem.n, problem.p);
     C_out = C0;
@@ -338,8 +267,7 @@ double run_stiefel_optimizer(Rayleigh& problem, OPT& opt, int iters,
             return problem.eval(C_trial);
         };
 
-        double alpha_init = adam_unit_step ? 1.0 : ls_alpha_init;
-        auto ls = armijo_line_search(f_at, E_cur, dd, alpha_init,
+        auto ls = armijo_line_search(f_at, E_cur, dd, ls_alpha_init,
                                       1e-4, 0.5, 30);
 
         C_trial.assign(problem.n * problem.p, 0.0);
@@ -347,20 +275,14 @@ double run_stiefel_optimizer(Rayleigh& problem, OPT& opt, int iters,
                           C_trial.data(), problem.n, problem.p);
         C_out = C_trial;
 
-        // Update optimiser state.  Adam already fully updated its moments
-        // inside compute_direction(); calling update() again would double-
-        // increment its step counter and corrupt the bias correction.
-        if (!adam_unit_step)
-        {
-            std::vector<double> G_new = problem.grad(C_out);
-            std::vector<double> G_R_new(problem.n * problem.p, 0.0);
-            manifold.project_tangent(C_out.data(), G_new.data(),
-                                      G_R_new.data(), problem.n, problem.p);
-            step_vec.resize(dir_proj.size());
-            for (size_t i = 0; i < step_vec.size(); ++i)
-                step_vec[i] = ls.step * dir_proj[i];
-            opt.update(G_R_new, step_vec);
-        }
+        std::vector<double> G_new = problem.grad(C_out);
+        std::vector<double> G_R_new(problem.n * problem.p, 0.0);
+        manifold.project_tangent(C_out.data(), G_new.data(),
+                                  G_R_new.data(), problem.n, problem.p);
+        step_vec.resize(dir_proj.size());
+        for (size_t i = 0; i < step_vec.size(); ++i)
+            step_vec[i] = ls.step * dir_proj[i];
+        opt.update(G_R_new, step_vec);
     }
     return problem.eval(C_out);
 }
@@ -380,11 +302,11 @@ TEST_F(OptimizerTest, SD_converges_on_Stiefel_Rayleigh)
     opt.init(n * p);
 
     std::vector<double> C;
-    double E = run_stiefel_optimizer(problem, opt, 200, 0.1, C0, C, false);
+    double E = run_stiefel_optimizer(problem, opt, 200, 0.1, C0, C);
     EXPECT_NEAR(E, E_ref, 1e-4);
 }
 
-TEST_F(OptimizerTest, LBFGS_converges_on_Stiefel_Rayleigh)
+TEST_F(OptimizerTest, CG_converges_on_Stiefel_Rayleigh)
 {
     const int n = 8, p = 2;
     auto problem = make_rayleigh_diag(n, p);
@@ -394,45 +316,16 @@ TEST_F(OptimizerTest, LBFGS_converges_on_Stiefel_Rayleigh)
     auto C0 = random_stiefel_point(n, p, rng);
 
     RDMFTConfig config;
-    config.lbfgs_memory = 8;
-    EuclideanOptimizer opt(OptimizerType::LBFGS, config);
+    EuclideanOptimizer opt(OptimizerType::ConjugateGradient, config);
     opt.init(n * p);
 
     std::vector<double> C;
-    double E = run_stiefel_optimizer(problem, opt, 200, 0.1, C0, C, false);
-    EXPECT_NEAR(E, E_ref, 1e-6);
+    double E = run_stiefel_optimizer(problem, opt, 200, 0.1, C0, C);
+    EXPECT_NEAR(E, E_ref, 1e-4);
 }
 
-TEST_F(OptimizerTest, Adam_converges_on_Stiefel_Rayleigh)
+TEST_F(OptimizerTest, CG_and_SD_both_reach_Stiefel_minimum)
 {
-    const int n = 8, p = 2;
-    auto problem = make_rayleigh_diag(n, p);
-    double E_ref = rayleigh_min_diag(n, p);
-
-    std::mt19937 rng(42);
-    auto C0 = random_stiefel_point(n, p, rng);
-
-    RDMFTConfig config;
-    config.adam_lr = 0.05;
-    EuclideanOptimizer opt(OptimizerType::Adam, config);
-    opt.init(n * p);
-
-    std::vector<double> C;
-    double E = run_stiefel_optimizer(problem, opt, 2000, 1.0, C0, C, true);
-    // Adam is a first-order stochastic-style optimiser; accept a looser
-    // tolerance than lbfgs.
-    EXPECT_NEAR(E, E_ref, 1e-2);
-}
-
-TEST_F(OptimizerTest, LBFGS_and_SD_both_reach_Stiefel_minimum)
-{
-    // Both SD and lbfgs should converge to the invariant-subspace minimum
-    // of the Rayleigh quotient on the Stiefel manifold.  At the reported
-    // iteration budget lbfgs typically reaches the minimum in far fewer
-    // evaluations, but the Riemannian retraction introduces O(alpha^2)
-    // noise that makes a strict "lbfgs <= SD" comparison unreliable for
-    // small problems.  We test instead that both converge to within the
-    // same tolerance.
     const int n = 10, p = 3;
     auto problem = make_rayleigh_diag(n, p);
     double E_ref = rayleigh_min_diag(n, p);
@@ -443,15 +336,15 @@ TEST_F(OptimizerTest, LBFGS_and_SD_both_reach_Stiefel_minimum)
     RDMFTConfig config;
     EuclideanOptimizer sd(OptimizerType::SteepestDescent, config);
     sd.init(n * p);
-    EuclideanOptimizer lbfgs(OptimizerType::LBFGS, config);
-    lbfgs.init(n * p);
+    EuclideanOptimizer cg(OptimizerType::ConjugateGradient, config);
+    cg.init(n * p);
 
-    std::vector<double> C_sd, C_lb;
-    double E_sd = run_stiefel_optimizer(problem, sd, 400, 0.1, C0, C_sd, false);
-    double E_lb = run_stiefel_optimizer(problem, lbfgs, 400, 0.1, C0, C_lb, false);
+    std::vector<double> C_sd, C_cg;
+    double E_sd = run_stiefel_optimizer(problem, sd, 400, 0.1, C0, C_sd);
+    double E_cg = run_stiefel_optimizer(problem, cg, 400, 0.1, C0, C_cg);
 
     EXPECT_NEAR(E_sd, E_ref, 1e-5);
-    EXPECT_NEAR(E_lb, E_ref, 1e-5);
+    EXPECT_NEAR(E_cg, E_ref, 1e-5);
 }
 
 TEST_F(OptimizerTest, BBStep_BB1_and_BB2_match_formula)

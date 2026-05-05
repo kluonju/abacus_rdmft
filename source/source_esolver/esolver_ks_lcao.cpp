@@ -644,8 +644,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
         rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
         rdmft_config.line_search_c1 = inp.rdmft_line_search_c1;
-        rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
-        rdmft_config.line_search_max_zoom = inp.rdmft_line_search_max_zoom;
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;
@@ -655,8 +653,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::Alternate;
         rdmft_config.alm_bb_alpha_min = inp.rdmft_alm_bb_alpha_min;
         rdmft_config.alm_bb_alpha_max = inp.rdmft_alm_bb_alpha_max;
-        rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
-        rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
         rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
         rdmft_config.occ_entropy_gamma = inp.rdmft_occ_entropy_gamma;
@@ -687,8 +683,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
 
-        // Parse optimisers: trim, ASCII-lowercase, accept common spellings. Previously only
-        // exact lowercase (e.g. "lbfgs") matched, so e.g. "LBFGS" fell through to default CG.
+        // Parse optimisers: trim, ASCII-lowercase, accept common spellings.
         auto parse_opt = [](const std::string& s_in) {
             const char* const ws = " \t\n\r\f\v";
             const auto first = s_in.find_first_not_of(ws);
@@ -702,17 +697,14 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             {
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             }
+            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs" || s == "adam")
+            {
+                ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
+                    "RDMFT optimiser lbfgs/adam are no longer supported; use sd or cg in INPUT.");
+            }
             if (s == "sd" || s == "steepest" || s == "steepest_descent" || s == "gd")
             {
                 return rdmft::OptimizerType::SteepestDescent;
-            }
-            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs")
-            {
-                return rdmft::OptimizerType::LBFGS;
-            }
-            if (s == "adam")
-            {
-                return rdmft::OptimizerType::Adam;
             }
             if (s == "cg" || s == "conjugate_gradient" || s == "conjugate" || s == "pr"
                 || s == "fr" || s == "polak" || s == "fletcher_reeves")
