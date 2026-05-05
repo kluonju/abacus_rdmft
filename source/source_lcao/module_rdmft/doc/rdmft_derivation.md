@@ -513,11 +513,9 @@ $\mathbf{r}(\mathbf{n}) = \mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \nabla_{\mat
 be the **τ-free Bertsekas projected-gradient residual** at unit step (the
 textbook SPG stationarity measure; BMR Eq. (2.6)).  At a KKT point of the
 constrained problem $\mathbf{r} = 0$.  The inner loop stops when
-$\|\mathbf{r}\|_\infty <$ `rdmft_occ_grad_tol`, or when (if `rdmft_occ_tol` $>0$)
-$|ΔE|$ is below `rdmft_occ_tol` between inner iterations or after a successful
-step, whichever fires first.  The iteration cap is `rdmft_occ_maxiter`.
+$\|\mathbf{r}\|_\infty \le$ `rdmft_occ_proj_tol`.  The iteration cap is `rdmft_occ_maxiter`.
 
-**INPUT keywords (SPG path):** `rdmft_occ_grad_tol`, `rdmft_occ_tol`,
+**INPUT keywords (SPG path):** `rdmft_occ_proj_tol`,
 `rdmft_occ_maxiter`, `rdmft_line_search_c1`.  Backtracking uses a fixed ratio
 from `RDMFTConfig::line_search_rho` (default `0.5`; not a separate INPUT keyword).
 
@@ -525,13 +523,13 @@ Pseudocode (SPG occupation inner loop; `P` denotes $P_{\mathcal{C}}$; no spin
 labels):
 
 ```text
-initialize n feasible; tol = rdmft_occ_grad_tol
+initialize n feasible; tol = rdmft_occ_proj_tol
 have_prev = false
 f_history = empty deque (length M = 10)
 for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
    r = n - P(n - g)
-   if ||r||_inf < tol or (rdmft_occ_tol>0 and |ΔE| small): break
+   if ||r||_inf <= tol: break
    if have_prev:
       s = n - n_prev; y = g - g_prev
       alpha_BB = clamp((s.s)/(s.y), alpha_min, alpha_max)   // BB1 + safeguard
@@ -606,14 +604,16 @@ Alternate between:
      `polar`): **non-monotone Strong Wolfe** (`nonmonotone_strong_wolfe_line_search`
      in `rdmft_optimizer.h`), i.e. sufficient decrease vs a reference
      $f_{\mathrm{ref}}$ from the last $M$ energies and a curvature bound on
-     $|\varphi'(\alpha)|$. Initial trial uses `line_search_alpha_init` (with
-     CG scaling from the previous accepted step when available).
+     $|\varphi'(\alpha)|$. Initial trial uses INPUT `rdmft_alpha_step` (mapped to
+     `line_search_alpha_init` in code; with CG scaling from the previous accepted
+     step when available).
   4. Commit $X_{k+1} = R_{X_k}(\alpha\,D)$ with the accepted $\alpha$.
 
   No Barzilai–Borwein spectral step on this path (unlike SPG occupations), no
   Wen–Yin trust radius, no suspicious-descent guard. Convergence
-  criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, or (when
-  `rdmft_orb_tol` $>0$) $|ΔE|$ below `rdmft_orb_tol`.
+  criterion: $\lVert G_R\rVert_F \le \varepsilon_g \max(1, \lVert G_R(X_0)\rVert_F)$
+  with `rdmft_orb_grad_tol` as $\varepsilon_g$ and $X_0$ the iterate at the start
+  of the orbital inner loop.
 
   **Caveat for regularised functionals (Müller / Power / GEO).**  Because
   the regularised functionals at fractional occupations have no global
@@ -623,7 +623,7 @@ Alternate between:
   in principle accept huge "descents" $E_{\mathrm{trial}} - E \sim -10^4$
   Ry into a spurious unphysical basin. Mitigations: (i) tighten
   `rdmft_orb_grad_tol` only as far as the physical basin's descent map
-  warrants; (ii) reduce `line_search_alpha_init` so the first trial
+  warrants; (ii) reduce `rdmft_alpha_step` so the first trial
   $\alpha_0\,D$ is small relative to $\lVert X\rVert_F$; (iii) when the
   alternating outer loop diverges in this way, switch to
   `rdmft_solver_strategy = joint`, which scales the orbital block by

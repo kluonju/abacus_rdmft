@@ -237,7 +237,7 @@ struct RDMFTConfig
     double occ_grad_tol = 1e-4;
     /// SPG / active-set occupations: \(\varepsilon_{\mathrm{proj}}\) for Bertsekas residual
     /// \(\|n - P_\Omega(n-\nabla_n E)\|_\infty \le \varepsilon_{\mathrm{proj}}\).
-    double occ_proj_tol = 1e-4;
+    double occ_proj_tol = 1e-5;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
 

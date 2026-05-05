@@ -165,10 +165,8 @@ dual map.
 the Bertsekas projected-gradient residual at unit step,
 \(\mathbf{r}(\mathbf{n}) = \mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \nabla_{\mathbf{n}}E)\)
 (BMR Eq. 2.6).  At a KKT point \(\mathbf{r} = 0\).  The inner loop stops when
-\(\|\mathbf{r}\|_\infty <\) `rdmft_occ_grad_tol`, or when (if `rdmft_occ_tol` \(>0\))
-\(|ΔE|\) is below `rdmft_occ_tol` between inner iterations or after a successful
-line search with positive step.  The iteration cap is `rdmft_occ_maxiter`.
-INPUT `rdmft_occ_energy_tol` is **not** used for SPG.
+\(\|\mathbf{r}\|_\infty \le\) `rdmft_occ_proj_tol` (no energy-difference test).
+The iteration cap is `rdmft_occ_maxiter`.
 
 **Outer (alternating / joint).**  A run is not considered **globally** converged
 on `rdmft_energy_tol` alone: the outer loop requires (after the first cycle)
@@ -225,11 +223,9 @@ and may be mixed (e.g. `cg` on occupations and `sd` on orbitals).
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Outer: require **smaller** than this for \(\|E - E_{\mathrm{prev}}\|\) (Ry) **and** both occupation- and orbital-inner `converged` flags, after the first outer step.  Set `<=0` to disable the energy part (stopping uses inner flags only). |
-| `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
-| `rdmft_orb_tol` | real | `1e-8` | Orbital inner loop: stop when `||G_R|| <` `rdmft_orb_grad_tol` **or** (when `> 0`) `|ΔE|` is below this (Ry) between inner iterations or after an accepted line search with positive step. If a line search fails but the total energy is still within this tolerance of the value at the **start of the orbital block** (after occupations in the same outer cycle), the orbital inner loop is deemed converged. Set `<= 0` for gradient-only stopping on orbitals (this line-search escape hatch is then disabled). |
-| `rdmft_occ_tol` | real | `1e-6` | Occupation inner loop: stop when the stationarity measure is below `rdmft_occ_grad_tol` **or** (when `> 0`) `|ΔE|` is below this (physical `E` for SPG; augmented `L` for ALM). Used by **ALM**, **projected_gradient**, and **active_set**. |
-| `rdmft_occ_grad_tol` | real | `1e-6` | **SPG (`projected_gradient` / `active_set`):** stop when \(\|n - P(n - \nabla_n E)\|_\infty <\) this (Bertsekas projected-gradient residual at unit step; BMR SIOPT 2000).  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
-| `rdmft_occ_energy_tol` | real | `1e-8` | **Not used** for `projected_gradient` (PG inner stop is `rdmft_occ_grad_tol` vs \(\|g_{\mathrm{proj}}\|_\infty\) only). Kept for backward-compatible INPUT. |
+| `rdmft_orb_grad_tol` | real | `1e-5` | Alternating orbitals and **joint** orbital block: relative factor \(\varepsilon_g\) — stop when \(\|G_R\|_F \le \varepsilon_g \max(1, \|G_R(x_0)\|_F)\), with \(x_0\) the iterate at the start of the orbital inner loop (joint: reference norms at outer iteration 0). |
+| `rdmft_occ_grad_tol` | real | `1e-5` | **ALM** occupations and **joint** occupation block: \(\varepsilon_g\) for \(\|\nabla_p L\| \le \varepsilon_g \max(1, \|\nabla_p L(x_0)\|)\) with \(x_0\) at the first ALM inner iteration (respectively joint outer iter 0). Not used on the SPG path. |
+| `rdmft_occ_proj_tol` | real | `1e-5` | **SPG** (`projected_gradient` / `active_set`): stop when \(\|n - P_\Omega(n - \nabla_n E)\|_\infty \le \varepsilon_{\mathrm{proj}}\) (Bertsekas residual; BMR SIOPT 2000). |
 
 ### Initial occupation setup
 

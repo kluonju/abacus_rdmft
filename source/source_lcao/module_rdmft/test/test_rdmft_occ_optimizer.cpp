@@ -144,11 +144,6 @@ double toy_spg_r_inf(const std::vector<double>& occ,
     return linf;
 }
 
-inline bool toy_abs_de_stop(double abs_de, double tol)
-{
-    return tol > 0.0 && std::isfinite(abs_de) && abs_de < tol;
-}
-
 // ---------------------------------------------------------------------------
 // Run the Spectral Projected Gradient optimisation on the toy problem.
 // Mirrors rdmft_solver.cpp's optimize_occupations SPG block (the case that
@@ -180,8 +175,6 @@ struct SPGRunner
         bool have_prev = false;
 
         double E = 0.0;
-        double E_prev_inner = 0.0;
-        bool have_E_prev = false;
 
         for (int iter = 0; iter < max_iter; ++iter)
         {
@@ -189,14 +182,8 @@ struct SPGRunner
             energy_history.push_back(E);
             auto grad = prob.gradient(occ);
 
-            const bool have_dE_prev = have_E_prev;
-            const double dE = have_dE_prev ? (E - E_prev_inner) : 0.0;
-            E_prev_inner = E;
-            have_E_prev = true;
-
             const double r_pre = toy_spg_r_inf(occ, grad, constraint);
-            if (r_pre < config.occ_grad_tol
-                || (have_dE_prev && toy_abs_de_stop(std::abs(dE), config.rdmft_occ_tol)))
+            if (r_pre <= config.occ_proj_tol)
             {
                 return E;
             }
@@ -278,10 +265,7 @@ struct SPGRunner
             const double E_post = prob.energy(occ);
             const auto grad_post = prob.gradient(occ);
             const double r_post = toy_spg_r_inf(occ, grad_post, constraint);
-            const double dE_post = std::abs(E_post - E);
-            const bool step_moved = success && lambda_acc > 0.0;
-            if (r_post < config.occ_grad_tol
-                || (step_moved && toy_abs_de_stop(dE_post, config.rdmft_occ_tol)))
+            if (r_post <= config.occ_proj_tol)
             {
                 E = E_post;
                 return E;
@@ -322,7 +306,7 @@ TEST_F(SPGOccupationTest, converges_4band)
 {
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
-    cfg.rdmft_occ_tol = 1e-10;
+    cfg.occ_proj_tol = 1e-10;
 
     SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -348,7 +332,7 @@ TEST_F(SPGOccupationTest, converges_fractional)
 {
     auto prob = make_6band_frac(3.5);
     RDMFTConfig cfg;
-    cfg.rdmft_occ_tol = 1e-10;
+    cfg.occ_proj_tol = 1e-10;
 
     SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -368,7 +352,7 @@ TEST_F(SPGOccupationTest, constraint_satisfied)
 {
     auto prob = make_4band(1.5);
     RDMFTConfig cfg;
-    cfg.rdmft_occ_tol = 1e-6;
+    cfg.occ_proj_tol = 1e-6;
 
     SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
@@ -393,7 +377,7 @@ TEST_F(SPGOccupationTest, PG_and_AS_constraint_aliases_agree)
     auto prob = make_4band(2.5);
 
     RDMFTConfig cfg;
-    cfg.rdmft_occ_tol = 1e-10;
+    cfg.occ_proj_tol = 1e-10;
 
     SPGRunner pg{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
     SPGRunner as{prob, cfg, ConstraintMethod::ActiveSet, {}};
@@ -423,7 +407,7 @@ TEST_F(SPGOccupationTest, large_gradient_no_stall)
     p.wk = {1.0};
 
     RDMFTConfig cfg;
-    cfg.rdmft_occ_tol = 1e-8;
+    cfg.occ_proj_tol = 1e-8;
     cfg.line_search_max_iter = 20;
 
     SPGRunner runner{p, cfg, ConstraintMethod::ProjectedGradient, {}};
