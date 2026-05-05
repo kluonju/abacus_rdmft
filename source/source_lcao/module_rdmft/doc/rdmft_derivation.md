@@ -418,12 +418,13 @@ $$
 The `rdmft_constraint = projected_gradient` (and the `active_set` alias, which
 routes here as well) optimisation of $n_{i\mathbf{k}}$ on the feasible set
 $\mathcal{C}$ uses the **Spectral Projected Gradient** method of
-Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with the non-monotone
-Armijo line search of Grippo–Lampariello–Lucidi (SIAM J. Numer. Anal. 23 (1986)
-707).  This is the textbook standard for box-and-equality-constrained smooth
-optimisation; it has none of the trust-region caps, multi-stage SD-fallback
-chains, multiple `α₀` policies, or per-trial re-projection rejections of the
-earlier ABACUS PG/AS implementation.
+Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with a **monotone**
+Armijo line search along the spectral projected direction (sufficient decrease
+vs the current energy $E(\mathbf{n}_k)$ at each inner step).  This is a
+standard variant for box-and-equality-constrained smooth optimisation; it has
+none of the trust-region caps, multi-stage SD-fallback chains, multiple `α₀`
+policies, or per-trial re-projection rejections of the earlier ABACUS PG/AS
+implementation.
 
 **Per inner iteration $k$:**
 
@@ -445,18 +446,15 @@ earlier ABACUS PG/AS implementation.
    $$
    (BMR Lemma 2.1).  No descent-direction safeguard or trust-region cap is
    needed.
-4. **Non-monotone Armijo** along the convex segment
+4. **Monotone Armijo** along the convex segment
    $\mathbf{n}_k(\lambda) = \mathbf{n}_k + \lambda\, \mathbf{d}_k$,
    $\lambda \in (0, 1]$: find the smallest $j \ge 0$ such that
    $$
    E\bigl(\mathbf{n}_k(\rho^j)\bigr)
-   \le f_{\max} + c_1 \rho^j\, \mathbf{g}_k^\top \mathbf{d}_k,
-   \qquad
-   f_{\max} = \max_{0 \le i \le \min(k,\, M-1)} E(\mathbf{n}_{k-i}),
+   \le E(\mathbf{n}_k) + c_1 \rho^j\, \mathbf{g}_k^\top \mathbf{d}_k,
    $$
-   with $c_1$ from `rdmft_line_search_c1`, $\rho$ from `rdmft_line_search_rho`,
-   and a fixed history length $M = 10$ (the value used in the original SPG
-   paper).  Each trial point $\mathbf{n}_k(\lambda)$ is the convex combination
+   with $c_1$ from `rdmft_line_search_c1` and $\rho$ from `RDMFTConfig::line_search_rho`
+   (default `0.5`; not a separate INPUT keyword).  Each trial point $\mathbf{n}_k(\lambda)$ is the convex combination
    $(1-\lambda)\mathbf{n}_k + \lambda P_{\mathcal{C}}(\cdots)$ of two feasible
    points; convexity of $\mathcal{C}$ guarantees $\mathbf{n}_k(\lambda) \in
    \mathcal{C}$ without re-projection.
@@ -525,7 +523,6 @@ labels):
 ```text
 initialize n feasible; tol = rdmft_occ_proj_tol
 have_prev = false
-f_history = empty deque (length M = 10)
 for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
    r = n - P(n - g)
@@ -537,11 +534,10 @@ for inner = 0 .. occ_maxiter-1:
       alpha_BB = 1 / max(1, ||g||_inf)
    d = P(n - alpha_BB * g) - n         // spectral projected direction (descent)
    dd = g . d                          // dd <= -||d||^2 / alpha_BB <= 0
-   push E(n) to f_history (drop oldest if size > M)
-   f_max = max f_history
+   f_ref = E(n)                        // monotone Armijo reference
    lambda = 1
    for ls = 1 .. line_search_max_iter:
-      if E(n + lambda*d) <= f_max + c1 * lambda * dd: accept; break
+      if E(n + lambda*d) <= f_ref + c1 * lambda * dd: accept; break
       lambda *= rho
    n_prev = n; g_prev = g; have_prev = true
    if accepted: n <- n + lambda * d
@@ -695,7 +691,7 @@ x_{t+1} = R_{x_t}(-\alpha_t  \mathrm{grad} f(x_t))
 $$
 
 with step size $\alpha_t$ chosen by line search (here: non-monotone Strong Wolfe
-along the retraction / product update, except SPG occupations which use BB + non-monotone Armijo).
+along the retraction / product update, except SPG occupations which use BB + monotone Armijo).
 
 ### 8.2 Conjugate Gradient (CG)
 

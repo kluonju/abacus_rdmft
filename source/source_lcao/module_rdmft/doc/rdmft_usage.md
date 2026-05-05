@@ -109,7 +109,8 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
   \(n_{ik}\in[0,1]\) (not the `cosine_sq` / `logistic` maps).  Each inner
   iteration is a **Spectral Projected Gradient** (Birgin–Martínez–Raydan,
   SIAM J. Optim. 10 (2000) 1196) step with a Barzilai–Borwein spectral step
-  length and a Grippo–Lampariello–Lucidi non-monotone Armijo line search; see
+  length and a **monotone** Armijo line search along the spectral projected
+  direction; see
   [Projected gradient details](#projected-gradient-details) below.
 - **`active_set`** — Alias for `projected_gradient` in the current
   implementation: both route to the same SPG inner loop.  Kept for
@@ -119,9 +120,9 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
 ### Projected gradient details (`rdmft_constraint = projected_gradient`)
 
 PG (and its alias `active_set`) is the **Spectral Projected Gradient (SPG)**
-method of Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with the
-non-monotone Armijo line search of Grippo–Lampariello–Lucidi (SIAM J. Numer.
-Anal. 23 (1986) 707).  It works **directly in occupation space** on the
+method of Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with a
+**monotone** Armijo line search along the spectral projected direction
+(sufficient decrease vs the current energy \(E(\mathbf{n}_k)\)).  It works **directly in occupation space** on the
 convex set \(0\le n_{ik}\le 1\) with the linear equality
 \(\sum_k w_k\sum_i n_{ik}=N_e\); the `rdmft_occ_param` keyword is ignored
 on this path (ALM uses `cosine_sq` / `logistic`; `sigma_shift` is only used
@@ -140,12 +141,10 @@ with `joint`).
    - \mathbf{n}_k\).  This is provably a descent direction for any closed
    convex \(\mathcal{C}\) (BMR Lemma 2.1), with
    \(\mathbf{g}_k\cdot\mathbf{d}_k \le -\|\mathbf{d}_k\|^2 / \alpha_k^{\mathrm{BB}} \le 0\).
-4. **Non-monotone Armijo** along \(\mathbf{n}_k(\lambda) = \mathbf{n}_k + \lambda \mathbf{d}_k\),
+4. **Monotone Armijo** along \(\mathbf{n}_k(\lambda) = \mathbf{n}_k + \lambda \mathbf{d}_k\),
    \(\lambda = 1, \rho, \rho^2, \ldots\): accept the smallest \(\lambda\) with
-   \(E(\mathbf{n}_k(\lambda)) \le f_{\max} + c_1 \lambda\, \mathbf{g}_k\cdot\mathbf{d}_k\),
-   where \(f_{\max} = \max_{0 \le i \le \min(k,\, M-1)} E(\mathbf{n}_{k-i})\) is
-   the non-monotone reference (history length \(M=10\), the value used in the
-   original SPG paper).  Each trial is the convex combination
+   \(E(\mathbf{n}_k(\lambda)) \le E(\mathbf{n}_k) + c_1 \lambda\, \mathbf{g}_k\cdot\mathbf{d}_k\).
+   Each trial is the convex combination
    \((1-\lambda)\mathbf{n}_k + \lambda P_{\mathcal{C}}(\cdots)\) of two feasible
    points, hence automatically feasible — **no per-trial re-projection**.
 
@@ -247,17 +246,17 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Initial trial step \(\alpha_0\) for **Strong Wolfe** on alternating **orbitals**, **ALM** occupations, and **joint** steps (when ALM BB seed is off, orbitals/joint use this directly). The SPG occupation block (`projected_gradient` / `active_set`) uses Barzilai–Borwein plus non-monotone Armijo and does not consult this keyword. |
-| `rdmft_line_search_c1` | real | `1e-4` | Sufficient-decrease \(c_1\in(0,1)\): \(\varphi(\alpha)\le f_{\mathrm{ref}}+c_1\alpha\varphi'(0)\) in Strong Wolfe (joint / ALM / orbitals), and the same constant in **SPG** non-monotone Armijo. Smaller is stricter. |
+| `rdmft_alpha_step` | real | `1.0` | Initial trial step \(\alpha_0\) for **Strong Wolfe** on alternating **orbitals**, **ALM** occupations, and **joint** steps (when ALM BB seed is off, orbitals/joint use this directly). The SPG occupation block (`projected_gradient` / `active_set`) uses Barzilai–Borwein plus **monotone** Armijo and does not consult this keyword. |
+| `rdmft_line_search_c1` | real | `1e-4` | Sufficient-decrease \(c_1\in(0,1)\): \(\varphi(\alpha)\le f_{\mathrm{ref}}+c_1\alpha\varphi'(0)\) in Strong Wolfe (joint / ALM / orbitals), and the same constant in **SPG** monotone Armijo (here \(f_{\mathrm{ref}}=E(\mathbf{n}_k)\) at the current iterate). Smaller is stricter. |
 | `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature: \(|\varphi'(\alpha)|\le c_2|\varphi'(0)|\). Must satisfy `rdmft_line_search_c1` \(< c_2 < 1\). Not used by SPG. |
 | `rdmft_line_search_max_iter` | int | `30` | Max **bracket expansion** steps in Strong Wolfe (joint, ALM, orbitals). |
 | `rdmft_line_search_max_zoom` | int | `30` | Max **zoom** (interval refinement) iterations inside Strong Wolfe. |
-| `rdmft_line_search_nm_memory` | int | `10` | Non-monotone memory \(M\) for Strong Wolfe: \(f_{\mathrm{ref}}=\max\) of the last \(M\) energies at the line-search iterate. Use `1` for monotone decrease vs the current energy only. SPG uses fixed \(M=10\) internally. |
+| `rdmft_line_search_nm_memory` | int | `10` | Non-monotone memory \(M\) for Strong Wolfe: \(f_{\mathrm{ref}}=\max\) of the last \(M\) energies at the line-search iterate. Use `1` for monotone decrease vs the current energy only. Not used by SPG occupations (monotone Armijo vs the current energy only). |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` seed the **Strong Wolfe** initial step for **ALM** occupations in occupation-parameter space. **ALM**, alternating **orbitals**, and **joint** use **non-monotone Strong Wolfe** with `rdmft_line_search_c1`, `rdmft_line_search_c2`, and the bracket/zoom iteration caps. The **SPG** path (`projected_gradient` / `active_set`) keeps the standard **BB1 spectral step + non-monotone Armijo** along the projected direction (fixed memory \(M=10\)); it does **not** use Strong Wolfe or `rdmft_occ_optimizer`.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` seed the **Strong Wolfe** initial step for **ALM** occupations in occupation-parameter space. **ALM**, alternating **orbitals**, and **joint** use **non-monotone Strong Wolfe** with `rdmft_line_search_c1`, `rdmft_line_search_c2`, and the bracket/zoom iteration caps. The **SPG** path (`projected_gradient` / `active_set`) keeps the standard **BB1 spectral step + monotone Armijo** along the projected direction; it does **not** use Strong Wolfe or `rdmft_occ_optimizer`.
 
 The **alternating orbital** sub-problem is Riemannian SD or Polak–Ribière⁺ CG on the Stiefel manifold (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*, Princeton 2008), with **non-monotone Strong Wolfe** along `rdmft_orb_retraction` (default `polar`). For ill-conditioned regularised functionals (Müller / Power / GEO), reduce `rdmft_alpha_step` or switch to `rdmft_solver_strategy = joint` if the alternating map diverges (see `rdmft_derivation.md` §7.1).
 
@@ -421,8 +420,8 @@ fallback (clip + dual rescaling); see
   especially combined with cosine-squared parameterisation.
 
 - **Projected gradient (SPG)** ignores `rdmft_occ_param` and optimises raw
-  \(n_{ik}\) with a Barzilai–Borwein spectral step and a Grippo–Lampariello–Lucidi
-  non-monotone Armijo line search; no tuning is normally required.
+  \(n_{ik}\) with a Barzilai–Borwein spectral step and a **monotone** Armijo line
+  search along the spectral projected direction; no tuning is normally required.
 
 - **CG** is the recommended optimiser for production in most cases.  Steepest
   descent is useful for debugging.
@@ -437,7 +436,7 @@ fallback (clip + dual rescaling); see
 ### SPG occupation line search fails
 
 The SPG inner loop logs lines of the form
-`occ line search (SPG non-monotone Armijo): ... ok|fail`.  Because the
+`occ line search (SPG monotone Armijo): ... ok|fail`.  Because the
 spectral projected direction is *guaranteed* to be a descent direction
 (BMR Lemma 2.1), the line search can only fail in floating-point
 arithmetic when `g · d ≈ 0` (the iterate is essentially stationary).  When

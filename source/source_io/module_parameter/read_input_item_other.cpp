@@ -945,7 +945,7 @@ void ReadInput::item_others()
                            "Used by augmented_lagrangian only (Armijo line search with optional BB seed). "
                            "Ignored by projected_gradient / active_set: these route to the textbook Spectral "
                            "Projected Gradient method, which uses a Barzilai-Borwein spectral step and a "
-                           "non-monotone Armijo line search and does not consult this keyword.";
+                           "monotone Armijo line search and does not consult this keyword.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1369,7 +1369,7 @@ void ReadInput::item_others()
         item.description = "Method to enforce the electron-number constraint sum_k w_k sum_i n_ik = N_e. "
                            "augmented_lagrangian: ALM on the occupation parameters (rdmft_occ_param cosine_sq or logistic) with Armijo line search. "
                            "projected_gradient: Spectral Projected Gradient (Birgin-Martinez-Raydan, SIOPT 2000) "
-                           "in occupation space with non-monotone Armijo line search (Grippo-Lampariello-Lucidi). "
+                           "in occupation space with monotone Armijo line search along the spectral projected direction. "
                            "active_set: alias for projected_gradient in the current implementation -- kept for backward INPUT compatibility.";
         item.default_value = "augmented_lagrangian";
         item.unit = "";
@@ -1454,7 +1454,7 @@ void ReadInput::item_others()
         item.type = "Real";
         item.description = "Initial trial step length for the non-monotone Strong Wolfe line search (joint strategy, "
                            "ALM occupations, alternating orbitals). The SPG (projected_gradient / active_set) "
-                           "occupation block uses Barzilai–Borwein plus its own non-monotone Armijo and does not use "
+                           "occupation block uses Barzilai–Borwein plus monotone Armijo and does not use "
                            "this keyword.";
         item.default_value = "1.0";
         item.unit = "";
@@ -1469,7 +1469,7 @@ void ReadInput::item_others()
         item.type = "Real";
         item.description = "Constant in (0, 1): non-monotone Armijo test "
                            "phi(alpha) <= f_ref + c1 * alpha * phi'(0) for Strong Wolfe (joint, ALM, alternating "
-                           "orbitals), and the same role in SPG non-monotone Armijo along the projected spectral "
+                           "orbitals), and the same role in SPG monotone Armijo along the projected spectral "
                            "direction (projected_gradient / active_set).";
         item.default_value = "1e-4";
         item.unit = "";
@@ -1518,7 +1518,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Int";
         item.description = "Upper bound on Strong Wolfe bracket expansion iterations (joint, ALM, alternating "
-                           "orbitals). SPG occupations use a separate non-monotone Armijo loop with a fixed "
+                           "orbitals). SPG occupations use a separate monotone Armijo loop with a fixed "
                            "backtracking factor from RDMFTConfig::line_search_rho.";
         item.default_value = "30";
         item.unit = "";
@@ -1563,8 +1563,8 @@ void ReadInput::item_others()
         item.type = "Int";
         item.description = "History length M for the non-monotone reference f_ref = max of the last M energies at the "
                            "line-search iterate (joint, ALM, alternating orbitals). Use 1 for monotone decrease vs "
-                           "the current energy only. SPG occupations use a fixed M=10 in the reference "
-                           "implementation.";
+                           "the current energy only. SPG occupations use monotone Armijo vs the current energy only "
+                           "and do not use this keyword.";
         item.default_value = "10";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

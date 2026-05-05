@@ -2218,9 +2218,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
         case ConstraintMethod::ActiveSet:
         {
             // Spectral Projected Gradient (SPG, Birgin-Martinez-Raydan,
-            // SIAM J. Optim. 10 (2000) 1196) with non-monotone Armijo line
-            // search (Grippo-Lampariello-Lucidi, SIAM J. Numer. Anal. 23
-            // (1986) 707).
+            // SIAM J. Optim. 10 (2000) 1196) with monotone Armijo line search
+            // along the spectral projected direction (sufficient decrease vs
+            // the current energy E(n_k)).
             //
             // Per inner iteration k:
             //   1. Compute g_k = ∂E/∂n at current n_k.
@@ -2235,9 +2235,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //      set C.  This removes the need for any descent-direction
             //      safeguard or "trust-region cap" on α: the spectral step is
             //      already bounded by the BB clamp.
-            //   4. Non-monotone Armijo: find the smallest j ≥ 0 such that
-            //          E(n_k + λ_j d_k) ≤ f_max + c_1 λ_j (g_k · d_k)
-            //      with λ_j = ρ^j and f_max = max_{0 ≤ i ≤ min(k, M-1)} f(n_{k-i}).
+            //   4. Monotone Armijo: find the smallest j ≥ 0 such that
+            //          E(n_k + λ_j d_k) ≤ E(n_k) + c_1 λ_j (g_k · d_k)
+            //      with λ_j = ρ^j (backtracking on the feasible segment).
             //      Since C is convex and `n_k + λ d_k = (1−λ) n_k + λ P_C(...)`
             //      is a convex combination, every trial point is feasible
             //      *without* re-projection or rejection.
@@ -2260,20 +2260,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
             // SPG safeguarding constants (Birgin-Martinez-Raydan, Algorithm 2.1).
             //   alpha_min, alpha_max  -- BB clamp; standard values.
-            //   nm_memory M           -- non-monotone history length; M = 10
-            //                            is the value used in the original SPG paper.
             //   rho                   -- backtracking ratio (re-uses the user's
             //                            line_search_rho so the fallback cadence
             //                            matches existing logs).
             const double alpha_min = 1e-10;
             const double alpha_max = 1e10;
-            const int nm_memory = 10;
             const double rho = (config_.line_search_rho > 0.0 && config_.line_search_rho < 1.0)
                                    ? config_.line_search_rho
                                    : 0.5;
             const double c1 = config_.line_search_c1;
-
-            std::deque<double> f_history;
 
             std::vector<double> occ_prev;
             std::vector<double> grad_prev;
@@ -2368,19 +2363,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     dd += grad_occ[i] * dir[i];
                 }
 
-                // Non-monotone reference (Grippo-Lampariello-Lucidi).
-                if (static_cast<int>(f_history.size()) >= nm_memory)
-                {
-                    f_history.pop_front();
-                }
-                f_history.push_back(E);
-                double f_max = E;
-                for (double f : f_history)
-                {
-                    if (f > f_max) f_max = f;
-                }
+                // Monotone Armijo reference: current energy at n_k.
+                const double f_ref = E;
 
-                // Non-monotone Armijo backtracking along the convex segment
+                // Monotone Armijo backtracking along the convex segment
                 // n + λ d.  Every trial point is feasible (convex combination
                 // of two feasible points), so no per-trial re-projection is needed.
                 const std::vector<double> occ_before_step(occ_flat);
@@ -2400,7 +2386,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     const double E_trial = energy_grad_->compute_energy(
                         occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                     E_last_trial = E_trial;
-                    if (E_trial <= f_max + c1 * lambda * dd)
+                    if (E_trial <= f_ref + c1 * lambda * dd)
                     {
                         ls_success = true;
                         lambda_acc = lambda;
@@ -2411,13 +2397,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 {
                     std::ostringstream pg_ls;
-                    pg_ls << "      occ line search (" << method_name << " non-monotone Armijo)"
+                    pg_ls << "      occ line search (" << method_name << " monotone Armijo)"
                           << ": alpha_BB=" << std::scientific << alpha_bb
                           << " lambda=" << (ls_success ? lambda_acc : 0.0)
                           << " n_trial=" << n_trial
                           << " E0=" << E
                           << " E_trial=" << E_last_trial
-                          << " f_max=" << f_max
+                          << " f_ref=E0=" << f_ref
                           << " dd=g·d=" << dd
                           << "  c1=" << std::defaultfloat << c1
                           << "  rho=" << rho
@@ -2443,7 +2429,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     // can move on.
                     GlobalV::ofs_running
                         << "      occ inner " << method_name
-                        << ": non-monotone Armijo failed (dd=" << std::scientific << dd
+                        << ": monotone Armijo failed (dd=" << std::scientific << dd
                         << "); accepting zero step" << std::defaultfloat << std::endl;
                     occ_flat = occ_before_step;
                 }

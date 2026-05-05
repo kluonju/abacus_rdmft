@@ -697,7 +697,7 @@ struct Input_para
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     double rdmft_alpha_step = 1.0;                 // initial Strong Wolfe trial step (joint / ALM / orbitals)
-    /// Armijo / sufficient-decrease c1 in (0,1): SPG non-monotone Armijo and Strong Wolfe decrease vs f_ref
+    /// Armijo / sufficient-decrease c1 in (0,1): SPG monotone Armijo and Strong Wolfe decrease vs f_ref
     double rdmft_line_search_c1 = 1e-4;
     /// Strong Wolfe curvature c2: require |phi'| <= c2 |phi'(0)|; must satisfy c1 < c2 < 1
     double rdmft_line_search_c2 = 0.9;
@@ -705,7 +705,7 @@ struct Input_para
     int rdmft_line_search_max_iter = 30;
     /// Strong Wolfe: max zoom (interval refinement) iterations
     int rdmft_line_search_max_zoom = 30;
-    /// Non-monotone memory M for Strong Wolfe (f_ref = max of last M energies); SPG uses fixed M=10 internally
+    /// Non-monotone memory M for Strong Wolfe (f_ref = max of last M energies); not used by SPG occupations
     int rdmft_line_search_nm_memory = 10;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate

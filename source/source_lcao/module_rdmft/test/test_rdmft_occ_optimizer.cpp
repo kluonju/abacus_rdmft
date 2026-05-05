@@ -6,8 +6,8 @@
 // The RDMFT solver's full `optimize_occupations()` cannot be exercised in a
 // unit test because it depends on EnergyGradient<> (which requires LCAO
 // infrastructure). These tests therefore reproduce the same SPG algorithmic
-// flow (Birgin-Martinez-Raydan, SIOPT 2000; Grippo-Lampariello-Lucidi
-// non-monotone Armijo, SINUM 1986) on a toy problem:
+// flow (Birgin-Martinez-Raydan, SIOPT 2000; monotone Armijo along the spectral
+// projected direction) on a toy problem:
 //
 //     E(n) = sum_i n_i * eps_i,
 //     subject to  sum_i w_i n_i = N_e,  0 <= n_i <= 1.
@@ -27,7 +27,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <deque>
 #include <vector>
 
 using namespace rdmft;
@@ -164,12 +163,10 @@ struct SPGRunner
         // SPG safeguarding constants (BMR Algorithm 2.1).
         const double alpha_min = 1e-10;
         const double alpha_max = 1e10;
-        const int nm_memory = 10;
         const double rho = (config.line_search_rho > 0.0 && config.line_search_rho < 1.0)
                                ? config.line_search_rho : 0.5;
         const double c1 = config.line_search_c1;
 
-        std::deque<double> f_history;
         std::vector<double> occ_prev;
         std::vector<double> grad_prev;
         bool have_prev = false;
@@ -224,13 +221,9 @@ struct SPGRunner
                 dd += grad[i] * dir[i];
             }
 
-            // Non-monotone Armijo reference.
-            if (static_cast<int>(f_history.size()) >= nm_memory) f_history.pop_front();
-            f_history.push_back(E);
-            double f_max = E;
-            for (double f : f_history) if (f > f_max) f_max = f;
+            const double f_ref = E;
 
-            // Non-monotone Armijo backtracking along the convex segment n + λ d.
+            // Monotone Armijo backtracking along the convex segment n + λ d.
             // Each n + λ d is a convex combination of two feasible points,
             // hence feasible without re-projection.
             const std::vector<double> occ_old = occ;
@@ -242,7 +235,7 @@ struct SPGRunner
             {
                 for (int i = 0; i < prob.nb; ++i) occ_trial[i] = occ[i] + lambda * dir[i];
                 const double E_trial = prob.energy(occ_trial);
-                if (E_trial <= f_max + c1 * lambda * dd)
+                if (E_trial <= f_ref + c1 * lambda * dd)
                 {
                     success = true;
                     lambda_acc = lambda;

@@ -247,7 +247,7 @@ struct RDMFTConfig
     double aug_lag_lambda_init = 0.0;
 
     double line_search_alpha_init = 1.0;
-    /// Sufficient decrease (Armijo) constant in (0, 1); also used in SPG non-monotone Armijo.
+    /// Sufficient decrease (Armijo) constant in (0, 1); also used in SPG monotone Armijo.
     double line_search_c1 = 1e-4;
     /// Curvature constant for Strong Wolfe: require \f$|\varphi'(\alpha)|\le c_2|\varphi'(0)|\f$.
     /// Must satisfy \f$c_1 < c_2 < 1\f$.
