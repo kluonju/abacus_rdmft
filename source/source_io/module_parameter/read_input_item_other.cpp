@@ -1169,11 +1169,11 @@ void ReadInput::item_others()
         item.annotation = "RDMFT convergence threshold on energy change (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop declares "
-                           "convergence only when both occupation- and orbital-inner criteria are met "
-                           "(alternating: inner `converged` flags; joint: occ/orb stationarity flags) and, when "
-                           "rdmft_energy_tol > 0, also |E - E_prev| (Ry) < rdmft_energy_tol. If <= 0, the outer "
-                           "energy test is omitted (inner convergence alone suffices).";
+        item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop stops only "
+                           "when both occupation- and orbital-inner sub-problems report converged (alternating: inner "
+                           "`converged` flags; joint: occ/orb flags) AND, when rdmft_energy_tol > 0, "
+                           "|E - E_prev| (Ry) < rdmft_energy_tol between outer iterations. If rdmft_energy_tol <= 0, "
+                           "the outer energy check is omitted (inner flags alone).";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1193,30 +1193,40 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_orb_energy_tol");
-        item.annotation = "RDMFT orbital inner: |dE| convergence (Ry)";
+        Input_Item item("rdmft_orb_tol");
+        item.annotation = "RDMFT orbital inner: |dE| tolerance (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Alternating strategy, orbital inner loop: when this value is > 0, "
-                           "convergence requires both ||G_R|| < rdmft_orb_grad_tol and energy stability: "
-                           "|E_k - E_{k-1}| before the step and |E_new - E| after an accepted line-search "
-                           "step must be below this (Ry). Use <= 0 to disable the energy criterion "
-                           "(gradient-only stopping).";
+        item.description = "Orbital inner loop: stop when ||G_R|| < rdmft_orb_grad_tol OR (when this value is > 0) "
+                           "|ΔE| is below this threshold: |E_k - E_{k-1}| before the step, or |E_new - E| after an "
+                           "accepted line search with a positive step. Use <= 0 to use gradient norm only.";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_orb_energy_tol);
+        read_sync_double(input.rdmft_orb_tol);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_energy_tol");
+        item.annotation = "Deprecated alias for rdmft_orb_tol";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Deprecated: use rdmft_orb_tol. If present, sets the same orbital inner |ΔE| tolerance (Ry).";
+        item.default_value = "1e-8";
+        item.unit = "Ry";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_orb_tol);
         this->add_item(item);
     }
     {
         Input_Item item("rdmft_occ_tol");
-        item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
+        item.annotation = "RDMFT occupation inner: |ΔE| tolerance (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Occupation inner: stop a step when sum_i |n_i^{new}-n_i^{old}| in "
-                           "one inner iteration is below this. Used by augmented_lagrangian, "
-                           "projected_gradient, and active_set paths (PG / AS additionally exit "
-                           "the inner loop on rdmft_occ_grad_tol vs ||g_proj||_inf).";
+        item.description = "Occupation inner: stop when rdmft_occ_grad_tol is satisfied on the stationarity measure "
+                           "OR (when this value is > 0) |ΔE| (physical E for SPG; augmented L for ALM) is below "
+                           "this threshold between inner iterations or across an accepted step. Use <= 0 for "
+                           "gradient-only stopping on the occupation sub-problem.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

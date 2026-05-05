@@ -26,6 +26,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <deque>
 #include <vector>
 
@@ -125,6 +126,29 @@ ToyOccProblem make_6band_frac(double Ne = 3.5)
     return p;
 }
 
+double toy_spg_r_inf(const std::vector<double>& occ,
+                     const std::vector<double>& grad,
+                     OccupationConstraint& c)
+{
+    std::vector<double> trial(occ.size());
+    for (std::size_t i = 0; i < occ.size(); ++i)
+    {
+        trial[i] = occ[i] - grad[i];
+    }
+    c.project(trial);
+    double linf = 0.0;
+    for (std::size_t i = 0; i < occ.size(); ++i)
+    {
+        linf = std::max(linf, std::abs(occ[i] - trial[i]));
+    }
+    return linf;
+}
+
+inline bool toy_abs_de_stop(double abs_de, double tol)
+{
+    return tol > 0.0 && std::isfinite(abs_de) && abs_de < tol;
+}
+
 // ---------------------------------------------------------------------------
 // Run the Spectral Projected Gradient optimisation on the toy problem.
 // Mirrors rdmft_solver.cpp's optimize_occupations SPG block (the case that
@@ -156,12 +180,26 @@ struct SPGRunner
         bool have_prev = false;
 
         double E = 0.0;
+        double E_prev_inner = 0.0;
+        bool have_E_prev = false;
 
         for (int iter = 0; iter < max_iter; ++iter)
         {
             E = prob.energy(occ);
             energy_history.push_back(E);
             auto grad = prob.gradient(occ);
+
+            const bool have_dE_prev = have_E_prev;
+            const double dE = have_dE_prev ? (E - E_prev_inner) : 0.0;
+            E_prev_inner = E;
+            have_E_prev = true;
+
+            const double r_pre = toy_spg_r_inf(occ, grad, constraint);
+            if (r_pre < config.occ_grad_tol
+                || (have_dE_prev && toy_abs_de_stop(std::abs(dE), config.rdmft_occ_tol)))
+            {
+                return E;
+            }
 
             // Spectral (BB1) step.
             double alpha_bb;
@@ -210,6 +248,7 @@ struct SPGRunner
             // hence feasible without re-projection.
             const std::vector<double> occ_old = occ;
             double lambda = 1.0;
+            double lambda_acc = 0.0;
             std::vector<double> occ_trial(prob.nb);
             bool success = false;
             for (int ls = 0; ls < config.line_search_max_iter; ++ls)
@@ -219,6 +258,7 @@ struct SPGRunner
                 if (E_trial <= f_max + c1 * lambda * dd)
                 {
                     success = true;
+                    lambda_acc = lambda;
                     break;
                 }
                 lambda *= rho;
@@ -235,10 +275,17 @@ struct SPGRunner
             // else: zero step; SPG line search in floating point can fail only
             // for degenerate dd ≈ 0 -- treat as a stationary iterate.
 
-            // Convergence on L1 occupation move.
-            double sum_dn = 0.0;
-            for (int i = 0; i < prob.nb; ++i) sum_dn += std::abs(occ[i] - occ_old[i]);
-            if (sum_dn < config.rdmft_occ_tol && sum_dn > 1e-20) break;
+            const double E_post = prob.energy(occ);
+            const auto grad_post = prob.gradient(occ);
+            const double r_post = toy_spg_r_inf(occ, grad_post, constraint);
+            const double dE_post = std::abs(E_post - E);
+            const bool step_moved = success && lambda_acc > 0.0;
+            if (r_post < config.occ_grad_tol
+                || (step_moved && toy_abs_de_stop(dE_post, config.rdmft_occ_tol)))
+            {
+                E = E_post;
+                return E;
+            }
         }
 
         return E;

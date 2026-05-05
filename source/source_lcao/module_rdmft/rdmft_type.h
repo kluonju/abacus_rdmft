@@ -225,21 +225,17 @@ struct RDMFTConfig
     int orb_maxiter = 50;
     /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
-    /// Alternating / joint outer: always require occupation+orbital inner `converged` flags.
-    /// When >0, also require |dE| < this between outer iters. When <=0, no outer energy check
-    /// (inner convergence alone). Same field as INPUT `rdmft_energy_tol`.
+    /// Outer alternating / joint: require both inner `converged` flags and, when > 0,
+    /// |E - E_prev| between outer iterations < this (Ry). When <= 0, outer energy check omitted.
+    /// Same field as INPUT `rdmft_energy_tol`.
     double energy_tol = 1e-8;
-    /// Inner orbital step: Riemannian gradient norm ||G_R|| must fall below this
-    /// for convergence (and, when orb_energy_tol > 0, the energy change criterion
-    /// must also be satisfied).
+    /// Orbital inner: Riemannian gradient norm ||G_R|| threshold (OR branch).
     double orb_grad_tol = 1e-4;
-    /// Alternating orbital inner loop: when > 0, convergence additionally requires
-    /// |E_k - E_{k-1}| before the step and |E_new - E| after an accepted line search
-    /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
+    /// Orbital inner: |ΔE| threshold (Ry); OR with orb_grad_tol when > 0. INPUT `rdmft_orb_tol`
+    /// (legacy `rdmft_orb_energy_tol`). <= 0 disables the energy branch.
     double orb_energy_tol = 1e-6;
-    /// Occupation inner: stop the inner loop when sum_i |Δn_i| in one iteration is below this
-    /// (Augmented Lagrangian, projected_gradient, and active_set; same convergence criterion as
-    /// the orbital inner energy/gradient pair).
+    /// Occupation inner: |ΔE| threshold (Ry); OR with occ_grad_tol when > 0. <= 0 disables
+    /// the energy branch. Same field as INPUT `rdmft_occ_tol`.
     double rdmft_occ_tol = 1e-6;
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-6;

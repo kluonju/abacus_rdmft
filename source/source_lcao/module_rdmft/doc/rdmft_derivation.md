@@ -513,9 +513,9 @@ $\mathbf{r}(\mathbf{n}) = \mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \nabla_{\mat
 be the **τ-free Bertsekas projected-gradient residual** at unit step (the
 textbook SPG stationarity measure; BMR Eq. (2.6)).  At a KKT point of the
 constrained problem $\mathbf{r} = 0$.  The inner loop stops when
-$\|\mathbf{r}\|_\infty <$ `rdmft_occ_grad_tol`, or when the L1 occupation
-move per inner step drops below `rdmft_occ_tol`, whichever fires first.  The
-iteration cap is `rdmft_occ_maxiter`.
+$\|\mathbf{r}\|_\infty <$ `rdmft_occ_grad_tol`, or when (if `rdmft_occ_tol` $>0$)
+$|ΔE|$ is below `rdmft_occ_tol` between inner iterations or after a successful
+step, whichever fires first.  The iteration cap is `rdmft_occ_maxiter`.
 
 **INPUT keywords (SPG path):** `rdmft_occ_grad_tol`, `rdmft_occ_tol`,
 `rdmft_occ_maxiter`, `rdmft_line_search_c1`, `rdmft_line_search_rho`,
@@ -531,7 +531,7 @@ f_history = empty deque (length M = 10)
 for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
    r = n - P(n - g)
-   if ||r||_inf < tol: break
+   if ||r||_inf < tol or (rdmft_occ_tol>0 and |ΔE| small): break
    if have_prev:
       s = n - n_prev; y = g - g_prev
       alpha_BB = clamp((s.s)/(s.y), alpha_min, alpha_max)   // BB1 + safeguard
@@ -625,9 +625,9 @@ Alternate between:
 
   No Barzilai–Borwein spectral step, no non-monotone history, no
   Wen–Yin trust radius, no suspicious-descent guard. Convergence
-  criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, and (when
-  `rdmft_orb_energy_tol > 0`) $|E - E_{\mathrm{prev}}|$ below
-  `rdmft_orb_energy_tol`.
+  criterion: $\lVert G_R\rVert_F$ below `rdmft_orb_grad_tol`, or (when
+  `rdmft_orb_tol` $>0$) $|ΔE|$ below `rdmft_orb_tol` (legacy INPUT name
+  `rdmft_orb_energy_tol` sets the same value).
 
   **Caveat for regularised functionals (Müller / Power / GEO).**  Because
   the regularised functionals at fractional occupations have no global

@@ -26,11 +26,11 @@ nelec_delta -0.2
 
 rdmft_occ_optimizer    cg
 rdmft_orb_optimizer    cg
-rdmft_outer_maxiter    100
-rdmft_occ_maxiter      10
-rdmft_orb_maxiter      10
+rdmft_outer_maxiter    10
+rdmft_occ_maxiter      5
+rdmft_orb_maxiter      5
 rdmft_energy_tol       1e-7
 rdmft_orb_grad_tol  1e-5
-rdmft_occ_grad_tol  1e-6
+rdmft_occ_grad_tol  1e-5
 
 rdmft_power_alpha      0.65
