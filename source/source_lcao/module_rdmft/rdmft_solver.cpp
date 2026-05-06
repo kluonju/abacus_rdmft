@@ -665,6 +665,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         add_kv(keys, vals, "line_search_c2", as_sci(cfg.line_search_c2));
         add_kv(keys, vals, "line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
         add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
+        add_kv(keys, vals, "rdmft_print_elk_evalsv", cfg.print_elk_evalsv ? "true" : "false");
         emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
     }
 
@@ -1374,6 +1375,10 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
+    if (config_.print_elk_evalsv)
+    {
+        print_elk_style_evalsv(occ_flat, wfc);
+    }
     const auto t_alternating_end = std::chrono::steady_clock::now();
     const double total_time_sec = std::chrono::duration<double>(t_alternating_end - t_alternating_start).count();
     print_rdmft_optimization_summary_alternating(outer_iters_done,
@@ -2114,6 +2119,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
+    if (config_.print_elk_evalsv)
+    {
+        print_elk_style_evalsv(occ_flat, wfc);
+    }
     const auto t_joint_end = std::chrono::steady_clock::now();
     const double total_time_sec = std::chrono::duration<double>(t_joint_end - t_joint_start).count();
     print_rdmft_optimization_summary_joint(joint_outer_done, total_time_sec);
@@ -3421,6 +3430,59 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         << std::endl;
 
     return result;
+}
+
+template <typename TK, typename TR>
+void RDMFTSolver<TK, TR>::print_elk_style_evalsv(const std::vector<double>& occ_flat,
+                                                  const psi::Psi<TK>& wfc)
+{
+    if (!kv_ || !energy_grad_ || nk_ <= 0 || nbands_ <= 0)
+    {
+        return;
+    }
+    const size_t expected = static_cast<size_t>(nk_) * static_cast<size_t>(nbands_);
+    if (occ_flat.size() != expected)
+    {
+        GlobalV::ofs_running << "RDMFT print_elk_style_evalsv: occ_flat size mismatch, skip." << std::endl;
+        return;
+    }
+
+    const double n_probe = 0.5;
+    GlobalV::ofs_running << "\n===== RDMFT ELK-style epsilon_ik (rdmeval analogue) =====" << std::endl;
+    GlobalV::ofs_running << "  For each (ik, ib): set n(ik,ib) = " << std::fixed << std::setprecision(4)
+                         << n_probe << std::defaultfloat
+                         << " (ELK occmax/2 for n in [0,1]); other occupations unchanged." << std::endl;
+    GlobalV::ofs_running << "  Columns: n(original), wk, dE_dn_wk = grad_occ (as in EnergyGradient::compute),"
+                         << " epsilon_ik = dE_dn_wk / wk (unweighted dE/dn)." << std::endl;
+    GlobalV::ofs_running << "  WARNING: cost is " << (static_cast<long long>(nk_) * nbands_)
+                         << " full EnergyGradient::compute calls." << std::endl;
+
+    std::vector<double> occ_probe = occ_flat;
+    std::vector<double> grad_occ;
+    psi::Psi<TK> grad_wfc;
+
+    GlobalV::ofs_running << std::setw(6) << "ik" << std::setw(8) << "ib" << std::setw(18) << "n(orig)" << std::setw(16)
+                         << "wk" << std::setw(24) << "dE_dn_wk" << std::setw(24) << "epsilon_ik" << std::endl;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const double wk = kv_->wk[ik];
+        for (int ib = 0; ib < nbands_; ++ib)
+        {
+            const int idx = ik * nbands_ + ib;
+            const double n0 = occ_probe[idx];
+            occ_probe[idx] = n_probe;
+            energy_grad_->compute(occ_probe, wfc, grad_occ, grad_wfc);
+            const double g_wk = grad_occ[static_cast<size_t>(idx)];
+            const double eps = (std::abs(wk) > 1.0e-20) ? (g_wk / wk) : std::numeric_limits<double>::quiet_NaN();
+            GlobalV::ofs_running << std::setw(6) << ik << std::setw(8) << ib << std::scientific
+                                 << std::setprecision(12) << std::setw(18) << n0 << std::setw(16) << wk
+                                 << std::setw(24) << g_wk << std::setw(24) << eps << std::defaultfloat
+                                 << std::setprecision(6) << std::endl;
+            occ_probe[idx] = n0;
+        }
+    }
+    GlobalV::ofs_running << "===== end RDMFT ELK-style epsilon_ik =====\n" << std::endl;
 }
 
 template <typename TK, typename TR>

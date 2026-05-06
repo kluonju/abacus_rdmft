@@ -716,6 +716,8 @@ struct Input_para
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
     /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).
     bool rdmft_print_stiefel_gram = false;
+    /// If true, after RDMFT finishes print ELK rdmeval-style ε_ik = ∂E/∂n at probe n=0.5 per (ik,ib); O(nk*nbands) gradient builds.
+    bool rdmft_print_elk_evalsv = false;
     double rdmft_joint_orb_scale = 1.0;             // joint-strategy per-block preconditioner on the orbital block (see RDMFTConfig::joint_orb_scale)
     /// If false, RDMFT equality target N_e uses sum of KS wg; if true, base is PARAM.inp.nelec.
     bool rdmft_nelec_use_input = false;

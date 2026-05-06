@@ -1592,6 +1592,21 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_print_elk_evalsv");
+        item.annotation = "Print ELK-style RDMFT occupation eigenvalues ε_ik after optimisation (expensive)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, after RDMFT completes, for each (ik, ib) temporarily set n(ik,ib)=0.5 "
+                           "(ELK occmax/2 analogue), call EnergyGradient::compute once, and log "
+                           "ε_ik = (grad_occ/wk) and dE/dn = grad_occ (wk-weighted). Cost scales as nk*nbands "
+                           "full gradient evaluations; use only for small systems or diagnostics.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_print_elk_evalsv);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_joint_orb_scale");
         item.annotation = "Joint-strategy scaling factor between orbital and occupation blocks";
         item.category = "Reduced Density Matrix Functional Theory";

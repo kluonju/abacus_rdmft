@@ -288,6 +288,9 @@ struct RDMFTConfig
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.
     bool print_stiefel_gram = false;
 
+    /// After solve: print ELK rdmeval-style ε_ik (probe n=0.5, O(nk*nbands) compute calls).
+    bool print_elk_evalsv = false;
+
     /// If true, `RDMFTSolver::solve` runs finite-difference gradient checks after
     /// `precompute_cholesky_S()` and `wfc_C_to_X` (must not run earlier: orbitals are
     /// still in C-space before that).

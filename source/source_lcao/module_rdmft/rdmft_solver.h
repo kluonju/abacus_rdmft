@@ -60,6 +60,9 @@ class RDMFTSolver
                                      double epsilon = 1e-5,
                                      double tolerance = 1e-4);
 
+    /// ELK `rdmeval` analogue: log ε_ik = ∂E/∂n at probe n=0.5 per state (expensive).
+    void print_elk_style_evalsv(const std::vector<double>& occ_flat, const psi::Psi<TK>& wfc);
+
     /// Get the config
     const RDMFTConfig& config() const { return config_; }
 
