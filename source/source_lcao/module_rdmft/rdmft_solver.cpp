@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #include "rdmft_solver.h"
 #include "source_base/constants.h"
 #include "source_base/formatter.h"

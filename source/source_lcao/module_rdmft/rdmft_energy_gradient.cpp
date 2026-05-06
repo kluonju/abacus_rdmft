@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #include "rdmft_energy_gradient.h"
 #include "source_base/timer.h"
 #include "source_base/parallel_reduce.h"

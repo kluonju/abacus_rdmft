@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #ifndef RDMFT_STIEFEL_H
 #define RDMFT_STIEFEL_H
 

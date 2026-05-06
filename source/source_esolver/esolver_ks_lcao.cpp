@@ -17,6 +17,7 @@
 #endif
 #ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h"
+#include "source_lcao/module_rdmft/rdmft_input_parse.h"
 #include "source_lcao/module_rdmft/rdmft_solver.h"
 #endif
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
@@ -28,11 +29,6 @@
 #include "source_lcao/rho_tau_lcao.h" // mohan add 20251024
 #include "source_lcao/LCAO_set.h" // mohan add 20251111
 #include "source_psi/setup_psi.h" // use Setup_Psi for deallocate_psi
-#ifdef __RDMFT
-#include <algorithm>
-#include <cctype>
-#endif
-
 namespace ModuleESolver
 {
 
@@ -527,7 +523,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         if (use_new_rdmft_engine)
         {
-            const rdmft::XCFunctionalType xc_type = rdmft::parse_xc_type(inp_rdmft.rdmft_functional);
+            const rdmft::XCFunctionalType xc_type
+                = rdmft::parse_xc_type_or_quit(inp_rdmft.rdmft_functional, "ESolver_KS_LCAO::after_scf");
             const rdmft::XCFunctional xc_func(xc_type, inp_rdmft.rdmft_power_alpha);
             this->rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv, this->pelec, &this->orb_,
                                 &two_center_bundle_, xc_func);
@@ -577,7 +574,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // Build RDMFTConfig from input parameters
         rdmft::RDMFTConfig rdmft_config;
-        rdmft_config.xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
+        rdmft_config.xc_type = rdmft::parse_xc_type_or_quit(inp.rdmft_functional, "ESolver_KS_LCAO::after_scf");
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
@@ -655,43 +652,15 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
 
-        // Parse optimisers: trim, ASCII-lowercase, accept common spellings. Previously only
-        // exact lowercase (e.g. "lbfgs") matched, so e.g. "LBFGS" fell through to default CG.
-        auto parse_opt = [](const std::string& s_in) {
-            const char* const ws = " \t\n\r\f\v";
-            const auto first = s_in.find_first_not_of(ws);
-            if (first == std::string::npos)
-            {
-                return rdmft::OptimizerType::ConjugateGradient;
-            }
-            const auto last = s_in.find_last_not_of(ws);
-            std::string s = s_in.substr(first, last - first + 1);
-            for (char& c : s)
-            {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            if (s == "sd" || s == "steepest" || s == "steepest_descent" || s == "gd")
-            {
-                return rdmft::OptimizerType::SteepestDescent;
-            }
-            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs")
-            {
-                return rdmft::OptimizerType::LBFGS;
-            }
-            if (s == "adam")
-            {
-                return rdmft::OptimizerType::Adam;
-            }
-            if (s == "cg" || s == "conjugate_gradient" || s == "conjugate" || s == "pr"
-                || s == "fr" || s == "polak" || s == "fletcher_reeves")
-            {
-                return rdmft::OptimizerType::ConjugateGradient;
-            }
-            return rdmft::OptimizerType::ConjugateGradient; // default
-        };
-        rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
-        rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
-        rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
+        rdmft_config.occ_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_occ_optimizer,
+                                                                            "rdmft_occ_optimizer",
+                                                                            "ESolver_KS_LCAO::after_scf");
+        rdmft_config.orb_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_orb_optimizer,
+                                                                          "rdmft_orb_optimizer",
+                                                                          "ESolver_KS_LCAO::after_scf");
+        rdmft_config.joint_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_joint_optimizer,
+                                                                            "rdmft_joint_optimizer",
+                                                                            "ESolver_KS_LCAO::after_scf");
         rdmft_config.grad_check = inp.rdmft_grad_check;
 
         // RDMFT equality target N_e: default base is sum wg (matches loaded occupations);

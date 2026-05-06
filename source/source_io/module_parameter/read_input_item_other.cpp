@@ -3,6 +3,10 @@
 #include "read_input.h"
 #include "read_input_tool.h"
 
+#ifdef __RDMFT
+#include "source_lcao/module_rdmft/rdmft_input_parse.h"
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -831,13 +835,13 @@ void ReadInput::item_others()
         item.unit = "";
         item.availability = "";
         read_sync_bool(input.rdmft);
-        this->add_item(item);
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && para.input.nspin == 4)
             {
                 ModuleBase::WARNING_QUIT("ReadInput", "rdmft is not available for nspin = 4");
             }
         };
+        this->add_item(item);
     }
     {
         Input_Item item("rdmft_power_alpha");
@@ -864,7 +868,8 @@ void ReadInput::item_others()
             }
         };
         item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if( (para.input.rdmft_power_alpha < 0) || (para.input.rdmft_power_alpha > 1) )
+            if (para.input.rdmft
+                && (para.input.rdmft_power_alpha < 0 || para.input.rdmft_power_alpha > 1))
             {
                 ModuleBase::WARNING_QUIT("ReadInput", "rdmft_power_alpha should be greater than 0.0 and less than 1.0");
             }
@@ -892,14 +897,7 @@ void ReadInput::item_others()
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
-                const std::string& f = para.input.rdmft_functional;
-                if (f != "hf" && f != "muller" && f != "power" && f != "gu"
-                    && f != "chf" && f != "cga"
-                    && f != "geo" && f != "optgm")
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_functional must be one of: hf, muller, power, gu, chf, cga, geo, optgm");
-                }
+                (void)rdmft::parse_xc_type_or_quit(para.input.rdmft_functional, "ReadInput");
             }
         };
         this->add_item(item);
@@ -949,6 +947,14 @@ void ReadInput::item_others()
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_string(input.rdmft_occ_optimizer);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                (void)rdmft::parse_optimizer_input_or_quit(para.input.rdmft_occ_optimizer,
+                                                             "rdmft_occ_optimizer",
+                                                             "ReadInput");
+            }
+        };
         this->add_item(item);
     }
     {
@@ -963,6 +969,14 @@ void ReadInput::item_others()
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_string(input.rdmft_orb_optimizer);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                (void)rdmft::parse_optimizer_input_or_quit(para.input.rdmft_orb_optimizer,
+                                                           "rdmft_orb_optimizer",
+                                                           "ReadInput");
+            }
+        };
         this->add_item(item);
     }
     {
@@ -982,21 +996,9 @@ void ReadInput::item_others()
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
-                const std::string& s = para.input.rdmft_joint_optimizer;
-                if (s.empty())
-                {
-                    return;
-                }
-                std::string t = s;
-                for (char& c : t)
-                {
-                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                }
-                if (t != "sd" && t != "cg" && t != "lbfgs" && t != "adam")
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_joint_optimizer must be one of: sd, cg, lbfgs, adam");
-                }
+                (void)rdmft::parse_optimizer_input_or_quit(para.input.rdmft_joint_optimizer,
+                                                           "rdmft_joint_optimizer",
+                                                           "ReadInput");
             }
         };
         this->add_item(item);

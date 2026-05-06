@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #include "gtest/gtest.h"
 #include "source_lcao/module_rdmft/rdmft_stiefel.h"
 #include <cmath>

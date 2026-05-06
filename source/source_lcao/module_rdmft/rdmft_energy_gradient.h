@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #ifndef RDMFT_ENERGY_GRADIENT_H
 #define RDMFT_ENERGY_GRADIENT_H
 

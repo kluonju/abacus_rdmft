@@ -1,3 +1,8 @@
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 // =============================================================================
 // Unit tests for projected-gradient and active-set occupation optimization
 // methods in RDMFT.

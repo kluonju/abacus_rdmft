@@ -2,6 +2,11 @@
 // Author: Jingang Han
 // DATE : 2024-03-11
 //==========================================================
+//==========================================================
+// Author: Kai Luo
+// Email: kluo@njust.edu.cn
+// DATE : April 2026
+//==========================================================
 #include "source_lcao/module_rdmft/rdmft_tools.h"
 // used by class Veff_rdmft
 #include "source_base/tool_title.h"
