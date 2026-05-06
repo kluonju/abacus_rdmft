@@ -35,10 +35,40 @@ double sum_abs_diff(const std::vector<double>& a, const std::vector<double>& b)
     return s;
 }
 
-/// Line search in RDMFT: Strong Wolfe only for LBFGS; Armijo (backtracking) for sd / cg / adam.
-inline bool line_search_uses_strong_wolfe(const OptimizerType opt)
+enum class LineSearchPolicy
 {
-    return opt == OptimizerType::LBFGS;
+    Armijo,
+    StrongWolfe,
+    WeakWolfe
+};
+
+/// Line-search policy in RDMFT:
+///   - CG: strong Wolfe
+///   - LBFGS ("BFGS" family): weak Wolfe
+///   - SD / Adam: Armijo backtracking
+inline LineSearchPolicy line_search_policy_for_optimizer(const OptimizerType opt)
+{
+    switch (opt)
+    {
+        case OptimizerType::ConjugateGradient: return LineSearchPolicy::StrongWolfe;
+        case OptimizerType::LBFGS: return LineSearchPolicy::WeakWolfe;
+        default: return LineSearchPolicy::Armijo;
+    }
+}
+
+inline bool line_search_policy_uses_wolfe(const LineSearchPolicy policy)
+{
+    return policy != LineSearchPolicy::Armijo;
+}
+
+inline const char* line_search_policy_name(const LineSearchPolicy policy)
+{
+    switch (policy)
+    {
+        case LineSearchPolicy::StrongWolfe: return "StrongWolfe";
+        case LineSearchPolicy::WeakWolfe: return "WeakWolfe";
+        default: return "Armijo";
+    }
 }
 
 /// Stop augmented-Lagrangian occupation inner loop when the total occupation change is small.
@@ -1485,6 +1515,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     const OptimizerType joint_type = config_.joint_optimizer;
     const bool joint_is_lbfgs = (joint_type == OptimizerType::LBFGS);
     const bool joint_is_adam  = (joint_type == OptimizerType::Adam);
+    const LineSearchPolicy joint_ls_policy = line_search_policy_for_optimizer(joint_type);
     EuclideanOptimizer joint_opt(joint_type, config_);
     joint_opt.init(packed_size);
 
@@ -1711,8 +1742,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
                         wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
         }
 
-        // Joint line search: Strong Wolfe for lbfgs only; Armijo for sd / cg / adam
-        // (see line_search_uses_strong_wolfe).
+        // Joint line search policy follows the optimizer:
+        //   CG -> strong Wolfe, LBFGS -> weak Wolfe, others -> Armijo.
         const double alpha_init = (joint_is_lbfgs || joint_is_adam)
                                       ? 1.0
                                       : config_.line_search_alpha_init;
@@ -1724,7 +1755,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         bool ls_success = false;
         int joint_ls_trials = 0;
         int joint_n_feval = 0;
-        const bool joint_use_sw = line_search_uses_strong_wolfe(joint_type);
+        const bool joint_use_wolfe = line_search_policy_uses_wolfe(joint_ls_policy);
 
         std::vector<double> occ_flat_new;
         std::vector<double> params_new(params.size());
@@ -1795,7 +1826,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             return total_energy(occ_flat_new, wfc);
         };
 
-        if (joint_use_sw)
+        if (joint_use_wolfe)
         {
             auto phi_joint = [&](double step) -> std::pair<double, double> {
                 std::vector<double> g_params_t;
@@ -1805,13 +1836,16 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 return {E_t, dd_t};
             };
 
-            const LineSearchResult sw_result
-                = strong_wolfe_line_search(phi_joint, E, dd_total, alpha_init, c1, config_.line_search_c2,
-                    config_.line_search_max_iter, config_.line_search_max_zoom);
-            alpha = sw_result.step;
-            E_new = sw_result.f_new;
-            ls_success = sw_result.success;
-            joint_n_feval = sw_result.n_feval;
+            const LineSearchResult wolfe_result
+                = (joint_ls_policy == LineSearchPolicy::StrongWolfe)
+                    ? strong_wolfe_line_search(phi_joint, E, dd_total, alpha_init, c1, config_.line_search_c2,
+                          config_.line_search_max_iter, config_.line_search_max_zoom)
+                    : weak_wolfe_line_search(phi_joint, E, dd_total, alpha_init, c1, config_.line_search_c2,
+                          config_.line_search_max_iter, config_.line_search_max_zoom);
+            alpha = wolfe_result.step;
+            E_new = wolfe_result.f_new;
+            ls_success = wolfe_result.success;
+            joint_n_feval = wolfe_result.n_feval;
 
             if (step_orbitals)
             {
@@ -1851,10 +1885,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         if (ls_success)
         {
-            if (joint_use_sw)
+            if (joint_use_wolfe)
             {
                 GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
-                    << "  line search (joint StrongWolfe): alpha_init=" << std::scientific << joint_ls_alpha0
+                    << "  line search (joint " << line_search_policy_name(joint_ls_policy) << "): alpha_init="
+                    << std::scientific << joint_ls_alpha0
                     << " step=" << alpha << " n_feval=" << joint_n_feval << "  E0=" << E
                     << " E1=" << E_new << "  dd=" << dd_total << "  c1=" << std::defaultfloat << c1
                     << " c2=" << config_.line_search_c2
@@ -1895,9 +1930,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
             joint_opt.init(packed_size);
 
             GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
-                << "  line search (joint " << (joint_use_sw ? "StrongWolfe" : "Armijo") << ") failed: alpha_init="
+                << "  line search (joint " << line_search_policy_name(joint_ls_policy) << ") failed: alpha_init="
                 << std::scientific << joint_ls_alpha0 << " last_alpha=" << alpha;
-            if (joint_use_sw)
+            if (joint_use_wolfe)
             {
                 GlobalV::ofs_running << " n_feval=" << joint_n_feval;
             }
@@ -2267,15 +2302,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     return {Et, dd_trial};
                 };
 
-                const bool use_strong_wolfe = line_search_uses_strong_wolfe(config_.occ_optimizer);
+                const LineSearchPolicy occ_ls_policy
+                    = line_search_policy_for_optimizer(config_.occ_optimizer);
                 LineSearchResult ls;
-                if (use_strong_wolfe)
+                if (line_search_policy_uses_wolfe(occ_ls_policy))
                 {
-                    const double sw_alpha0 = config_.alm_bb_enabled
+                    const double wolfe_alpha0 = config_.alm_bb_enabled
                         ? bb_step.suggest(params, grad_params, config_.line_search_alpha_init)
                         : config_.line_search_alpha_init;
-                    ls = strong_wolfe_line_search(phi_at_step, L, dd, sw_alpha0, config_.line_search_c1,
-                        config_.line_search_c2, config_.line_search_max_iter, config_.line_search_max_zoom);
+                    ls = (occ_ls_policy == LineSearchPolicy::StrongWolfe)
+                        ? strong_wolfe_line_search(phi_at_step, L, dd, wolfe_alpha0, config_.line_search_c1,
+                            config_.line_search_c2, config_.line_search_max_iter, config_.line_search_max_zoom)
+                        : weak_wolfe_line_search(phi_at_step, L, dd, wolfe_alpha0, config_.line_search_c1,
+                            config_.line_search_c2, config_.line_search_max_iter, config_.line_search_max_zoom);
                 }
                 else
                 {
@@ -2290,11 +2329,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
 
                 {
-                    const char* const ls_name = use_strong_wolfe ? "StrongWolfe" : "Armijo";
+                    const char* const ls_name = line_search_policy_name(occ_ls_policy);
                     GlobalV::ofs_running << "      occ line search (ALM " << ls_name << "): alpha_init=" << std::scientific
                         << ls.alpha_init << " step=" << ls.step << " n_feval=" << ls.n_feval << "  L0=" << L
                         << " L1=" << ls.f_new << " dd=" << dd;
-                    if (!use_strong_wolfe)
+                    if (occ_ls_policy == LineSearchPolicy::Armijo)
                     {
                         GlobalV::ofs_running << "  c1=" << std::defaultfloat << config_.line_search_c1
                             << " rho=" << config_.line_search_rho;
@@ -2317,7 +2356,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 if (!ls.success)
                 {
                     GlobalV::ofs_running << "      ALM occ inner: "
-                                         << (use_strong_wolfe ? "Strong Wolfe" : "Armijo")
+                                         << line_search_policy_name(occ_ls_policy)
                                          << " line search failed at inner=" << (inner + 1)
                                          << "; accepting best-effort step (step=" << std::scientific
                                          << ls.step << ")" << std::defaultfloat << std::endl;
@@ -2372,12 +2411,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //   2. Use the configured optimizer (SD/CG/lbfgs/Adam) to compute
             //      a search direction d in the occupation space.
             //   3. Set initial alpha from rdmft_occ_ls_init_step and backtrack
-            //      until the projected step lowers E.
+            //      until the projected step monotonically lowers E.
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
             // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ;
-            // τ = occupation line-search scale: α₀ pre-step, accepted α post-step, rdmft_alpha_step on SD fallback).
+            // τ = occupation line-search scale: α0 pre-step, accepted alpha
+            // post-step, rdmft_alpha_step on SD fallback).
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
             GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
@@ -2409,7 +2449,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 E_prev = E;
                 have_E_prev = true;
 
-                // Bertsekas τ matches line-search scale: same α₀ as first Armijo trial.
+                // Bertsekas τ matches line-search scale: same alpha0 as first monotone trial.
                 const double alpha_pg0 = choose_occ_ls_alpha0(
                     config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
                 const double tau_bert_pre
@@ -2535,7 +2575,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                             = {true, alpha_try, E, E_trial, dd_line};
                         pg_first_ls_recorded = true;
                     }
-                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                    if (E_trial <= E)
                     {
                         pg_step_acc = alpha_try;
                         pg_dd_proj_acc = dd_proj;
@@ -2547,16 +2587,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 {
                     std::ostringstream pg_ls;
-                    pg_ls << "      occ line search (PG Armijo): alpha_init=" << std::scientific << alpha_pg0
+                    pg_ls << "      occ line search (PG Monotone): alpha_init=" << std::scientific << alpha_pg0
                           << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
                           << " E0=" << E << " E_trial=" << E_last_trial;
                     if (ls_success)
                     {
-                        pg_ls << " dTw=" << pg_dd_proj_acc
-                              << " E0+c1*dTw=" << E + config_.line_search_c1 * pg_dd_proj_acc;
+                        pg_ls << " dTw=" << pg_dd_proj_acc << " E_monotone_bound=" << E;
                     }
-                    pg_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
-                          << "  rho=" << config_.line_search_rho << (ls_success ? "  ok" : "  fail");
+                    pg_ls << "  rho=" << std::defaultfloat << config_.line_search_rho
+                          << (ls_success ? "  ok" : "  fail");
                     log_occ_inner_line(pg_ls.str());
                 }
 
@@ -2978,6 +3017,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const bool use_cg    = (opt_type == OptimizerType::ConjugateGradient);
     const bool use_lbfgs = (opt_type == OptimizerType::LBFGS);
     const bool use_adam  = (opt_type == OptimizerType::Adam);
+    const LineSearchPolicy orb_ls_policy = line_search_policy_for_optimizer(opt_type);
 
     energy_grad_->invalidate_hone_cache();
 
@@ -3196,7 +3236,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         // Directional derivative  dd = <grad, dir>  (must be negative)
         double dd = energy_grad_->s_inner_product(grad_wfc, dir);
 
-        // ---- Armijo line search along the retracted direction ----
+        // ---- Line search along the retracted direction ----
         // For step size alpha, we want  wfc_new = R_wfc(alpha * dir).
         // retract_orbitals(wfc, step, alpha) internally does
         //     wfc <- wfc - alpha * step,
@@ -3213,23 +3253,25 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         const double c1 = config_.line_search_c1;
         const double rho = config_.line_search_rho;
-        // Initial Armijo trial step for the orbital sub-problem.
+        // Initial trial step for the orbital sub-problem.
         // This path never uses the ALM Barzilai-Borwein seed; BB is limited
         // to optimize_occupations() under the augmented-Lagrangian constraint.
         // Initial line-search step size:
-        //   - SD/CG: use the configured Armijo start (small, because the
+        //   - SD/CG: use the configured start (small, because the
         //            gradient has arbitrary scale).
         //   - lbfgs:  start at 1.0 (the quasi-Newton step is already
-        //             properly scaled) and backtrack if needed.
+        //             properly scaled).
         //   - Adam:   start at 1.0 (Adam incorporates its own learning
         //             rate into the direction).
-        const double armijo_alpha_init = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
-        double alpha = armijo_alpha_init;
+        const double ls_alpha_init = (use_lbfgs || use_adam) ? 1.0 : config_.line_search_alpha_init;
+        double alpha = ls_alpha_init;
         double E_new = E;
         bool ls_success = false;
         int orb_ls_ntrial = 0;
+        int orb_ls_nfeval = 0;
         double orb_ls_alpha_last = 0.0;
         double orb_ls_E_last = E;
+        const bool orb_use_wolfe = line_search_policy_uses_wolfe(orb_ls_policy);
 
         // Save current wfc for line-search rollback
         for (int ik = 0; ik < nk; ++ik)
@@ -3237,44 +3279,99 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 for (int mu = 0; mu < nbs_local; ++mu)
                     wfc_save(ik, ib, mu) = wfc(ik, ib, mu);
 
-        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+        if (orb_use_wolfe)
         {
-            // Reset wfc from the saved copy
+            auto phi_orb = [&](double step) -> std::pair<double, double> {
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+                energy_grad_->retract_orbitals(wfc, neg_dir, step);
+                energy_grad_->invalidate_hone_cache();
+
+                std::vector<double> grad_occ_trial;
+                psi::Psi<TK> grad_wfc_trial;
+                const double E_trial = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
+                                                             wfc,
+                                                             grad_occ_trial,
+                                                             grad_wfc_trial);
+                energy_grad_->project_orbital_gradient(wfc, grad_wfc_trial);
+                const double dd_trial = energy_grad_->s_inner_product(grad_wfc_trial, dir);
+                return {E_trial, dd_trial};
+            };
+
+            const LineSearchResult wolfe_result
+                = (orb_ls_policy == LineSearchPolicy::StrongWolfe)
+                    ? strong_wolfe_line_search(phi_orb, E, dd, ls_alpha_init, c1, config_.line_search_c2,
+                          config_.line_search_max_iter, config_.line_search_max_zoom)
+                    : weak_wolfe_line_search(phi_orb, E, dd, ls_alpha_init, c1, config_.line_search_c2,
+                          config_.line_search_max_iter, config_.line_search_max_zoom);
+            alpha = wolfe_result.step;
+            E_new = wolfe_result.f_new;
+            ls_success = wolfe_result.success;
+            orb_ls_nfeval = wolfe_result.n_feval;
+            orb_ls_ntrial = wolfe_result.n_feval;
+            orb_ls_alpha_last = alpha;
+            orb_ls_E_last = E_new;
+
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
                         wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
-
-            // Retract along +alpha * dir  (i.e. -alpha * neg_dir)
             energy_grad_->retract_orbitals(wfc, neg_dir, alpha);
             energy_grad_->invalidate_hone_cache();
-
-            E_new = energy_grad_->compute_energy(occ_flat, wfc);
-            orb_ls_ntrial = ls + 1;
-            orb_ls_alpha_last = alpha;
-            orb_ls_E_last = E_new;
-            if (E_new <= E + c1 * alpha * dd)
+        }
+        else
+        {
+            for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
             {
-                ls_success = true;
-                break;
+                // Reset wfc from the saved copy
+                for (int ik = 0; ik < nk; ++ik)
+                    for (int ib = 0; ib < nb_local; ++ib)
+                        for (int mu = 0; mu < nbs_local; ++mu)
+                            wfc(ik, ib, mu) = wfc_save(ik, ib, mu);
+
+                // Retract along +alpha * dir  (i.e. -alpha * neg_dir)
+                energy_grad_->retract_orbitals(wfc, neg_dir, alpha);
+                energy_grad_->invalidate_hone_cache();
+
+                E_new = energy_grad_->compute_energy(occ_flat, wfc);
+                orb_ls_ntrial = ls + 1;
+                orb_ls_nfeval = orb_ls_ntrial;
+                orb_ls_alpha_last = alpha;
+                orb_ls_E_last = E_new;
+                if (E_new <= E + c1 * alpha * dd)
+                {
+                    ls_success = true;
+                    break;
+                }
+                alpha *= rho;
             }
-            alpha *= rho;
         }
 
         if (!ls_success)
         {
             {
                 const char* orb_opt = use_lbfgs ? "lbfgs" : (use_adam ? "adam" : (use_cg ? "cg" : "sd"));
-                const double armijo_rhs = E + c1 * orb_ls_alpha_last * dd;
                 std::ostringstream orb_ls;
-                orb_ls << "      orb line search (Armijo) failed: inner=" << (inner + 1) << "  optim=" << orb_opt
-                       << "  n_trial=" << orb_ls_ntrial;
+                orb_ls << "      orb line search (" << line_search_policy_name(orb_ls_policy)
+                       << ") failed: inner=" << (inner + 1) << "  optim=" << orb_opt
+                       << "  n_eval=" << orb_ls_nfeval;
                 orb_ls << std::scientific << "  E0=" << E << "  E_last_trial=" << orb_ls_E_last
-                       << "  dd=<G_R,dir>=" << dd << "  alpha_init=" << armijo_alpha_init
-                       << "  last_alpha=" << orb_ls_alpha_last << "  armijo_rhs=E0+c1*alpha*dd=" << armijo_rhs
-                       << "  margin(E_trial-rhs)=" << (orb_ls_E_last - armijo_rhs);
-                orb_ls << std::defaultfloat << "  c1=" << c1 << "  rho=" << rho
-                       << "  max_iter=" << config_.line_search_max_iter << "  gnorm=" << result.grad_norm;
+                       << "  dd=<G_R,dir>=" << dd << "  alpha_init=" << ls_alpha_init
+                       << "  last_alpha=" << orb_ls_alpha_last;
+                if (orb_ls_policy == LineSearchPolicy::Armijo)
+                {
+                    const double armijo_rhs = E + c1 * orb_ls_alpha_last * dd;
+                    orb_ls << "  armijo_rhs=E0+c1*alpha*dd=" << armijo_rhs
+                           << "  margin(E_trial-rhs)=" << (orb_ls_E_last - armijo_rhs);
+                    orb_ls << std::defaultfloat << "  c1=" << c1 << "  rho=" << rho;
+                }
+                else
+                {
+                    orb_ls << std::defaultfloat << "  c1=" << c1 << "  c2=" << config_.line_search_c2;
+                }
+                orb_ls << "  max_iter=" << config_.line_search_max_iter << "  gnorm=" << result.grad_norm;
                 if (dd >= 0.0)
                 {
                     orb_ls << "  [dd>=0: not a descent direction along dir]";
@@ -3292,7 +3389,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             {
                 if (orb_after_ls_retry)
                 {
-                    GlobalV::ofs_running << "      orb inner: Armijo failed again after SD recovery; "
+                    GlobalV::ofs_running << "      orb inner: " << line_search_policy_name(orb_ls_policy)
+                                         << " failed again after SD recovery; "
                                             "stopping orbital inner loop."
                                          << std::endl;
                     result.iterations = inner + 1;
@@ -3305,7 +3403,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 // Any CG line-search failure: drop CG memory and retry next inner
                 // iteration along pure steepest descent (-G_R), including the
                 // first inner (restart==true) where we previously exited early.
-                GlobalV::ofs_running << "      orb inner: Armijo line search failed for CG; "
+                GlobalV::ofs_running << "      orb inner: " << line_search_policy_name(orb_ls_policy)
+                                     << " line search failed for CG; "
                                         "falling back to steepest descent next inner."
                                      << std::endl;
                 prev_gnorm2 = 0.0;
@@ -3324,7 +3423,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             {
                 if (orb_after_ls_retry)
                 {
-                    GlobalV::ofs_running << "      orb inner: Armijo failed again after optimiser reset "
+                    GlobalV::ofs_running << "      orb inner: " << line_search_policy_name(orb_ls_policy)
+                                         << " failed again after optimiser reset "
                                             "(steepest-descent recovery); stopping orbital inner loop."
                                          << std::endl;
                     result.iterations = inner + 1;

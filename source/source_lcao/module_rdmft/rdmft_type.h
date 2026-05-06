@@ -168,15 +168,15 @@ struct RDMFTConfig
     OccParamType occ_param = OccParamType::CosineSq;
     ConstraintMethod constraint_method = ConstraintMethod::AugmentedLagrangian;
 
-    /// ALM occupation inner: Strong Wolfe line search if occ_optimizer is LBFGS, else Armijo.
+    /// ALM occupation inner: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
-    /// Alternating orbital inner: Armijo only (all optimiser types).
+    /// Alternating orbital inner: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: Strong Wolfe if joint_optimizer is LBFGS, else Armijo.
+    /// Joint line search: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
     OptimizerType joint_optimizer = OptimizerType::LBFGS;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
@@ -220,7 +220,9 @@ struct RDMFTConfig
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 20;
-    /// Curvature coefficient for Strong Wolfe: |g(alpha)| <= c2 * |g0|.
+    /// Curvature coefficient for Wolfe conditions:
+    ///   strong Wolfe (CG): |g(alpha)| <= c2 * |g0|
+    ///   weak Wolfe (LBFGS): g(alpha) >= c2 * g0
     /// Typical: 0.9 (lbfgs), smaller for nonlinear CG (e.g. 0.1).
     double line_search_c2 = 0.9;
     /// Zoom iteration cap in `strong_wolfe_line_search` (Nocedal & Wright zoom).
