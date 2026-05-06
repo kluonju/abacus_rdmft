@@ -626,7 +626,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
         rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
-        rdmft_config.print_elk_evalsv = inp.rdmft_print_elk_evalsv;
+        rdmft_config.print_eval = inp.rdmft_print_eval;
         rdmft_config.occ_entropy_gamma = inp.rdmft_occ_entropy_gamma;
         if (rdmft_config.xc_type != rdmft::XCFunctionalType::HF)
         {

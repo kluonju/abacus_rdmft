@@ -1592,7 +1592,7 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_print_elk_evalsv");
+        Input_Item item("rdmft_print_eval");
         item.annotation = "Print ELK-style RDMFT occupation eigenvalues ε_ik after optimisation (expensive)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Boolean";
@@ -1603,7 +1603,7 @@ void ReadInput::item_others()
         item.default_value = "false";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_bool(input.rdmft_print_elk_evalsv);
+        read_sync_bool(input.rdmft_print_eval);
         this->add_item(item);
     }
     {

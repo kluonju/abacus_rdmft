@@ -665,7 +665,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         add_kv(keys, vals, "line_search_c2", as_sci(cfg.line_search_c2));
         add_kv(keys, vals, "line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
         add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
-        add_kv(keys, vals, "rdmft_print_elk_evalsv", cfg.print_elk_evalsv ? "true" : "false");
+        add_kv(keys, vals, "rdmft_print_eval", cfg.print_eval ? "true" : "false");
         emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
     }
 
@@ -1375,7 +1375,7 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
-    if (config_.print_elk_evalsv)
+    if (config_.print_eval)
     {
         print_elk_style_evalsv(occ_flat, wfc);
     }
@@ -2119,7 +2119,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     print_rdmft_outer_energy_stdout(last_result_.converged, E);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
-    if (config_.print_elk_evalsv)
+    if (config_.print_eval)
     {
         print_elk_style_evalsv(occ_flat, wfc);
     }
