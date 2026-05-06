@@ -1,22 +1,27 @@
 // =============================================================================
-// Unit tests for the Spectral Projected Gradient (SPG) occupation optimisation
-// path in RDMFT (used by both `projected_gradient` and `active_set` constraint
-// methods, which now route to the same SPG core).
+// Unit tests for projected-gradient and active-set occupation optimization
+// methods in RDMFT.
 //
 // The RDMFT solver's full `optimize_occupations()` cannot be exercised in a
 // unit test because it depends on EnergyGradient<> (which requires LCAO
-// infrastructure). These tests therefore reproduce the same SPG algorithmic
-// flow (Birgin-Martinez-Raydan, SIOPT 2000; monotone Armijo along the spectral
-// projected direction) on a toy problem:
+// infrastructure). These tests therefore reproduce the same algorithmic flow
+// on a toy problem:
 //
-//     E(n) = sum_i n_i * eps_i,
-//     subject to  sum_i w_i n_i = N_e,  0 <= n_i <= 1.
+//     E(n) = sum_i n_i * eps_i   +   penalty(sum_i n_i - N_e)
 //
-// The exact minimum is obtained by greedily filling from lowest energy. We
-// verify that the SPG runner
-//   (a) converges to this minimum,
-//   (b) satisfies the electron-number constraint at convergence,
-//   (c) keeps all n_i in [0, 1].
+// where eps_i are fixed band energies and penalty is either the augmented
+// Lagrangian or (for PG/AS) the box-constraint is handled implicitly.
+//
+// The toy problem has an exact analytic minimum whose occupation numbers are
+// obtained by greedily filling from lowest energy. We verify that both PG and
+// AS methods:
+//   (a) converge to this minimum,
+//   (b) satisfy sum_i n_i = N_e at convergence,
+//   (c) keep all n_i in [0, 1].
+//
+// Additionally we test that the methods accept the configured optimizer type
+// (SD / CG / LBFGS / Adam) and that the active-set restart logic is triggered
+// when the active-set composition changes.
 // =============================================================================
 
 #include "gtest/gtest.h"
@@ -26,7 +31,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstddef>
 #include <vector>
 
 using namespace rdmft;
@@ -125,51 +129,25 @@ ToyOccProblem make_6band_frac(double Ne = 3.5)
     return p;
 }
 
-double toy_spg_r_inf(const std::vector<double>& occ,
-                     const std::vector<double>& grad,
-                     OccupationConstraint& c)
-{
-    std::vector<double> trial(occ.size());
-    for (std::size_t i = 0; i < occ.size(); ++i)
-    {
-        trial[i] = occ[i] - grad[i];
-    }
-    c.project(trial);
-    double linf = 0.0;
-    for (std::size_t i = 0; i < occ.size(); ++i)
-    {
-        linf = std::max(linf, std::abs(occ[i] - trial[i]));
-    }
-    return linf;
-}
-
 // ---------------------------------------------------------------------------
-// Run the Spectral Projected Gradient optimisation on the toy problem.
-// Mirrors rdmft_solver.cpp's optimize_occupations SPG block (the case that
-// handles both ConstraintMethod::ProjectedGradient and ConstraintMethod::ActiveSet).
+// Run the projected-gradient optimization loop on the toy problem.
+// Mirrors rdmft_solver.cpp's optimize_occupations / ProjectedGradient case.
 // ---------------------------------------------------------------------------
-struct SPGRunner
+struct PGRunner
 {
     ToyOccProblem prob;
     RDMFTConfig   config;
-    ConstraintMethod method = ConstraintMethod::ProjectedGradient;
     mutable std::vector<double> energy_history;
 
-    // Returns final energy after at most max_iter SPG iterations.
+    // Returns final occupations and energy after at most max_iter iterations.
     double run(std::vector<double>& occ, int max_iter = 200) const
     {
-        OccupationConstraint constraint(method, prob.Ne, prob.wk, prob.nb);
+        OccupationConstraint constraint(
+            ConstraintMethod::ProjectedGradient,
+            prob.Ne, prob.wk, prob.nb);
 
-        // SPG safeguarding constants (BMR Algorithm 2.1).
-        const double alpha_min = 1e-10;
-        const double alpha_max = 1e10;
-        const double rho = (config.line_search_rho > 0.0 && config.line_search_rho < 1.0)
-                               ? config.line_search_rho : 0.5;
-        const double c1 = config.line_search_c1;
-
-        std::vector<double> occ_prev;
-        std::vector<double> grad_prev;
-        bool have_prev = false;
+        EuclideanOptimizer opt(config.occ_optimizer, config);
+        opt.init(prob.nb);
 
         double E = 0.0;
 
@@ -179,90 +157,198 @@ struct SPGRunner
             energy_history.push_back(E);
             auto grad = prob.gradient(occ);
 
-            const double r_pre = toy_spg_r_inf(occ, grad, constraint);
-            if (r_pre <= config.occ_proj_tol)
-            {
-                return E;
-            }
+            // Compute search direction.
+            std::vector<double> dir;
+            opt.compute_direction(grad, dir);
 
-            // Spectral (BB1) step.
-            double alpha_bb;
-            if (have_prev)
-            {
-                double ss = 0.0, sy = 0.0;
-                for (int i = 0; i < prob.nb; ++i)
-                {
-                    const double s = occ[i] - occ_prev[i];
-                    const double y = grad[i] - grad_prev[i];
-                    ss += s * s;
-                    sy += s * y;
-                }
-                alpha_bb = (sy > 1e-30 && std::isfinite(ss)) ? ss / sy : 1.0;
-                if (!std::isfinite(alpha_bb) || alpha_bb <= 0.0) alpha_bb = 1.0;
-            }
-            else
-            {
-                double g_inf = 0.0;
-                for (double g : grad) g_inf = std::max(g_inf, std::abs(g));
-                alpha_bb = 1.0 / std::max(1.0, g_inf);
-            }
-            alpha_bb = std::min(alpha_max, std::max(alpha_min, alpha_bb));
-
-            // Spectral projected direction d = P(n - α_BB g) - n.
-            std::vector<double> trial_proj(prob.nb);
-            for (int i = 0; i < prob.nb; ++i) trial_proj[i] = occ[i] - alpha_bb * grad[i];
-            constraint.project(trial_proj);
-
-            std::vector<double> dir(prob.nb);
             double dd = 0.0;
-            for (int i = 0; i < prob.nb; ++i)
-            {
-                dir[i] = trial_proj[i] - occ[i];
-                dd += grad[i] * dir[i];
-            }
+            for (int i = 0; i < prob.nb; ++i) dd += dir[i] * grad[i];
+            if (dd >= 0.0)
+                for (int i = 0; i < prob.nb; ++i) dir[i] = -grad[i];
 
-            const double f_ref = E;
-
-            // Monotone Armijo backtracking along the convex segment n + λ d.
-            // Each n + λ d is a convex combination of two feasible points,
-            // hence feasible without re-projection.
+            // Armijo backtracking with projection.
             const std::vector<double> occ_old = occ;
-            double lambda = 1.0;
-            double lambda_acc = 0.0;
-            std::vector<double> occ_trial(prob.nb);
+            double alpha = config.line_search_alpha_init;
             bool success = false;
+            std::vector<double> occ_trial;
+            const double proj_tol = 1e-6;
+
             for (int ls = 0; ls < config.line_search_max_iter; ++ls)
             {
-                for (int i = 0; i < prob.nb; ++i) occ_trial[i] = occ[i] + lambda * dir[i];
-                const double E_trial = prob.energy(occ_trial);
-                if (E_trial <= f_ref + c1 * lambda * dd)
-                {
-                    success = true;
-                    lambda_acc = lambda;
-                    break;
-                }
-                lambda *= rho;
-            }
+                occ_trial = occ;
+                for (int i = 0; i < prob.nb; ++i)
+                    occ_trial[i] += alpha * dir[i];
+                constraint.project(occ_trial);
 
-            occ_prev = occ;
-            grad_prev = grad;
-            have_prev = true;
+                // Reject if the projection failed to satisfy the constraint.
+                if (std::abs(constraint.constraint_violation(occ_trial)) > proj_tol)
+                {
+                    alpha *= config.line_search_rho;
+                    continue;
+                }
+
+                double dd_proj = 0.0;
+                for (int i = 0; i < prob.nb; ++i)
+                    dd_proj += grad[i] * (occ_trial[i] - occ[i]);
+
+                if (dd_proj >= 0.0) { alpha *= config.line_search_rho; continue; }
+
+                double E_trial = prob.energy(occ_trial);
+                if (E_trial <= E + config.line_search_c1 * dd_proj)
+                {
+                    success = true; break;
+                }
+                alpha *= config.line_search_rho;
+            }
 
             if (success)
             {
                 occ = occ_trial;
             }
-            // else: zero step; SPG line search in floating point can fail only
-            // for degenerate dd ≈ 0 -- treat as a stationary iterate.
-
-            const double E_post = prob.energy(occ);
-            const auto grad_post = prob.gradient(occ);
-            const double r_post = toy_spg_r_inf(occ, grad_post, constraint);
-            if (r_post <= config.occ_proj_tol)
+            else
             {
-                E = E_post;
-                return E;
+                // Mirror the solver: reject unchecked fallback steps so the
+                // objective cannot increase because Armijo failed.
+                occ = occ_old;
+                opt.init(prob.nb);
             }
+
+            // Update optimizer history.
+            std::vector<double> step_vec(prob.nb);
+            for (int i = 0; i < prob.nb; ++i) step_vec[i] = occ[i] - occ_old[i];
+            auto new_grad = prob.gradient(occ);
+            opt.update(new_grad, step_vec);
+
+            // Convergence on step size.
+            double sum_dn = 0.0;
+            for (int i = 0; i < prob.nb; ++i) sum_dn += std::abs(step_vec[i]);
+            if (sum_dn < config.rdmft_occ_tol && sum_dn > 1e-20) break;
+        }
+
+        return E;
+    }
+};
+
+// ---------------------------------------------------------------------------
+// Run the active-set optimization loop on the toy problem.
+// Mirrors rdmft_solver.cpp's optimize_occupations / ActiveSet case.
+// ---------------------------------------------------------------------------
+struct ASRunner
+{
+    ToyOccProblem prob;
+    RDMFTConfig   config;
+
+    double run(std::vector<double>& occ, int max_iter = 200) const
+    {
+        OccupationConstraint constraint(
+            ConstraintMethod::ActiveSet,
+            prob.Ne, prob.wk, prob.nb);
+
+        EuclideanOptimizer opt(config.occ_optimizer, config);
+        opt.init(prob.nb);
+
+        int prev_n_active = -1;
+        double E = 0.0;
+
+        for (int iter = 0; iter < max_iter; ++iter)
+        {
+            E = prob.energy(occ);
+            auto grad = prob.gradient(occ);
+
+            // Identify active set and apply modification.
+            auto as_info = constraint.identify_active_set(occ, grad);
+            std::vector<double> grad_mod(grad);
+            constraint.apply_active_set(as_info, grad_mod);
+
+            // Count active constraints; restart optimizer if changed.
+            int n_active = 0;
+            for (int idx = 0; idx < prob.nb; ++idx)
+                if (!as_info.is_free[idx]) ++n_active;
+
+            if (n_active != prev_n_active && iter > 0)
+                opt.init(prob.nb);
+            prev_n_active = n_active;
+
+            // Compute direction on modified gradient.
+            std::vector<double> dir;
+            opt.compute_direction(grad_mod, dir);
+            for (int idx = 0; idx < prob.nb; ++idx)
+                if (!as_info.is_free[idx]) dir[idx] = 0.0;
+
+            double dd = 0.0;
+            for (int i = 0; i < prob.nb; ++i) dd += dir[i] * grad_mod[i];
+            if (dd >= 0.0)
+            {
+                for (int i = 0; i < prob.nb; ++i) dir[i] = -grad_mod[i];
+                for (int idx = 0; idx < prob.nb; ++idx)
+                    if (!as_info.is_free[idx]) dir[idx] = 0.0;
+            }
+
+            const std::vector<double> occ_old = occ;
+            double alpha = config.line_search_alpha_init;
+            bool success = false;
+            std::vector<double> occ_trial;
+            const double proj_tol = 1e-6;
+
+            for (int ls = 0; ls < config.line_search_max_iter; ++ls)
+            {
+                occ_trial = occ;
+                for (int i = 0; i < prob.nb; ++i)
+                    occ_trial[i] += alpha * dir[i];
+                for (auto& n : occ_trial) n = std::max(0.0, std::min(1.0, n));
+                constraint.project(occ_trial);
+
+                // Reject if the projection failed to satisfy the constraint.
+                if (std::abs(constraint.constraint_violation(occ_trial)) > proj_tol)
+                {
+                    alpha *= config.line_search_rho;
+                    continue;
+                }
+
+                double dd_proj = 0.0;
+                for (int i = 0; i < prob.nb; ++i)
+                    dd_proj += grad_mod[i] * (occ_trial[i] - occ[i]);
+
+                if (dd_proj >= 0.0) { alpha *= config.line_search_rho; continue; }
+
+                double E_trial = prob.energy(occ_trial);
+                if (E_trial <= E + config.line_search_c1 * dd_proj)
+                {
+                    success = true; break;
+                }
+                alpha *= config.line_search_rho;
+            }
+
+            if (success)
+            {
+                occ = occ_trial;
+            }
+            else
+            {
+                occ = occ_old;
+                for (int i = 0; i < prob.nb; ++i)
+                    occ[i] -= config.line_search_alpha_init * grad_mod[i];
+                for (auto& n : occ) n = std::max(0.0, std::min(1.0, n));
+                constraint.project(occ);
+                opt.init(prob.nb);
+                prev_n_active = -1;
+            }
+
+            // Update optimizer history.
+            std::vector<double> step_vec(prob.nb);
+            for (int i = 0; i < prob.nb; ++i) step_vec[i] = occ[i] - occ_old[i];
+
+            auto new_grad = prob.gradient(occ);
+            auto new_as_info = constraint.identify_active_set(occ, new_grad);
+            std::vector<double> new_grad_mod(new_grad);
+            constraint.apply_active_set(new_as_info, new_grad_mod);
+            for (int idx = 0; idx < prob.nb; ++idx)
+                if (!new_as_info.is_free[idx]) new_grad_mod[idx] = 0.0;
+            opt.update(new_grad_mod, step_vec);
+
+            double sum_dn = 0.0;
+            for (int i = 0; i < prob.nb; ++i) sum_dn += std::abs(step_vec[i]);
+            if (sum_dn < config.rdmft_occ_tol && sum_dn > 1e-20) break;
         }
 
         return E;
@@ -290,20 +376,165 @@ std::vector<double> initial_occ_uniform(int nb, double Ne)
 // Tests
 // =============================================================================
 
-class SPGOccupationTest : public ::testing::Test {};
+class PGOptimizerTest : public ::testing::Test {};
+class ASOptimizerTest : public ::testing::Test {};
 
 // ---------------------------------------------------------------------------
-// SPG converges on the 4-band integer-fill problem.
+// PG: convergence with steepest descent
 // ---------------------------------------------------------------------------
-TEST_F(SPGOccupationTest, converges_4band)
+TEST_F(PGOptimizerTest, SD_converges_4band)
 {
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
-    cfg.occ_proj_tol = 1e-10;
+    cfg.occ_optimizer = OptimizerType::SteepestDescent;
 
-    SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    double E = runner.run(occ, 500);
+
+    // Verify energy is close to reference.
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
+
+    // Verify constraint: sum_i n_i = Ne.
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+
+    // Verify box constraint.
+    for (auto n : occ)
+    {
+        EXPECT_GE(n, -1e-12);
+        EXPECT_LE(n, 1.0 + 1e-12);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// PG: convergence with conjugate gradient
+// ---------------------------------------------------------------------------
+TEST_F(PGOptimizerTest, CG_converges_4band)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
     double E = runner.run(occ, 200);
+
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+}
+
+// ---------------------------------------------------------------------------
+// PG: convergence with lbfgs
+// ---------------------------------------------------------------------------
+TEST_F(PGOptimizerTest, LBFGS_converges_4band)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::LBFGS;
+    cfg.lbfgs_memory = 5;
+    cfg.line_search_alpha_init = 1.0;
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    double E = runner.run(occ, 100);
+
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+}
+
+// ---------------------------------------------------------------------------
+// PG: fractional occupations (N_e not integer, optimal solution has n < 1)
+// ---------------------------------------------------------------------------
+TEST_F(PGOptimizerTest, CG_converges_fractional)
+{
+    auto prob = make_6band_frac(3.5);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    double E = runner.run(occ, 300);
+
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-4);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+}
+
+// ---------------------------------------------------------------------------
+// PG: constraint satisfied at convergence (independent of optimizer type)
+// ---------------------------------------------------------------------------
+TEST_F(PGOptimizerTest, constraint_satisfied_after_SD)
+{
+    auto prob = make_4band(1.5);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::SteepestDescent;
+
+    cfg.rdmft_occ_tol = 1e-6;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    runner.run(occ, 200);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+    for (auto n : occ)
+    {
+        EXPECT_GE(n, -1e-10);
+        EXPECT_LE(n, 1.0 + 1e-10);
+    }
+}
+
+TEST_F(PGOptimizerTest, energy_is_monotone_nonincreasing)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+    cfg.line_search_alpha_init = 1.0;
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    runner.run(occ, 200);
+
+    ASSERT_FALSE(runner.energy_history.empty());
+    for (size_t i = 1; i < runner.energy_history.size(); ++i)
+    {
+        EXPECT_LE(runner.energy_history[i], runner.energy_history[i - 1] + 1e-12);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// AS: convergence with steepest descent
+// ---------------------------------------------------------------------------
+TEST_F(ASOptimizerTest, SD_converges_4band)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::SteepestDescent;
+
+    cfg.rdmft_occ_tol = 1e-10;
+
+    ASRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    double E = runner.run(occ, 500);
 
     EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
 
@@ -319,19 +550,21 @@ TEST_F(SPGOccupationTest, converges_4band)
 }
 
 // ---------------------------------------------------------------------------
-// SPG: fractional electron count gives fractional minimiser.
+// AS: convergence with conjugate gradient
 // ---------------------------------------------------------------------------
-TEST_F(SPGOccupationTest, converges_fractional)
+TEST_F(ASOptimizerTest, CG_converges_4band)
 {
-    auto prob = make_6band_frac(3.5);
+    auto prob = make_4band(2.0);
     RDMFTConfig cfg;
-    cfg.occ_proj_tol = 1e-10;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
 
-    SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
+    cfg.rdmft_occ_tol = 1e-10;
+
+    ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
-    double E = runner.run(occ, 300);
+    double E = runner.run(occ, 200);
 
-    EXPECT_NEAR(E, prob.ref_energy(), 1e-4);
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
 
     double s = 0.0;
     for (auto n : occ) s += n;
@@ -339,17 +572,67 @@ TEST_F(SPGOccupationTest, converges_fractional)
 }
 
 // ---------------------------------------------------------------------------
-// SPG: constraint satisfied at convergence (non-integer Ne).
+// AS: convergence with lbfgs
 // ---------------------------------------------------------------------------
-TEST_F(SPGOccupationTest, constraint_satisfied)
+TEST_F(ASOptimizerTest, LBFGS_converges_4band)
 {
-    auto prob = make_4band(1.5);
+    auto prob = make_4band(2.0);
     RDMFTConfig cfg;
-    cfg.occ_proj_tol = 1e-6;
+    cfg.occ_optimizer = OptimizerType::LBFGS;
+    cfg.lbfgs_memory = 5;
+    cfg.line_search_alpha_init = 1.0;
+    cfg.rdmft_occ_tol = 1e-10;
 
-    SPGRunner runner{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
+    ASRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
-    runner.run(occ, 200);
+    double E = runner.run(occ, 100);
+
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+}
+
+// ---------------------------------------------------------------------------
+// AS: active set identification triggers optimizer restart
+// ---------------------------------------------------------------------------
+TEST_F(ASOptimizerTest, active_set_change_restarts_optimizer)
+{
+    // Use a problem where some bands start inside (0,1) and drift to boundaries.
+    auto prob = make_4band(1.0);   // only 1 electron -> 1 band full, rest empty
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::LBFGS;
+    cfg.lbfgs_memory = 5;
+
+    cfg.rdmft_occ_tol = 1e-9;
+
+    ASRunner runner{prob, cfg};
+    // Start uniformly (all free), expect active set to evolve.
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    double E = runner.run(occ, 300);
+
+    EXPECT_NEAR(E, prob.ref_energy(), 1e-5);
+
+    double s = 0.0;
+    for (auto n : occ) s += n;
+    EXPECT_NEAR(s, prob.Ne, 1e-8);
+}
+
+// ---------------------------------------------------------------------------
+// AS: constraint remains satisfied throughout (spot-check at end)
+// ---------------------------------------------------------------------------
+TEST_F(ASOptimizerTest, constraint_satisfied_after_CG)
+{
+    auto prob = make_6band_frac(2.8);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+
+    cfg.rdmft_occ_tol = 1e-6;
+
+    ASRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    runner.run(occ, 300);
 
     double s = 0.0;
     for (auto n : occ) s += n;
@@ -362,18 +645,19 @@ TEST_F(SPGOccupationTest, constraint_satisfied)
 }
 
 // ---------------------------------------------------------------------------
-// SPG with `ActiveSet` constraint method routes to the same SPG core and
-// reaches the same energy as `ProjectedGradient` (both are aliases).
+// Both PG and AS reach the same energy on the 4-band problem.
 // ---------------------------------------------------------------------------
-TEST_F(SPGOccupationTest, PG_and_AS_constraint_aliases_agree)
+TEST(OccOptimizerComparison, PG_and_AS_agree)
 {
     auto prob = make_4band(2.5);
 
     RDMFTConfig cfg;
-    cfg.occ_proj_tol = 1e-10;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
 
-    SPGRunner pg{prob, cfg, ConstraintMethod::ProjectedGradient, {}};
-    SPGRunner as{prob, cfg, ConstraintMethod::ActiveSet, {}};
+    cfg.rdmft_occ_tol = 1e-10;
+
+    PGRunner pg{prob, cfg};
+    ASRunner as{prob, cfg};
 
     auto occ_pg = initial_occ_uniform(prob.nb, prob.Ne);
     auto occ_as = occ_pg;
@@ -384,33 +668,6 @@ TEST_F(SPGOccupationTest, PG_and_AS_constraint_aliases_agree)
     EXPECT_NEAR(E_pg, prob.ref_energy(), 1e-5);
     EXPECT_NEAR(E_as, prob.ref_energy(), 1e-5);
     EXPECT_NEAR(E_pg, E_as, 1e-5);
-}
-
-// ---------------------------------------------------------------------------
-// Stress test: large initial gradient (toy analogue of n^alpha at n -> 0)
-// must not stall.  This is the regression scenario from the NiO logs that
-// motivated dropping the trust-region cap and the SD-fallback chain.
-// ---------------------------------------------------------------------------
-TEST_F(SPGOccupationTest, large_gradient_no_stall)
-{
-    ToyOccProblem p;
-    p.nb = 6;
-    p.Ne = 2.5;
-    p.eps = {-1.0e4, -5.0e3, 1.0e3, 5.0e3, 1.0e4, 2.0e4};
-    p.wk = {1.0};
-
-    RDMFTConfig cfg;
-    cfg.occ_proj_tol = 1e-8;
-    cfg.line_search_max_iter = 20;
-
-    SPGRunner runner{p, cfg, ConstraintMethod::ProjectedGradient, {}};
-    auto occ = initial_occ_uniform(p.nb, p.Ne);
-    double E = runner.run(occ, 200);
-
-    EXPECT_NEAR(E, p.ref_energy(), std::abs(p.ref_energy()) * 1e-6 + 1e-4);
-    double s = 0.0;
-    for (auto n : occ) s += n;
-    EXPECT_NEAR(s, p.Ne, 1e-8);
 }
 
 // ---------------------------------------------------------------------------
@@ -432,7 +689,10 @@ TEST(RdmftConfigTest, constraint_method_roundtrip)
 TEST(RdmftConfigTest, occ_optimizer_type_roundtrip)
 {
     RDMFTConfig cfg;
-    for (OptimizerType t : {OptimizerType::SteepestDescent, OptimizerType::ConjugateGradient})
+    for (OptimizerType t : {OptimizerType::SteepestDescent,
+                             OptimizerType::ConjugateGradient,
+                             OptimizerType::LBFGS,
+                             OptimizerType::Adam})
     {
         cfg.occ_optimizer = t;
         EXPECT_EQ(cfg.occ_optimizer, t);

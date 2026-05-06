@@ -168,26 +168,13 @@ class OccupationConstraint
         mu_ = std::min(mu_ * factor, max_mu);
     }
 
-    /// Project occupations onto the feasible set {0 <= n_ik <= 1, sum_k w_k sum_i
-    /// n_ik = N_e}.  This is the standard Euclidean foot point: n_ik =
-    /// clip(x_ik - lambda * w_k, 0, 1) with a single dual lambda solved by
-    /// bisection.  We must NOT pre-clip x to [0, 1] (which is a different,
-    /// non-Euclidean, feasibility repair); the box clip is part of the dual
-    /// map below.
+    /// Project occupations onto feasible set [0,1] with electron number constraint
     void project(std::vector<double>& occ) const
     {
+        for (auto& n : occ)
+            n = std::max(0.0, std::min(1.0, n));
         rescale_to_nel(occ);
     }
-
-    /// Enforce \(\sum_k w_k n = N_e\) while keeping non-adjustable indices at KS
-    /// `occ_ks` (clipped to [0,1]). Adjustable indices start from `occ` (after caller's
-    /// binary/perturb/uniform edits) and are shifted by a single dual \(\lambda\) per
-    /// \(n_{ik} \leftarrow \mathrm{clip}(n^{(0)}_{ik}-\lambda w_k,0,1)\) on those indices only.
-    /// Use for RDMFT init so bands outside the Fermi window are not washed out by global
-    /// `project()` / `rescale_to_nel` when `rdmft_nelec_delta` changes the electron target.
-    void project_preserving_ks_on_fixed(std::vector<double>& occ,
-                                        const std::vector<double>& occ_ks,
-                                        const std::vector<bool>& adjustable) const;
 
     /// Active set method: identify active constraints and solve reduced problem
     struct ActiveSetInfo
@@ -274,13 +261,9 @@ class OccupationConstraint
     void rescale_to_nel(std::vector<double>& occ) const
     {
         assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
+        for (auto& n : occ)
+            n = std::max(0.0, std::min(1.0, n));
 
-        // Standard box-and-equality Euclidean projector: n_ik = clip(x_ik -
-        // lambda * w_k, 0, 1) with a single dual lambda solved by bisection
-        // (the box clip is folded *inside* the dual map, NOT applied before).
-        // Pre-clipping x then redistributing gives a different, non-Euclidean
-        // foot point and breaks SPG monotonicity (Birgin-Martinez-Raydan,
-        // SIOPT 2000, Section 2).
         const double target = n_electrons_;
         const double tol_sum = 1e-12;
         const std::vector<double> occ_tmp(occ);
@@ -301,20 +284,7 @@ class OccupationConstraint
 
         const double sum0 = weighted_sum_from_lambda(0.0);
         if (std::abs(sum0 - target) < tol_sum)
-        {
-            // lambda = 0 already satisfies the equality; still apply the box
-            // clip n_ik = clip(occ_tmp_ik, 0, 1) so the input is mapped onto
-            // the feasible set.  Returning without writing would leave
-            // out-of-box inputs untouched, which has been the source of
-            // negative / >1 RDMFT occupations on the first SPG step.
-            for (int ik = 0; ik < nk_; ++ik)
-                for (int i = 0; i < nbands_; ++i)
-                {
-                    occ[ik * nbands_ + i]
-                        = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i]));
-                }
             return;
-        }
 
         double lam_lo = 0.0;
         double lam_hi = 0.0;
@@ -398,162 +368,6 @@ class OccupationConstraint
     double lambda_;
     double mu_;
 };
-
-inline void OccupationConstraint::project_preserving_ks_on_fixed(std::vector<double>& occ,
-                                                                   const std::vector<double>& occ_ks,
-                                                                   const std::vector<bool>& adjustable) const
-{
-    const int ntot = nk_ * nbands_;
-    assert(static_cast<int>(occ.size()) == ntot && static_cast<int>(occ_ks.size()) == ntot);
-    assert(adjustable.size() == static_cast<size_t>(ntot));
-
-    std::vector<double> occ_tmp(static_cast<size_t>(ntot), 0.0);
-    int n_adj = 0;
-    for (int idx = 0; idx < ntot; ++idx)
-    {
-        if (adjustable[idx])
-        {
-            occ_tmp[idx] = std::max(0.0, std::min(1.0, occ[idx]));
-            ++n_adj;
-        }
-        else
-        {
-            occ_tmp[idx] = std::max(0.0, std::min(1.0, occ_ks[idx]));
-            occ[idx] = occ_tmp[idx];
-        }
-    }
-
-    if (n_adj == 0)
-    {
-        if (std::abs(weighted_occupation_sum(occ) - n_electrons_) > 1e-8)
-        {
-            GlobalV::ofs_running << "WARNING: RDMFT project_preserving_ks_on_fixed: no adjustable init bands; "
-                                     "falling back to global project()."
-                                 << std::endl;
-            project(occ);
-        }
-        return;
-    }
-
-    auto weighted_sum_at_lambda = [&](double lambda) {
-        double sum = 0.0;
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            const double w = kweights_[ik];
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const int idx = ik * nbands_ + ib;
-                double ni;
-                if (adjustable[idx])
-                {
-                    ni = std::max(0.0, std::min(1.0, occ_tmp[idx] - lambda * w));
-                }
-                else
-                {
-                    ni = occ_tmp[idx];
-                }
-                sum += w * ni;
-            }
-        }
-        return sum;
-    };
-
-    const double target = n_electrons_;
-    const double tol_sum = 1e-11;
-    const double sum0 = weighted_sum_at_lambda(0.0);
-    if (std::abs(sum0 - target) < tol_sum)
-    {
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            const double w = kweights_[ik];
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const int idx = ik * nbands_ + ib;
-                if (adjustable[idx])
-                {
-                    occ[idx] = std::max(0.0, std::min(1.0, occ_tmp[idx]));
-                }
-            }
-        }
-        return;
-    }
-
-    double lam_lo = 0.0;
-    double lam_hi = 0.0;
-    double sum_lo = sum0;
-    double sum_hi = sum0;
-    const double expand_max = 1e12;
-
-    if (sum0 > target)
-    {
-        lam_hi = 1.0;
-        sum_hi = weighted_sum_at_lambda(lam_hi);
-        while (sum_hi > target && lam_hi < expand_max)
-        {
-            lam_hi *= 2.0;
-            sum_hi = weighted_sum_at_lambda(lam_hi);
-        }
-    }
-    else
-    {
-        lam_lo = -1.0;
-        sum_lo = weighted_sum_at_lambda(lam_lo);
-        while (sum_lo < target && std::abs(lam_lo) < expand_max)
-        {
-            lam_lo *= 2.0;
-            sum_lo = weighted_sum_at_lambda(lam_lo);
-        }
-    }
-
-    if (!(sum_lo >= target && sum_hi <= target))
-    {
-        const double infeas_hi = weighted_sum_at_lambda(-expand_max);
-        const double infeas_lo = weighted_sum_at_lambda(expand_max);
-        GlobalV::ofs_running << "WARNING: RDMFT project_preserving_ks_on_fixed: cannot bracket lambda; "
-                                "falling back to global project(). target="
-                             << target << " reachable_range=[" << infeas_lo << ", " << infeas_hi << "]"
-                             << std::endl;
-        occ = occ_ks;
-        for (auto& x : occ)
-            x = std::max(0.0, std::min(1.0, x));
-        project(occ);
-        return;
-    }
-
-    for (int it = 0; it < 100; ++it)
-    {
-        const double lam_mid = 0.5 * (lam_lo + lam_hi);
-        const double sum_mid = weighted_sum_at_lambda(lam_mid);
-        if (std::abs(sum_mid - target) < tol_sum)
-        {
-            lam_lo = lam_mid;
-            lam_hi = lam_mid;
-            break;
-        }
-        if (sum_mid > target)
-        {
-            lam_lo = lam_mid;
-        }
-        else
-        {
-            lam_hi = lam_mid;
-        }
-    }
-
-    const double lambda = 0.5 * (lam_lo + lam_hi);
-    for (int ik = 0; ik < nk_; ++ik)
-    {
-        const double w = kweights_[ik];
-        for (int ib = 0; ib < nbands_; ++ib)
-        {
-            const int idx = ik * nbands_ + ib;
-            if (adjustable[idx])
-            {
-                occ[idx] = std::max(0.0, std::min(1.0, occ_tmp[idx] - lambda * w));
-            }
-        }
-    }
-}
 
 
 /// Unconstrained occupation parameterization via sigmoid with adaptive shift.

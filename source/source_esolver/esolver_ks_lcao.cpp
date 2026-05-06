@@ -17,7 +17,6 @@
 #endif
 #ifdef __RDMFT
 #include "source_lcao/module_rdmft/rdmft.h"
-#include "source_lcao/module_rdmft/rdmft_restart_io.h"
 #include "source_lcao/module_rdmft/rdmft_solver.h"
 #endif
 #include "source_estate/module_charge/chgmixing.h" // use charge mixing, mohan add 20251006
@@ -576,42 +575,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             }
         }
 
-        // RDMFT electron target N_e (needed for restart validation and config)
-        double sum_wg = 0.0;
-        for (int ik = 0; ik < nk; ++ik)
-        {
-            for (int ib = 0; ib < nbands; ++ib)
-            {
-                sum_wg += this->pelec->wg(ik, ib);
-            }
-        }
-        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
-        const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
-        if (n_electrons <= 0.0)
-        {
-            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
-                                     "RDMFT electron target N_e must be positive. Check rdmft_nelec_use_input, "
-                                     "nelec, sum(wg), and rdmft_nelec_delta.");
-        }
-
-        bool loaded_rdmft_checkpoint = false;
-        if (GlobalC::restart.info_load.load_rdmft)
-        {
-            rdmft::read_rdmft_restart<TK>(this->pv,
-                                          nk,
-                                          nbands,
-                                          inp.nspin,
-                                          inp.gamma_only,
-                                          n_electrons,
-                                          inp.rdmft_functional,
-                                          occ_flat,
-                                          *this->psi);
-            loaded_rdmft_checkpoint = true;
-            GlobalV::ofs_running << "\n RDMFT: loaded restart checkpoint (occupations + wavefunctions) from restart/.\n"
-                                 << "        Occupation init mode is forced to ks for this run.\n"
-                                 << std::endl;
-        }
-
         // Build RDMFTConfig from input parameters
         rdmft::RDMFTConfig rdmft_config;
         rdmft_config.xc_type = rdmft::parse_xc_type(inp.rdmft_functional);
@@ -620,11 +583,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
         // Non-positive occ_maxiter would run zero PG/ALM/AS inner iterations; clamp to 1.
         rdmft_config.occ_maxiter = std::max(1, inp.rdmft_occ_maxiter);
-        if (loaded_rdmft_checkpoint)
-        {
-            rdmft_config.occ_init_mode = rdmft::OccInitMode::KS;
-        }
-        else if (inp.rdmft_occ_init_mode == "perturbed")
+        if (inp.rdmft_occ_init_mode == "perturbed")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
         else if (inp.rdmft_occ_init_mode == "binary")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Binary;
@@ -636,16 +595,24 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
+        rdmft_config.orb_energy_tol = inp.rdmft_orb_energy_tol;
+        rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
+        rdmft_config.occ_energy_tol = inp.rdmft_occ_energy_tol;
         rdmft_config.occ_grad_tol = inp.rdmft_occ_grad_tol;
-        rdmft_config.occ_proj_tol = inp.rdmft_occ_proj_tol;
         rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
+        if (inp.rdmft_occ_ls_init_step == "fixed")
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::FixedOne;
+        else if (inp.rdmft_occ_ls_init_step == "quad")
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::Quadratic;
+        else
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::BarzilaiBorwein;
+        rdmft_config.line_search_polynomial = inp.rdmft_line_search_polynomial;
         rdmft_config.line_search_c1 = inp.rdmft_line_search_c1;
         rdmft_config.line_search_c2 = inp.rdmft_line_search_c2;
-        rdmft_config.line_search_max_iter = std::max(1, inp.rdmft_line_search_max_iter);
-        rdmft_config.line_search_max_zoom = std::max(1, inp.rdmft_line_search_max_zoom);
+        rdmft_config.line_search_max_zoom = inp.rdmft_line_search_max_zoom;
         rdmft_config.alm_bb_enabled = inp.rdmft_alm_bb_enabled;
         if (inp.rdmft_alm_bb_mode == "bb1")
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::BB1;
@@ -655,6 +622,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             rdmft_config.alm_bb_mode = rdmft::BBStepMode::Alternate;
         rdmft_config.alm_bb_alpha_min = inp.rdmft_alm_bb_alpha_min;
         rdmft_config.alm_bb_alpha_max = inp.rdmft_alm_bb_alpha_max;
+        rdmft_config.lbfgs_memory = inp.rdmft_lbfgs_memory;
+        rdmft_config.adam_lr = inp.rdmft_adam_lr;
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
         rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
         rdmft_config.occ_entropy_gamma = inp.rdmft_occ_entropy_gamma;
@@ -685,7 +654,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         else
             rdmft_config.occ_param = rdmft::OccParamType::CosineSq;
 
-        // Parse optimisers: trim, ASCII-lowercase, accept common spellings.
+        // Parse optimisers: trim, ASCII-lowercase, accept common spellings. Previously only
+        // exact lowercase (e.g. "lbfgs") matched, so e.g. "LBFGS" fell through to default CG.
         auto parse_opt = [](const std::string& s_in) {
             const char* const ws = " \t\n\r\f\v";
             const auto first = s_in.find_first_not_of(ws);
@@ -699,14 +669,17 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             {
                 c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             }
-            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs" || s == "adam")
-            {
-                ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
-                    "RDMFT optimiser lbfgs/adam are no longer supported; use sd or cg in INPUT.");
-            }
             if (s == "sd" || s == "steepest" || s == "steepest_descent" || s == "gd")
             {
                 return rdmft::OptimizerType::SteepestDescent;
+            }
+            if (s == "lbfgs" || s == "l-bfgs" || s == "l_bfgs" || s == "bfgs")
+            {
+                return rdmft::OptimizerType::LBFGS;
+            }
+            if (s == "adam")
+            {
+                return rdmft::OptimizerType::Adam;
             }
             if (s == "cg" || s == "conjugate_gradient" || s == "conjugate" || s == "pr"
                 || s == "fr" || s == "polak" || s == "fletcher_reeves")
@@ -718,20 +691,26 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.occ_optimizer = parse_opt(inp.rdmft_occ_optimizer);
         rdmft_config.orb_optimizer = parse_opt(inp.rdmft_orb_optimizer);
         rdmft_config.joint_optimizer = parse_opt(inp.rdmft_joint_optimizer);
-        // Parse the orbital retraction string. Unknown values raise (already
-        // validated by Input_Item check_value at INPUT read time, but we
-        // double-check here in case of future programmatic use).
-        try
-        {
-            rdmft_config.orb_retraction
-                = rdmft::parse_orb_retraction(inp.rdmft_orb_retraction);
-        }
-        catch (const std::invalid_argument& e)
-        {
-            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf", e.what());
-        }
         rdmft_config.grad_check = inp.rdmft_grad_check;
 
+        // RDMFT equality target N_e: default base is sum wg (matches loaded occupations);
+        // optional base PARAM.inp.nelec plus rdmft_nelec_delta (see INPUT).
+        double sum_wg = 0.0;
+        for (int ik = 0; ik < nk; ++ik)
+        {
+            for (int ib = 0; ib < nbands; ++ib)
+            {
+                sum_wg += this->pelec->wg(ik, ib);
+            }
+        }
+        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
+        const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
+        if (n_electrons <= 0.0)
+        {
+            ModuleBase::WARNING_QUIT("ESolver_KS_LCAO::after_scf",
+                                     "RDMFT electron target N_e must be positive. Check rdmft_nelec_use_input, "
+                                     "nelec, sum(wg), and rdmft_nelec_delta.");
+        }
         rdmft::RDMFTNelectronTargetMeta nelec_meta;
         nelec_meta.sum_initial_wg = sum_wg;
         nelec_meta.input_nelec = inp.nelec;
@@ -756,24 +735,6 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // Update the total energy record
         this->pelec->f_en.etot = etot_rdmft;
-
-        if (GlobalC::restart.info_save.save_rdmft)
-        {
-            rdmft::write_rdmft_restart<TK>(this->pv,
-                                           nk,
-                                           nbands,
-                                           inp.nspin,
-                                           inp.gamma_only,
-                                           n_electrons,
-                                           inp.rdmft_functional,
-                                           occ_flat,
-                                           *this->psi);
-            if (GlobalV::MY_RANK == 0)
-            {
-                GlobalV::ofs_running << "\n RDMFT: wrote restart checkpoint to " << GlobalC::restart.folder
-                                     << std::endl;
-            }
-        }
 
         ModuleBase::timer::end("ESolver_KS_LCAO", "rdmft_solve");
     }

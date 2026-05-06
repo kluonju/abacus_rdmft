@@ -47,8 +47,7 @@ rdmft_functional       hf
 
 #rdmft_occ_init_perturb   1e-3
 rdmft_occ_init_perturb   1e-1
-# perturbed: ±delta only in a Fermi window (rdmft_occ_init_nbands_top; default window if unset)
-rdmft_occ_init_mode      perturbed
+# Default: perturb all bands (rdmft_occ_init_nbands_top = 0)
 
 # 6.4 Solver / optimiser configuration. Defaults shown; tweak as needed.
 rdmft_solver_strategy  alternating

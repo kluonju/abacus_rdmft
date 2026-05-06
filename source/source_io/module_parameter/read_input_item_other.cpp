@@ -873,16 +873,12 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_functional");
-        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu, bbc3, geo, optgm";
+        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "RDMFT XC functional used for the RDMFT optimisation stage. "
                            "Supported values: hf (Hartree-Fock), muller (Muller/BBC1), "
-                           "power (power functional, uses rdmft_power_alpha), gu (Goedecker-Umrigar), "
-                           "bbc3 (BBC3-inspired rank-separated), geo "
-                           "(f(n_p, n_q) = [n_p n_q + sqrt(n_p n_q) + 2 (n_p n_q)^{3/4}]/4), "
-                           "optgm (HF + Power(α) convex combination: "
-                           "K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α with fixed λ, α). "
+                           "power (power functional, uses rdmft_power_alpha), gu (Goedecker-Umrigar). "
                            "If empty, the old single-step RDMFT code path is used.";
         item.default_value = "";
         item.unit = "";
@@ -892,11 +888,10 @@ void ReadInput::item_others()
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
                 const std::string& f = para.input.rdmft_functional;
-                if (f != "hf" && f != "muller" && f != "power" && f != "gu"
-                    && f != "bbc3" && f != "geo" && f != "optgm")
+                if (f != "hf" && f != "muller" && f != "power" && f != "gu")
                 {
                     ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_functional must be one of: hf, muller, power, gu, bbc3, geo, optgm");
+                        "rdmft_functional must be one of: hf, muller, power, gu");
                 }
             }
         };
@@ -937,182 +932,64 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_optimizer");
-        item.annotation = "Optimiser for occupation numbers in RDMFT: sd, cg";
+        item.annotation = "Optimiser for occupation numbers in RDMFT: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the occupation sub-problem. "
-                           "sd: steepest descent, cg: conjugate gradient. "
-                           "Used by augmented_lagrangian only (Armijo line search with optional BB seed). "
-                           "Ignored by projected_gradient / active_set: these route to the textbook Spectral "
-                           "Projected Gradient method, which uses a Barzilai-Borwein spectral step and a "
-                           "monotone Armijo line search and does not consult this keyword.";
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
+                           "Augmented-Lagrangian inner line search: Strong Wolfe if lbfgs, Armijo if sd/cg/adam.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_string(input.rdmft_occ_optimizer);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (!para.input.rdmft || para.input.rdmft_functional.empty())
-            {
-                return;
-            }
-            const std::string& s_in = para.input.rdmft_occ_optimizer;
-            const char* const ws = " \t\n\r\f\v";
-            const auto first = s_in.find_first_not_of(ws);
-            if (first == std::string::npos)
-            {
-                return;
-            }
-            const auto last = s_in.find_last_not_of(ws);
-            std::string t = s_in.substr(first, last - first + 1);
-            for (char& c : t)
-            {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            if (t == "lbfgs" || t == "l-bfgs" || t == "l_bfgs" || t == "bfgs" || t == "adam")
-            {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                    "rdmft_occ_optimizer lbfgs/adam are removed; use sd or cg (and common aliases such as "
-                    "steepest_descent, conjugate_gradient).");
-            }
-            const bool ok = (t == "sd" || t == "steepest" || t == "steepest_descent" || t == "gd" || t == "cg"
-                             || t == "conjugate_gradient" || t == "conjugate" || t == "pr" || t == "fr"
-                             || t == "polak" || t == "fletcher_reeves");
-            if (!ok)
-            {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                    "rdmft_occ_optimizer must be sd or cg (aliases: steepest_descent, gd, conjugate_gradient, ...)");
-            }
-        };
         this->add_item(item);
     }
     {
         Input_Item item("rdmft_orb_optimizer");
-        item.annotation = "Optimiser for orbitals in RDMFT: sd, cg";
+        item.annotation = "Optimiser for orbitals in RDMFT: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
-        item.description = "Gradient-based Riemannian optimiser for the orbital (Stiefel manifold) "
-                           "sub-problem of the alternating strategy. "
-                           "sd: steepest descent, cg: Polak-Ribiere+ conjugate gradient with vector "
-                           "transport by tangent-space projection. "
-                           "Line search: monotone Armijo backtracking. The retraction is selected separately by "
-                           "rdmft_orb_retraction.";
+        item.description = "Gradient-based optimiser for the orbital (Stiefel manifold) sub-problem. "
+                           "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
+                           "Alternating orbital inner always uses Armijo line search (no Strong Wolfe).";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_string(input.rdmft_orb_optimizer);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (!para.input.rdmft || para.input.rdmft_functional.empty())
-            {
-                return;
-            }
-            const std::string& s_in = para.input.rdmft_orb_optimizer;
-            const char* const ws = " \t\n\r\f\v";
-            const auto first = s_in.find_first_not_of(ws);
-            if (first == std::string::npos)
-            {
-                return;
-            }
-            const auto last = s_in.find_last_not_of(ws);
-            std::string t = s_in.substr(first, last - first + 1);
-            for (char& c : t)
-            {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            if (t == "lbfgs" || t == "l-bfgs" || t == "l_bfgs" || t == "bfgs" || t == "adam")
-            {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                    "rdmft_orb_optimizer lbfgs/adam are removed; use sd or cg (and common aliases such as "
-                    "steepest_descent, conjugate_gradient).");
-            }
-            const bool ok = (t == "sd" || t == "steepest" || t == "steepest_descent" || t == "gd" || t == "cg"
-                             || t == "conjugate_gradient" || t == "conjugate" || t == "pr" || t == "fr"
-                             || t == "polak" || t == "fletcher_reeves");
-            if (!ok)
-            {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                    "rdmft_orb_optimizer must be sd or cg (aliases: steepest_descent, gd, conjugate_gradient, ...)");
-            }
-        };
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_orb_retraction");
-        item.annotation = "Stiefel retraction: polar (default), qr, cayley (qr/cayley serial-only)";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "String";
-        item.description = "Retraction R(Y) used by every orbital step on the Stiefel manifold "
-                           "(both alternating and joint strategies share this knob). "
-                           "polar (default): R(Y) = Y * (Y^H Y)^{-1/2}, implemented as "
-                           "Cholesky-QR (M = L L^H, X_new = Y * L^{-H}). Cheap, fully MPI "
-                           "parallelised. Loses about half precision when Y^H Y is ill-conditioned. "
-                           "qr: Householder QR with sign-fixed R diagonal so the retraction is "
-                           "uniquely defined; more numerically robust than polar at the cost of one "
-                           "extra triangular operation; serial-only -- MPI builds fall back to polar "
-                           "with a one-time warning. cayley: Wen-Yin low-rank Cayley retraction "
-                           "(Math. Prog. 142 (2013) 397, Algorithm 1); solves a 2p x 2p system and "
-                           "preserves orthogonality exactly without a triangular factor; serial-only "
-                           "-- MPI builds fall back to polar with a one-time warning.";
-        item.default_value = "polar";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_string(input.rdmft_orb_retraction);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                const std::string& s = para.input.rdmft_orb_retraction;
-                if (s.empty()) return;
-                std::string t = s;
-                for (char& c : t)
-                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-                if (t != "polar" && t != "qr" && t != "cayley")
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_orb_retraction must be one of: polar, qr, cayley");
-                }
-            }
-        };
         this->add_item(item);
     }
     {
         Input_Item item("rdmft_joint_optimizer");
-        item.annotation = "Single unified optimiser for the RDMFT joint strategy: sd, cg";
+        item.annotation = "Single unified optimiser for the RDMFT joint strategy: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "For rdmft_solver_strategy = joint, the occupation parameters and "
                            "orbital coefficients are packed into one point on the product manifold "
                            "and stepped simultaneously by a single optimiser of this type. "
-                           "Allowed values: sd (steepest descent), cg (conjugate gradient). "
-                           "Joint line search: simple Armijo backtracking.";
-        item.default_value = "cg";
+                           "Allowed values: sd (steepest descent), cg (conjugate gradient), "
+                           "lbfgs, adam. Joint line search: Strong Wolfe if lbfgs, Armijo if sd/cg/adam.";
+        item.default_value = "lbfgs";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_string(input.rdmft_joint_optimizer);
         item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (!para.input.rdmft || para.input.rdmft_functional.empty())
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
-                return;
-            }
-            const std::string& s_in = para.input.rdmft_joint_optimizer;
-            const char* const ws = " \t\n\r\f\v";
-            const auto first = s_in.find_first_not_of(ws);
-            if (first == std::string::npos)
-            {
-                return;
-            }
-            const auto last = s_in.find_last_not_of(ws);
-            std::string t = s_in.substr(first, last - first + 1);
-            for (char& c : t)
-            {
-                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-            }
-            if (t == "lbfgs" || t == "l-bfgs" || t == "l_bfgs" || t == "bfgs" || t == "adam")
-            {
-                ModuleBase::WARNING_QUIT("ReadInput",
-                    "rdmft_joint_optimizer lbfgs/adam are removed; use sd or cg.");
-            }
-            if (t != "sd" && t != "cg")
-            {
-                ModuleBase::WARNING_QUIT("ReadInput", "rdmft_joint_optimizer must be sd or cg");
+                const std::string& s = para.input.rdmft_joint_optimizer;
+                if (s.empty())
+                {
+                    return;
+                }
+                std::string t = s;
+                for (char& c : t)
+                {
+                    c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                }
+                if (t != "sd" && t != "cg" && t != "lbfgs" && t != "adam")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_joint_optimizer must be one of: sd, cg, lbfgs, adam");
+                }
             }
         };
         this->add_item(item);
@@ -1161,13 +1038,10 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "ks: use KS occupations directly. "
-                   "perturbed: at each k, add +delta to selected bands above the Fermi boundary and -delta to "
-                   "selected bands at or below it within the Fermi window (rdmft_occ_init_nbands_top), then "
-                   "project to the feasible set; requires rdmft_occ_init_perturb > 0. "
-                   "binary: in the Fermi window set by rdmft_occ_init_nbands_top, set to 1-delta if occ>=0.5, "
-                   "or delta if occ<0.5. "
-                   "uniform: in that Fermi window, set all selected occupations to the local average "
-                   "N_top / N_selected.";
+                   "perturbed: in a Fermi window, apply +/-delta based on the KS occupation. "
+                   "binary: in the same Fermi window, set to 1-delta if occ>=0.5, or delta if occ<0.5. "
+                   "uniform: in the same Fermi window, set all selected occupations "
+                   "to the local average N_top / N_selected.";
         item.default_value = "ks";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1191,9 +1065,9 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Perturbation delta used when rdmft_occ_init_mode = perturbed. "
-                           "In each k-point, within the Fermi window (see rdmft_occ_init_nbands_top), "
-                           "bands above the boundary are increased by +delta and bands at or below it are decreased "
-                           "by delta, then projected to the feasible set. 0 disables the perturbation.";
+                           "In each k-point, selected bands above Fermi are increased by +delta "
+                           "and selected bands below Fermi are reduced by -delta, then projected "
+                           "to the feasible set. 0 disables the perturbation.";
         item.default_value = "0.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1215,10 +1089,9 @@ void ReadInput::item_others()
         item.annotation = "Initial occupation Fermi-window half-width";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Fermi-window half-width K (bands above and below the Fermi boundary per k-point). "
-                           "Used by perturbed, binary, and uniform. For perturbed, K > 0 sets the window width; "
-                           "K <= 0 selects an automatic small window (default half-width 3, capped by nbands). "
-                           "For binary/uniform, K <= 0 disables windowed initialisation and falls back to KS occupations.";
+        item.description = "Fermi-window half-width K used by rdmft_occ_init_mode = perturbed/uniform. "
+                           "For each k-point, select K bands above and K bands below the Fermi boundary. "
+                           "K <= 0 disables these windowed initialisation modes and falls back to KS occupations.";
         item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1240,11 +1113,11 @@ void ReadInput::item_others()
         item.annotation = "RDMFT convergence threshold on energy change (Ry)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop stops only "
-                           "when both occupation- and orbital-inner sub-problems report converged (alternating: inner "
-                           "`converged` flags; joint: occ/orb flags) AND, when rdmft_energy_tol > 0, "
-                           "|E - E_prev| (Ry) < rdmft_energy_tol between outer iterations. If rdmft_energy_tol <= 0, "
-                           "the outer energy check is omitted (inner flags alone).";
+        item.description = "Alternating and joint RDMFT: after the first outer iteration, the outer loop declares "
+                           "convergence if |E - E_prev| (Ry) < rdmft_energy_tol (used only when > 0) **or** both "
+                           "occupation- and orbital-inner criteria are met (alternating: inner `converged` flags; "
+                           "joint: occ/orb stationarity flags). If <= 0, the energy test is omitted and outer "
+                           "convergence uses the inner criteria only.";
         item.default_value = "1e-8";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1253,70 +1126,76 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_orb_grad_tol");
-        item.annotation = "RDMFT orbital inner: relative gradient factor ε_g";
+        item.annotation = "RDMFT convergence threshold on gradient norm";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Orbital inner loop: stop when ||G_R||_F ≤ ε_g · max(1, ||G_R(x_0)||_F), where x_0 is the "
-                           "iterate at the start of the orbital inner solve. Same ε_g scales the orbital block in "
-                           "the joint strategy (reference norms taken at joint outer iteration 0).";
+        item.description = "Orbital inner loop: Riemannian gradient norm ||G_R|| convergence threshold.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_orb_grad_tol);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                if (para.input.rdmft_orb_grad_tol <= 0.0)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_orb_grad_tol must be positive");
-                }
-            }
-        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_energy_tol");
+        item.annotation = "RDMFT orbital inner: |dE| convergence (Ry)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Alternating strategy, orbital inner loop: when this value is > 0, "
+                           "convergence requires both ||G_R|| < rdmft_orb_grad_tol and energy stability: "
+                           "|E_k - E_{k-1}| before the step and |E_new - E| after an accepted line-search "
+                           "step must be below this (Ry). Use <= 0 to disable the energy criterion "
+                           "(gradient-only stopping).";
+        item.default_value = "1e-8";
+        item.unit = "Ry";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_orb_energy_tol);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_tol");
+        item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Augmented Lagrangian occupation inner: stop a step when "
+                           "sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this. "
+                           "Projected gradient inner stopping uses rdmft_occ_grad_tol vs ||g_proj||_inf only.";
+        item.default_value = "1e-8";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_tol);
         this->add_item(item);
     }
     {
         Input_Item item("rdmft_occ_grad_tol");
-        item.annotation = "RDMFT ALM / joint occ block: relative gradient factor ε_g";
+        item.annotation = "RDMFT occupation inner: gradient norm threshold (non-ALM / joint non-ALM)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Augmented-Lagrangian occupation inner loop and joint occupation block: stop when "
-                           "||∇_p L|| ≤ ε_g · max(1, ||∇_p L(x_0)||), with x_0 at the first ALM inner iteration "
-                           "(respectively joint outer iter 0). Not used for SPG (see rdmft_occ_proj_tol).";
+        item.description = "Projected-gradient occupation inner loop converges when ||g_proj||_inf = ||n - P(n - "
+                           "τ∇E)||_inf/τ is below this. For PG, τ is tied to the occupation line search: the "
+                           "initial trial step α₀ (rdmft_occ_ls_init_step / BB / quad) at the pre-step map, and "
+                           "the accepted Armijo step after a successful line search (or rdmft_alpha_step after "
+                           "SD fallback) at the post-step map—see logs. Also used for ALM first-inner ||dL/dp||, "
+                           "active set, joint, and other gradient checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_occ_grad_tol);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                if (para.input.rdmft_occ_grad_tol <= 0.0)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_occ_grad_tol must be positive");
-                }
-            }
-        };
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_occ_proj_tol");
-        item.annotation = "RDMFT SPG occupations: projected-gradient tolerance ε_proj";
+        Input_Item item("rdmft_occ_energy_tol");
+        item.annotation = "RDMFT PG: unused (inner stop is ||g_proj|| vs rdmft_occ_grad_tol)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "For rdmft_constraint = projected_gradient or active_set (SPG path): stop when "
-                           "||n − P_Ω(n − ∇_n E)||_∞ ≤ ε_proj (Bertsekas projected-gradient residual at unit step).";
-        item.default_value = "1e-6";
-        item.unit = "";
+        item.description = "Not used when rdmft_constraint = projected_gradient: PG occupation inner loop "
+                           "always stops on ||g_proj||_inf < rdmft_occ_grad_tol (g_proj = (n - P(n - τ∇E))/τ with "
+                           "τ from the occupation line search as for rdmft_occ_grad_tol). Kept for backward-compatible "
+                           "INPUT files.";
+        item.default_value = "1e-8";
+        item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_occ_proj_tol);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                if (para.input.rdmft_occ_proj_tol <= 0.0)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_occ_proj_tol must be positive");
-                }
-            }
-        };
+        read_sync_double(input.rdmft_occ_energy_tol);
         this->add_item(item);
     }
     {
@@ -1368,9 +1247,8 @@ void ReadInput::item_others()
         item.type = "String";
         item.description = "Method to enforce the electron-number constraint sum_k w_k sum_i n_ik = N_e. "
                            "augmented_lagrangian: ALM on the occupation parameters (rdmft_occ_param cosine_sq or logistic) with Armijo line search. "
-                           "projected_gradient: Spectral Projected Gradient (Birgin-Martinez-Raydan, SIOPT 2000) "
-                           "in occupation space with monotone Armijo line search along the spectral projected direction. "
-                           "active_set: alias for projected_gradient in the current implementation -- kept for backward INPUT compatibility.";
+                           "projected_gradient: occupation-space projected gradient with Barzilai-Borwein step lengths. "
+                           "active_set: legacy reduced-space method that tracks pinned occupations.";
         item.default_value = "augmented_lagrangian";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1452,10 +1330,10 @@ void ReadInput::item_others()
         item.annotation = "Initial line-search step length for RDMFT";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Initial trial step length for the Strong Wolfe line search (joint strategy, "
-                           "ALM occupations, alternating orbitals). The SPG (projected_gradient / active_set) "
-                           "occupation block uses Barzilai–Borwein plus monotone Armijo and does not use "
-                           "this keyword.";
+        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. For "
+                           "projected_gradient occupations it also supplies the SD-fallback step and the fallback "
+                           "scale in the Bertsekas map when the line-search initial α₀ is invalid; otherwise PG "
+                           "Bertsekas τ follows the occupation line search (see rdmft_occ_grad_tol).";
         item.default_value = "1.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1463,14 +1341,52 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_ls_init_step");
+        item.annotation = "Occupation Armijo initial-step policy: fixed, bb, quad";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Initial trial alpha for occupation line search: "
+                           "fixed (always 1.0), bb (Barzilai-Borwein estimate), "
+                           "quad (quadratic estimate from previous accepted step).";
+        item.default_value = "bb";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_occ_ls_init_step);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const std::string& s = para.input.rdmft_occ_ls_init_step;
+                if (s != "fixed" && s != "bb" && s != "quad")
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput",
+                        "rdmft_occ_ls_init_step must be one of: fixed, bb, quad");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_line_search_polynomial");
+        item.annotation = "Use polynomial (quadratic/cubic) step in RDMFT Armijo line search";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, after a failed Armijo trial the next step is suggested by a "
+                           "quadratic model (first failure) and a cubic (later failures) along the "
+                           "line; if false, use geometric reduction (multiply by rdmft_line_search_rho).";
+        item.default_value = "true";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_line_search_polynomial);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_line_search_c1");
-        item.annotation = "Sufficient-decrease c1 for RDMFT line searches";
+        item.annotation = "Armijo sufficient-decrease c1 for RDMFT line searches";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Constant in (0, 1): Armijo test "
-                           "phi(alpha) <= phi(0) + c1 * alpha * phi'(0) for Strong Wolfe (joint, ALM, alternating "
-                           "orbitals), and the same role in SPG monotone Armijo along the projected spectral "
-                           "direction (projected_gradient / active_set).";
+        item.description = "Armijo constant in (0, 1): E_trial <= E + c1 * alpha * (directional derivative). "
+                           "Used for alternating orbital Armijo, ALM/PG/AS occupation line searches, joint Armijo, "
+                           "and the Armijo condition inside Strong Wolfe. Smaller values demand a steeper energy cut.";
         item.default_value = "1e-4";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1488,12 +1404,11 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_line_search_c2");
-        item.annotation = "Strong Wolfe curvature parameter c2 for RDMFT";
+        item.annotation = "Strong Wolfe curvature parameter c2 for RDMFT (lbfgs line search)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Curvature constant for Strong Wolfe line search: |phi'(alpha)| <= c2 |phi'(0)|. "
-                           "Must satisfy rdmft_line_search_c1 < c2 < 1. Used for joint, ALM, and alternating orbital "
-                           "line searches (not for SPG occupations).";
+        item.description = "Used with strong Wolfe when rdmft_occ_optimizer = lbfgs (ALM) or "
+                           "joint + lbfgs: require |g · d| <= c2 |g0 · d| at the trial point.";
         item.default_value = "0.9";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1501,35 +1416,9 @@ void ReadInput::item_others()
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
-                const double c1 = para.input.rdmft_line_search_c1;
-                const double c2 = para.input.rdmft_line_search_c2;
-                if (c2 <= c1 || c2 >= 1.0)
+                if (para.input.rdmft_line_search_c2 < 0.0 || para.input.rdmft_line_search_c2 > 1.0)
                 {
-                    ModuleBase::WARNING_QUIT("ReadInput",
-                        "rdmft_line_search_c2 must satisfy rdmft_line_search_c1 < c2 < 1");
-                }
-            }
-        };
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_line_search_max_iter");
-        item.annotation = "Strong Wolfe: max bracketing steps in RDMFT";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Int";
-        item.description = "Upper bound on Strong Wolfe bracket expansion iterations (joint, ALM, alternating "
-                           "orbitals). SPG occupations use a separate monotone Armijo loop with a fixed "
-                           "backtracking factor from RDMFTConfig::line_search_rho.";
-        item.default_value = "30";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_int(input.rdmft_line_search_max_iter);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty())
-            {
-                if (para.input.rdmft_line_search_max_iter < 1)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_max_iter must be >= 1");
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_line_search_c2 must be in [0, 1]");
                 }
             }
         };
@@ -1537,11 +1426,11 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_line_search_max_zoom");
-        item.annotation = "Strong Wolfe: max zoom iterations in RDMFT";
+        item.annotation = "Maximum zoom iterations in RDMFT Strong Wolfe line search";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Int";
-        item.description = "Upper bound on interval-refinement (zoom) steps inside Strong Wolfe line search.";
-        item.default_value = "30";
+        item.description = "Zoom sub-iteration cap (Nocedal & Wright) for the strong Wolfe search.";
+        item.default_value = "20";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_line_search_max_zoom);
@@ -1561,8 +1450,8 @@ void ReadInput::item_others()
         item.annotation = "Enable Barzilai-Borwein step seed for ALM occupations";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Boolean";
-        item.description = "If true, ALM occupation optimization seeds the Strong Wolfe line search initial trial "
-                           "step with a Barzilai-Borwein estimate in occupation-parameter space.";
+        item.description = "If true, ALM occupation optimization seeds Armijo backtracking with a "
+                           "Barzilai-Borwein step estimate in occupation-parameter space.";
         item.default_value = "true";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1574,7 +1463,7 @@ void ReadInput::item_others()
         item.annotation = "Barzilai-Borwein mode for ALM occupations: bb1, bb2, alternate";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
-        item.description = "BB seed policy for the ALM Strong Wolfe initial trial step. "
+        item.description = "BB seed policy for ALM occupation Armijo initial step. "
                            "bb1: alpha = (s^T s)/(s^T y); bb2: alpha = (s^T y)/(y^T y); "
                            "alternate: alternate bb1 and bb2 each inner iteration.";
         item.default_value = "alternate";
@@ -1599,7 +1488,7 @@ void ReadInput::item_others()
         item.annotation = "Lower bound for ALM BB step seed";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Lower clamp for the Barzilai-Borwein Strong Wolfe initial trial step in ALM occupation optimization.";
+        item.description = "Lower clamp for the Barzilai-Borwein Armijo initial step in ALM occupation optimization.";
         item.default_value = "1e-8";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1641,6 +1530,30 @@ void ReadInput::item_others()
                 }
             }
         };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_lbfgs_memory");
+        item.annotation = "lbfgs history vectors for RDMFT";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Integer";
+        item.description = "Number of past gradient/step pairs stored by lbfgs optimiser.";
+        item.default_value = "10";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_int(input.rdmft_lbfgs_memory);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_adam_lr");
+        item.annotation = "Adam learning rate for RDMFT";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Learning rate for the Adam optimiser in RDMFT.";
+        item.default_value = "0.001";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_adam_lr);
         this->add_item(item);
     }
     {
@@ -1727,45 +1640,6 @@ void ReadInput::item_others()
                 if (!std::isfinite(d))
                 {
                     ModuleBase::WARNING_QUIT("ReadInput", "rdmft_nelec_delta must be finite");
-                }
-            }
-        };
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_hybrid_dft_xc");
-        item.annotation = "Add semilocal DFT XC on RDMFT density to RDMFT total energy";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Boolean";
-        item.description = "When true, after building rho from natural orbitals and occupations, "
-                           "evaluate semilocal XC via the same PotXC path as LCAO-DFT (dft_functional) "
-                           "and add λ·E_xc[ρ] to the energy with V_xc in the one-body Hamiltonian; "
-                           "the RI RDMFT exchange contribution is scaled by (1−λ). Requires LIBXC when "
-                           "the chosen dft_functional needs it.";
-        item.default_value = "false";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_bool(input.rdmft_hybrid_dft_xc);
-        this->add_item(item);
-    }
-    {
-        Input_Item item("rdmft_hybrid_dft_xc_lambda");
-        item.annotation = "Weight λ for semilocal DFT XC vs RDMFT RI exchange (0 to 1)";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Real";
-        item.description = "E += λ·E_xc^DFT[ρ]; RDMFT exchange energy and occupation/orbital exchange "
-                           "gradients use coupling scaled by (1−λ). Ignored when rdmft_hybrid_dft_xc is false.";
-        item.default_value = "0.0";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_hybrid_dft_xc_lambda);
-        item.check_value = [](const Input_Item& item, const Parameter& para) {
-            if (para.input.rdmft && !para.input.rdmft_functional.empty() && para.input.rdmft_hybrid_dft_xc)
-            {
-                const double x = para.input.rdmft_hybrid_dft_xc_lambda;
-                if (x < 0.0 || x > 1.0)
-                {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_hybrid_dft_xc_lambda must be in [0, 1]");
                 }
             }
         };

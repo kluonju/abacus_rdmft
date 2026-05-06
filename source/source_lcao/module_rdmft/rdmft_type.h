@@ -15,19 +15,7 @@ enum class XCFunctionalType
     HF,
     Muller,
     Power,
-    GU,
-    /// BBC3-inspired rank-separated coupling: per k, bands sorted by decreasing
-    /// occupation; strongly occupied use Müller sqrt(n), weakly use HF-like n.
-    /// See module doc / code comments; not identical to every literature BBC3 variant.
-    BBC3,
-    /// GEO functional: f(n_p, n_q) = [n_p n_q + (n_p n_q)^(1/2) + 2 (n_p n_q)^(3/4)] / 4.
-    /// Decomposes as a sum of three separable terms with coefficients (1/4, 1/4, 1/2)
-    /// and powers (1, 1/2, 3/4).  Non-separable in the single-g(n) sense; evaluated as
-    /// a sum of three Power-like exchange contributions.
-    GEO,
-    /// optGM: convex combination of HF and Power(α) two-body kernels,
-    ///   K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α  with fixed (λ, α).
-    OptGM
+    GU
 };
 
 enum class OccParamType
@@ -63,7 +51,9 @@ enum class ConstraintMethod
 enum class OptimizerType
 {
     SteepestDescent,
-    ConjugateGradient
+    ConjugateGradient,
+    LBFGS,
+    Adam
 };
 
 enum class SolverStrategy
@@ -76,34 +66,19 @@ enum class SolverStrategy
     Joint
 };
 
-/// Retraction on the Stiefel manifold St(N_b, N) used by every orbital step
-/// (alternating and joint). All three preserve X_new^H X_new = I to machine
-/// precision when applicable; they differ in cost and numerical robustness.
-///
-/// Polar:  X_new = (X - alpha D) (M)^{-1/2} with M = (X - alpha D)^H (X - alpha D),
-///         implemented as Cholesky-QR (M = L L^H -> Y * L^{-H}). This is the
-///         current default; cheap (one Cholesky + one triangular solve), but
-///         loses about half the working precision when M is ill-conditioned.
-/// QR:     X_new = qf(X - alpha D) via Householder QR, with the diagonal of R
-///         sign-fixed so the retraction is uniquely defined. More numerically
-///         robust than Polar when M is near-singular, slightly more expensive.
-/// Cayley: Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397,
-///         Algorithm 1). Builds U = [D | X], V = [X | -D] (size N x 2p) and
-///         X_new = X - alpha * U * (I_{2p} + (alpha/2) V^H U)^{-1} (V^H X).
-///         Solves only one 2p x 2p system, exact orthogonality, attractive
-///         when N >> p.
-enum class OrbRetraction
-{
-    Polar,
-    QR,
-    Cayley
-};
-
 enum class BBStepMode
 {
     BB1,
     BB2,
     Alternate
+};
+
+/// Initial trial-step policy for occupation Armijo line search.
+enum class LineSearchInitStep
+{
+    FixedOne,          // always alpha0 = 1.0
+    BarzilaiBorwein,   // alpha0 from BB estimate (fallback to line_search_alpha_init)
+    Quadratic          // alpha0 from previous-step quadratic model (fallback when unavailable)
 };
 
 /// Selects which occupation-number weighting is applied by occNum_func /
@@ -132,9 +107,6 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "muller") return XCFunctionalType::Muller;
     if (name == "power") return XCFunctionalType::Power;
     if (name == "gu") return XCFunctionalType::GU;
-    if (name == "bbc3") return XCFunctionalType::BBC3;
-    if (name == "geo") return XCFunctionalType::GEO;
-    if (name == "optgm") return XCFunctionalType::OptGM;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -146,29 +118,6 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::Muller: return "muller";
         case XCFunctionalType::Power: return "power";
         case XCFunctionalType::GU: return "gu";
-        case XCFunctionalType::BBC3: return "bbc3";
-        case XCFunctionalType::GEO: return "geo";
-        case XCFunctionalType::OptGM: return "optgm";
-    }
-    return "unknown";
-}
-
-inline OrbRetraction parse_orb_retraction(const std::string& name)
-{
-    if (name == "polar" || name == "default") return OrbRetraction::Polar;
-    if (name == "qr") return OrbRetraction::QR;
-    if (name == "cayley") return OrbRetraction::Cayley;
-    throw std::invalid_argument("Unknown rdmft_orb_retraction: " + name
-                                + " (allowed: polar, qr, cayley)");
-}
-
-inline std::string orb_retraction_to_string(OrbRetraction r)
-{
-    switch (r)
-    {
-        case OrbRetraction::Polar: return "polar";
-        case OrbRetraction::QR: return "qr";
-        case OrbRetraction::Cayley: return "cayley";
     }
     return "unknown";
 }
@@ -194,24 +143,16 @@ struct RDMFTConfig
     OccParamType occ_param = OccParamType::CosineSq;
     ConstraintMethod constraint_method = ConstraintMethod::AugmentedLagrangian;
 
-    /// ALM occupation inner: Armijo line search (with optional BB seed).
+    /// ALM occupation inner: Strong Wolfe line search if occ_optimizer is LBFGS, else Armijo.
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
-    /// Alternating orbital sub-problem on the Stiefel manifold.
-    /// Selects the Riemannian optimiser used by `optimize_orbitals`.
-    /// SD or nonlinear Polak-Ribiere+ CG on the manifold (AMS Ch. 8).
-    /// Line search: monotone Strong Wolfe (except SPG occupations; see below).
+    /// Alternating orbital inner: Armijo only (all optimiser types).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
-    /// Retraction used by every orbital step (alternating and joint).
-    /// Default `Polar` matches the existing Cholesky-QR S-orthonormalisation;
-    /// `QR` uses Householder QR with sign-fixed diagonal of R; `Cayley`
-    /// applies the Wen-Yin low-rank Cayley retraction.
-    OrbRetraction orb_retraction = OrbRetraction::Polar;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: monotone Strong Wolfe on the product manifold.
-    OptimizerType joint_optimizer = OptimizerType::ConjugateGradient;
+    /// Joint line search: Strong Wolfe if joint_optimizer is LBFGS, else Armijo.
+    OptimizerType joint_optimizer = OptimizerType::LBFGS;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
@@ -222,22 +163,26 @@ struct RDMFTConfig
     int orb_maxiter = 50;
     /// Inner iterations for optimize_occupations (fixed orbitals).
     int occ_maxiter = 50;
-    /// Outer alternating / joint: require both inner `converged` flags and, when > 0,
-    /// |E - E_prev| between outer iterations < this (Ry). When <= 0, outer energy check omitted.
-    /// Same field as INPUT `rdmft_energy_tol`.
+    /// Alternating / joint outer: when >0, require |dE| < this between outer iters
+    /// **and** occupation+orbital inner `converged` flags. When <=0, outer stops on inner flags only
+    /// (after first outer iter). Same field as INPUT `rdmft_energy_tol`.
     double energy_tol = 1e-8;
-    /// Orbital inner: relative gradient factor \(\varepsilon_g\) — stop when
-    /// \(\|G_R\|_F \le \varepsilon_g \max(1, \|G_R(x_0)\|_F)\) with \(x_0\) the
-    /// orbital iterate at the start of the orbital inner loop. Same role for
-    /// the orbital block in joint (reference gradient norms taken at joint outer iter 0).
-    double orb_grad_tol = 1e-4;
-    /// ALM / joint occupation block: \(\varepsilon_g\) for
-    /// \(\|\nabla_p L\| \le \varepsilon_g \max(1, \|\nabla_p L(x_0)\|)\) with \(x_0\)
-    /// the parameter vector at the **first** inner ALM iteration (or joint outer iter 0).
-    double occ_grad_tol = 1e-4;
-    /// SPG / active-set occupations: \(\varepsilon_{\mathrm{proj}}\) for Bertsekas residual
-    /// \(\|n - P_\Omega(n-\nabla_n E)\|_\infty \le \varepsilon_{\mathrm{proj}}\).
-    double occ_proj_tol = 1e-5;
+    /// Inner orbital step: Riemannian gradient norm ||G_R|| must fall below this
+    /// for convergence (and, when orb_energy_tol > 0, the energy change criterion
+    /// must also be satisfied).
+    double orb_grad_tol = 1e-6;
+    /// Alternating orbital inner loop: when > 0, convergence additionally requires
+    /// |E_k - E_{k-1}| before the step and |E_new - E| after an accepted line search
+    /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
+    double orb_energy_tol = 1e-8;
+    /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
+    double rdmft_occ_tol = 1e-8;
+    /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
+    double occ_energy_tol = 1e-8;
+    /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:
+    /// initial trial α₀ pre-step, accepted Armijo α post-step, line_search_alpha_init on SD fallback).
+    /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
+    double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
     double occ_entropy_gamma = 0.0;
 
@@ -247,20 +192,24 @@ struct RDMFTConfig
     double aug_lag_lambda_init = 0.0;
 
     double line_search_alpha_init = 1.0;
-    /// Sufficient decrease (Armijo) constant in (0, 1); also used in SPG monotone Armijo.
     double line_search_c1 = 1e-4;
-    /// Curvature constant for Strong Wolfe: require \f$|\varphi'(\alpha)|\le c_2|\varphi'(0)|\f$.
-    /// Must satisfy \f$c_1 < c_2 < 1\f$.
-    double line_search_c2 = 0.9;
-    /// Backtracking factor for SPG occupation line search only (\f$\lambda \leftarrow \rho\lambda\f$).
     double line_search_rho = 0.5;
-    /// Max bracketing steps in Strong Wolfe (joint, ALM, alternating orbitals).
-    int line_search_max_iter = 30;
-    /// Max inner iterations in the Strong Wolfe zoom phase.
-    int line_search_max_zoom = 30;
+    int line_search_max_iter = 20;
+    /// Curvature coefficient for Strong Wolfe: |g(alpha)| <= c2 * |g0|.
+    /// Typical: 0.9 (lbfgs), smaller for nonlinear CG (e.g. 0.1).
+    double line_search_c2 = 0.9;
+    /// Zoom iteration cap in `strong_wolfe_line_search` (Nocedal & Wright zoom).
+    int line_search_max_zoom = 20;
+    /// If true, backtracking after a failed Armijo trial uses a quadratic
+    /// model on the first failure and a cubic on later failures; if false, use
+    /// geometric reduction (multiply by `line_search_rho` only). Polynomial
+    /// suggestions are safeguarded inside the line search (fixed 0.1--0.5 of
+    /// the last failed step; see `armijo_line_search` in `rdmft_optimizer.h`).
+    bool line_search_polynomial = true;
+    LineSearchInitStep occ_line_search_init_step = LineSearchInitStep::BarzilaiBorwein;
 
     /// ALM occupation line-search seed policy.
-    /// When enabled, Strong Wolfe initial trial \f$\alpha_0\f$ uses a Barzilai-Borwein estimate
+    /// When enabled, Armijo starts from a Barzilai-Borwein step estimate
     /// computed in occupation-parameter space (fallback to
     /// line_search_alpha_init when unavailable).
     bool alm_bb_enabled = true;
@@ -275,7 +224,7 @@ struct RDMFTConfig
     /// and C are the orbital coefficients. The natural scale of dE/dp
     /// depends on the Jacobian dn/dp (which can range from 0 to 1 across
     /// the Brillouin zone and band index), while dE/dC scales with the
-    /// Hamiltonian matrix elements. In a single-scalar Strong Wolfe line search
+    /// Hamiltonian matrix elements. In a single-alpha Armijo line search
     /// this block-scale mismatch manifests as either (a) well-behaved
     /// occupation steps together with far too aggressive orbital steps,
     /// or (b) vice versa. Multiplying the orbital gradient (as fed to
@@ -295,6 +244,13 @@ struct RDMFTConfig
     /// hard a value > 1 gives it more weight.
     double joint_orb_scale = 1.0;
 
+    double adam_lr = 0.001;
+    double adam_beta1 = 0.9;
+    double adam_beta2 = 0.999;
+    double adam_eps = 1e-8;
+
+    int lbfgs_memory = 10;
+
     bool use_roptlite = false;
 
     double fd_epsilon = 1e-5;
@@ -305,9 +261,8 @@ struct RDMFTConfig
     /// Optional additive perturbation magnitude (delta) used by
     /// OccInitMode::Perturbed.
     double occ_init_perturb = 0.0;
-    /// Bands per side in the Fermi window (above and below the boundary).
-    /// Used by Perturbed, Binary, and Uniform. For Perturbed, value <= 0 selects
-    /// an automatic small window (same default width as the solver).
+    /// Number of bands in the Fermi window per side (above/below Fermi),
+    /// used by OccInitMode::Perturbed and OccInitMode::Uniform.
     int occ_init_nbands_top = 0;
 
     /// Log per-k Stiefel Gram residual (alternating outer loop); expensive, default off.

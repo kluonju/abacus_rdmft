@@ -77,8 +77,7 @@ void RDMFT<TK, TR>::init(Parallel_Orbitals& ParaV_in,
     nbands_total = PARAM.inp.nbands;
     nk_total = ModuleSymmetry::Symmetry::symm_flag == -1 ? kv->get_nkstot_full(): kv->get_nks();
     nk_total *= nspin;
-    only_exx_type = ( XC_func_rdmft == "hf" || XC_func_rdmft == "muller" || XC_func_rdmft == "power"
-                      || XC_func_rdmft == "gu" || XC_func_rdmft == "bbc3" );
+    only_exx_type = ( XC_func_rdmft == "hf" || XC_func_rdmft == "muller" || XC_func_rdmft == "power" );
 
     // create desc[] and something about MPI to Eij(nbands*nbands)
 #ifdef __MPI

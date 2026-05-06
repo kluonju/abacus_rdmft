@@ -672,23 +672,24 @@ struct Input_para
     // RDMFT solver parameters (new optimization engine)
     std::string rdmft_functional = "muller";              // RDMFT XC functional: hf, muller, power, gu (empty = use old code path)
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
-    std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg
-    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer (Riemannian): sd, cg
-    std::string rdmft_orb_retraction = "polar";    // Stiefel retraction: polar (default), qr, cayley (qr/cayley serial-only)
-    std::string rdmft_joint_optimizer = "cg";   // joint-strategy single unified optimiser: sd, cg
-    int rdmft_outer_maxiter = 50;                 // RDMFT outer loop (alternating / joint cycles)
-    int rdmft_orb_maxiter = 20;                     // maximum iterations per orbital sub-problem (fixed n)
-    int rdmft_occ_maxiter = 20;                     // maximum iterations per occupation sub-problem (fixed C)
+    std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
+    std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
+    std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
+    int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
+    int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
+    int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
     std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, binary, uniform
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
-    int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K (perturbed/binary/uniform); 0 = auto K for perturbed
-    double rdmft_energy_tol = 1e-8; // outer: occ+orb inner converged AND (<=0 skips) |dE| vs prev outer
-    /// Orbital inner: ε_g in ||G_R|| ≤ ε_g max(1, ||G_R(x_0)||) (Frobenius); joint orbital block uses same rule vs iter-0 ref.
-    double rdmft_orb_grad_tol = 1e-5;
-    /// ALM / joint occupation block: ε_g for ||∇_p L|| ≤ ε_g max(1, ||∇_p L(x_0)||)
-    double rdmft_occ_grad_tol = 1e-5;
-    /// SPG / active-set occupations: ε_proj for ||n − P_Ω(n−∇E)||_∞ ≤ ε_proj
-    double rdmft_occ_proj_tol = 1e-5;
+    int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
+    double rdmft_energy_tol = 1e-8;                // outer |dE| AND occ+orb inner converged; <=0: inner flags only
+    double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
+    /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
+    double rdmft_orb_energy_tol = 1e-8;
+    double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
+    /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
+    double rdmft_occ_energy_tol = 1e-8;
+    /// PG: ||(n-P(n-τ∇E))/τ||_inf; also ALM/AS/joint thresholds as in solver
+    double rdmft_occ_grad_tol = 1e-6;
     /// HF-only: γ·Σ w_k (n ln n + (1-n) ln(1-n)) for occupation curvature; use 0 for muller/power/gu
     double rdmft_occ_entropy_gamma = 0.0;
     std::string rdmft_occ_param = "cosine_sq";     // occupation parameterisation: cosine_sq, logistic, sigma_shift
@@ -696,19 +697,22 @@ struct Input_para
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
-    double rdmft_alpha_step = 1.0;                 // initial Strong Wolfe trial step (joint / ALM / orbitals)
-    /// Armijo / sufficient-decrease c1 in (0,1): SPG monotone Armijo and Strong Wolfe decrease vs f_ref
+    double rdmft_alpha_step = 1.0;                 // initial occupation/orbital line-search step length
+    std::string rdmft_occ_ls_init_step = "bb";     // occupation line-search alpha0 policy: fixed, bb, quad
+    /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
+    bool rdmft_line_search_polynomial = true;
+    /// Armijo sufficient-decrease parameter c1 (RDMFT occupation/orbital line searches, joint Armijo)
     double rdmft_line_search_c1 = 1e-4;
-    /// Strong Wolfe curvature c2: require |phi'| <= c2 |phi'(0)|; must satisfy c1 < c2 < 1
+    /// Strong Wolfe curvature parameter c2 (used with lbfgs + Strong Wolfe line search)
     double rdmft_line_search_c2 = 0.9;
-    /// Strong Wolfe: max bracket expansion steps (joint, ALM, alternating orbitals)
-    int rdmft_line_search_max_iter = 30;
-    /// Strong Wolfe: max zoom (interval refinement) iterations
-    int rdmft_line_search_max_zoom = 30;
+    /// Strong Wolfe zoom iteration cap
+    int rdmft_line_search_max_zoom = 20;
     bool rdmft_alm_bb_enabled = true;              // enable Barzilai-Borwein seed for ALM occupation steps
     std::string rdmft_alm_bb_mode = "alternate";  // ALM BB mode: bb1, bb2, alternate
     double rdmft_alm_bb_alpha_min = 1e-8;          // BB seed lower bound for occupation-space updates
     double rdmft_alm_bb_alpha_max = 10.0;          // BB seed upper bound for occupation-space updates
+    int rdmft_lbfgs_memory = 10;                   // lbfgs history vectors
+    double rdmft_adam_lr = 0.001;                  // Adam learning rate
     bool rdmft_grad_check = false;                  // finite-difference gradient check before optimisation
     /// If true, print per-k Stiefel Gram residual ||G_k-I||_F each alternating outer iter (extra pGEMM per k).
     bool rdmft_print_stiefel_gram = false;
@@ -717,10 +721,6 @@ struct Input_para
     bool rdmft_nelec_use_input = false;
     /// Added to that base: N_e = base + rdmft_nelec_delta.
     double rdmft_nelec_delta = 0.0;
-    /// Add semilocal DFT XC energy/PotXC on the RDMFT density (uses dft_functional / LibXC path).
-    bool rdmft_hybrid_dft_xc = false;
-    /// Weight λ in [0,1]: total E += λ·E_xc^DFT[ρ]; RDMFT RI exchange energy/grad scaled by (1−λ).
-    double rdmft_hybrid_dft_xc_lambda = 0.0;
 
     // ==============   #Parameters (22.EXX PW) =====================
     // EXX for planewave basis, rhx0820 2025-03-10

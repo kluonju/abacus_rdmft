@@ -134,35 +134,6 @@ $$
 The diagonal modification ensures correct self-interaction cancellation.
 The off-diagonal part uses the Müller form.
 
-#### 2.3.5 GEO Functional
-
-$$
-f^{\mathrm{GEO}}(n_p, n_q) = \frac{1}{4}\Bigl[ n_p n_q + (n_p n_q)^{1/2} + 2 (n_p n_q)^{3/4} \Bigr]
-$$
-
-This is **non-separable in the single-$g$ sense** but decomposes as a weighted sum
-of three separable Power-like terms:
-
-$$
-f^{\mathrm{GEO}}(n_p, n_q) = \frac{1}{4} g_1(n_p) g_1(n_q)
-                          + \frac{1}{4} g_{1/2}(n_p) g_{1/2}(n_q)
-                          + \frac{1}{2} g_{3/4}(n_p) g_{3/4}(n_q),
-\qquad g_\alpha(n) = n^{\alpha}.
-$$
-
-The triplet $\{(c_t, \alpha_t)\} = \{(1/4, 1), (1/4, 1/2), (1/2, 3/4)\}$ is the
-constructive recipe used by the implementation: at each energy / gradient
-evaluation, the three modified density matrices
-$\gamma^{(t)}_{\mathrm{xc}} = \sum_i w_{\mathbf{k}} n_{i\mathbf{k}}^{\alpha_t}
-C_{\mu i}^{\mathbf{k}}(C_{\nu i}^{\mathbf{k}})^*$ are built and three EXX
-evaluations are performed; energies, occupation gradients, and orbital
-gradients are accumulated weighted by $c_t$ and the appropriate
-$g_{\alpha_t}(n)$ or $g'_{\alpha_t}(n)$.
-
-By construction $f^{\mathrm{GEO}}(1,1) = 1$ (the coefficients
-$1/4 + 1/4 + 1/2 = 1$) and $f^{\mathrm{GEO}}(0, n_q) = 0$ analytically,
-matching the HF/Müller/Power behaviour at the $n=0$ and $n=1$ extremes.
-
 ### 2.4 Unified Exchange via Modified Density Matrix
 
 For the separable functionals (HF, Müller, Power), we can write
@@ -363,24 +334,20 @@ $$
 
 ### 5.4 Retraction on Stiefel Manifold
 
-After the Cholesky variable change $X = U C$ (with $S = U^\dagger U$, see §3.3),
-the constraint becomes $X^\dagger X = I$ and the orbital sub-problem lives on
-the standard Stiefel manifold $\mathrm{St}(N_b, N)$.  Three retractions are
-implemented; the choice is selected at run time by the `rdmft_orb_retraction`
-INPUT keyword (default `polar`).  All preserve $X_{\text{new}}^\dagger X_{\text{new}} = I$
-to machine precision when applicable.
+Given a tangent vector $\eta \in T_C \mathrm{St}$, the QR-based retraction is:
 
-| `rdmft_orb_retraction` | Formula (one Stiefel step with tangent $\eta = -\alpha\, G_R$) | Cost / robustness |
-|---|---|---|
-| **`polar`** (default) | $R_X(\eta) = (X + \eta)\bigl[(X+\eta)^\dagger (X+\eta)\bigr]^{-1/2}$, computed as Cholesky-QR: $M = (X+\eta)^\dagger (X+\eta) = L L^\dagger$, then $X_{\text{new}} = (X+\eta)\, L^{-\dagger}$. | One Cholesky + one triangular solve per k-point. Fully MPI-parallelised (ScaLAPACK `pdpotrf` + `pdtrsm`). Loses about half the working precision when $M$ is ill-conditioned, e.g. when $\alpha \|\eta\|$ is too large; the outer line search keeps $\alpha$ small enough that this rarely matters. |
-| **`qr`** | $R_X(\eta) = Q\, \mathrm{diag}\bigl(\mathrm{phase}(R_{ii})\bigr)$, where $X+\eta = Q R$ is the Householder QR (LAPACK `?geqrf` + `?orgqr`). The diagonal sign-fix makes $R$ have positive real diagonal so the retraction is uniquely defined. | More numerically robust than `polar` when $(X+\eta)^\dagger(X+\eta)$ is near-singular. Serial-only; MPI builds emit a one-time warning and fall back to `polar`. |
-| **`cayley`** | Wen-Yin low-rank Cayley retraction (Wen & Yin, *Math. Prog.* 142 (2013) 397, Algorithm 1). With $W = G_R X^\dagger - X G_R^\dagger$ rank-$2p$, $W = U V^\dagger$ for $U = [G_R \mid X]$, $V = [X \mid -G_R]$ (each $N \times 2p$): $$X_{\text{new}} = X - \alpha\, U \bigl(I_{2p} + \tfrac{\alpha}{2} V^\dagger U\bigr)^{-1}\, V^\dagger X.$$ | Solves only one $2p \times 2p$ system; preserves orthogonality exactly without a triangular factor. Attractive when $N \gg p$. Serial-only; MPI builds emit a one-time warning and fall back to `polar`. |
+$$
+R_C(\eta) = \mathrm{qf}(C + \eta)
+$$
 
-The retraction choice affects every orbital step in both the alternating
-strategy (§7.1) and the joint strategy (§7.2); a single
-`EnergyGradient::set_orb_retraction` call during solver initialisation forwards
-the INPUT value to `EnergyGradient::retract_orbitals`, which dispatches to
-`retract_polar`, `retract_qr_serial`, or `retract_cayley_serial`.
+where $\mathrm{qf}$ denotes the Q-factor of the QR decomposition (with positive diagonal in R),
+followed by S-orthogonalization: solve $S^{1/2} (C+\eta) = QR$, return $S^{-1/2} Q$.
+
+For the **polar retraction**:
+
+$$
+R_C(\eta) = (C + \eta) \bigl[ (C + \eta)^\dagger S (C + \eta) \bigr]^{-1/2}
+$$
 
 ---
 
@@ -413,54 +380,31 @@ $$
 \frac{\partial \mathcal{L}_A}{\partial n_{i\mathbf{k}}} = \frac{\partial E}{\partial n_{i\mathbf{k}}} + (\lambda + \mu  c(\mathbf{n}))  w_{\mathbf{k}}
 $$
 
-### 6.2 Spectral Projected Gradient (SPG)
+### 6.2 Projected Gradient Method
 
-The `rdmft_constraint = projected_gradient` (and the `active_set` alias, which
-routes here as well) optimisation of $n_{i\mathbf{k}}$ on the feasible set
-$\mathcal{C}$ uses the **Spectral Projected Gradient** method of
-Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with a **monotone**
-Armijo line search along the spectral projected direction (sufficient decrease
-vs the current energy $E(\mathbf{n}_k)$ at each inner step).  This is a
-standard variant for box-and-equality-constrained smooth optimisation; it has
-none of the trust-region caps, multi-stage SD-fallback chains, multiple `α₀`
-policies, or per-trial re-projection rejections of the earlier ABACUS PG/AS
-implementation.
+Optimize $n_{i\mathbf{k}}$ on the feasible set using a **projected search**
+along a descent direction, with monotone Armijo backtracking.
 
-**Per inner iteration $k$:**
+**Classical PG (reference).**  The textbook iterate is a gradient step followed
+by projection:
+$$
+\mathbf{x} = \mathbf{n}^{(t)} - \alpha_t \, \nabla_{\mathbf{n}} E(\mathbf{n}^{(t)}),\qquad
+\mathbf{n}^{(t+1)} = P_{\mathcal{C}}(\mathbf{x}),
+$$
+i.e. the map $\mathbf{n} \mapsto P_{\mathcal{C}}(\mathbf{n} - \alpha \nabla E)$.
 
-1. Compute $\mathbf{g}_k = \partial E/\partial \mathbf{n}$ at $\mathbf{n}_k$.
-2. Spectral (BB1) step length
-   $$
-   \alpha_k^{\mathrm{BB}} = \frac{\langle \mathbf{s}_k, \mathbf{s}_k\rangle}{\langle \mathbf{s}_k, \mathbf{y}_k\rangle},\qquad
-   \mathbf{s}_k = \mathbf{n}_k - \mathbf{n}_{k-1},\;\; \mathbf{y}_k = \mathbf{g}_k - \mathbf{g}_{k-1},
-   $$
-   safeguarded into $[\alpha_{\min}, \alpha_{\max}]$.  At the first inner step the
-   fallback is $\alpha_0 = 1/\max(1, \|\mathbf{g}\|_\infty)$.
-3. **Spectral projected direction**
-   $$
-   \mathbf{d}_k = P_{\mathcal{C}}\bigl(\mathbf{n}_k - \alpha_k^{\mathrm{BB}}\, \mathbf{g}_k\bigr) - \mathbf{n}_k.
-   $$
-   For any closed convex $\mathcal{C}$ this is provably a descent direction with
-   $$
-   \mathbf{g}_k^\top \mathbf{d}_k \le -\frac{\|\mathbf{d}_k\|^2}{\alpha_k^{\mathrm{BB}}} \le 0
-   $$
-   (BMR Lemma 2.1).  No descent-direction safeguard or trust-region cap is
-   needed.
-4. **Monotone Armijo** along the convex segment
-   $\mathbf{n}_k(\lambda) = \mathbf{n}_k + \lambda\, \mathbf{d}_k$,
-   $\lambda \in (0, 1]$: find the smallest $j \ge 0$ such that
-   $$
-   E\bigl(\mathbf{n}_k(\rho^j)\bigr)
-   \le E(\mathbf{n}_k) + c_1 \rho^j\, \mathbf{g}_k^\top \mathbf{d}_k,
-   $$
-   with $c_1$ from `rdmft_line_search_c1` and $\rho$ from `RDMFTConfig::line_search_rho`
-   (default `0.5`; not a separate INPUT keyword).  Each trial point $\mathbf{n}_k(\lambda)$ is the convex combination
-   $(1-\lambda)\mathbf{n}_k + \lambda P_{\mathcal{C}}(\cdots)$ of two feasible
-   points; convexity of $\mathcal{C}$ guarantees $\mathbf{n}_k(\lambda) \in
-   \mathcal{C}$ without re-projection.
-
-`rdmft_occ_optimizer` (sd / cg) is **not** consulted on this
-path: SPG already has a proven globally convergent step length.
+**ABACUS implementation (`rdmft_constraint = projected_gradient`).**  Each inner
+iteration uses a search direction $\mathbf{d}$ in occupation space from a
+configurable Euclidean optimizer (steepest descent, nonlinear conjugate
+gradient, L-BFGS, or Adam), controlled by INPUT `rdmft_occ_optimizer`.  If
+$\mathbf{d}^\top \mathbf{g} \ge 0$ with $\mathbf{g} = \nabla_{\mathbf{n}} E$,
+the code **replaces** $\mathbf{d}$ by $-\mathbf{g}$ (descent safeguard).  The
+trial is the **curvilinear** projected point
+$$
+\mathbf{n}'(\alpha) = P_{\mathcal{C}}\bigl(\mathbf{n} + \alpha \mathbf{d}\bigr),
+$$
+not only $P_{\mathcal{C}}(\mathbf{n} - \alpha \mathbf{g})$.  Classical PG is
+the special case $\mathbf{d} = -\mathbf{g}$.
 
 The projector $P_{\mathcal{C}}$ is the same for all variants; it maps onto
 $$\mathcal{C} = \left\{\mathbf{n}:\; 0\le n_{i\mathbf{k}}\le 1,\; \sum_{\mathbf{k}} w_{\mathbf{k}}\sum_i n_{i\mathbf{k}} = N_e\right\}.$$
@@ -506,61 +450,205 @@ constraint set is empty and no exact projection exists.
   per-dimension water-filling sort unless the problem is reparameterized
   accordingly.
 
-**Stopping criterion.**  Let
-$\mathbf{r}(\mathbf{n}) = \mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \nabla_{\mathbf{n}}E)$
-be the **τ-free Bertsekas projected-gradient residual** at unit step (the
-textbook SPG stationarity measure; BMR Eq. (2.6)).  At a KKT point of the
-constrained problem $\mathbf{r} = 0$.  The inner loop stops when
-$\|\mathbf{r}\|_\infty \le$ `rdmft_occ_proj_tol`.  The iteration cap is `rdmft_occ_maxiter`.
+**Step size and line search (ABACUS).**  The first trial step $\alpha_0$ for
+backtracking is chosen by INPUT `rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein
+(uses `rdmft_alm_bb_mode` and clamps `rdmft_alm_bb_alpha_min` /
+`rdmft_alm_bb_alpha_max`, with fallback to `rdmft_alpha_step`; unlike the ALM
+path this BB seed is **not** gated on `rdmft_alm_bb_enabled`), or a quadratic
+model from the previous inner iteration’s first energy trial (see
+`rdmft_usage.md`).  Monotone **Armijo**
+accepts $\alpha$ when
+$$
+E\bigl(\mathbf{n}'(\alpha)\bigr) \le E(\mathbf{n}) + c_1\, \mathbf{g}^\top \bigl(\mathbf{n}'(\alpha) - \mathbf{n}\bigr),
+$$
+with $c_1$ from INPUT `rdmft_line_search_c1` and geometric backtracking (multiply $\alpha$ by
+`line_search_rho`, default $0.5$ in `RDMFTConfig`; PG uses pure geometric shrink, not the polynomial
+Armijo refinements controlled by `rdmft_line_search_polynomial`).
+Trials with $\mathbf{g}^\top(\mathbf{n}'(\alpha)-\mathbf{n}) \ge 0$ are rejected
+(step not first-order descent along the projected segment).  If after
+projection the weighted electron sum differs from $N_e$ by more than $10^{-6}$,
+the trial is rejected (pathological / near-infeasible bracket).  **Special case
+(steepest descent):** $\mathbf{d}=-\mathbf{g}$ gives
+the familiar map $\phi(\alpha)=E(P_{\mathcal{C}}(\mathbf{n}-\alpha\mathbf{g}))$
+with the same Armijo inequality in terms of $\mathbf{n}'(\alpha)-\mathbf{n}$.
 
-**INPUT keywords (SPG path):** `rdmft_occ_proj_tol`,
-`rdmft_occ_maxiter`, `rdmft_line_search_c1`.  Backtracking uses a fixed ratio
-from `RDMFTConfig::line_search_rho` (default `0.5`; not a separate INPUT keyword).
+**Line search failure recovery.**  If no Armijo step is found, the solver applies
+one **projected steepest** move $\mathbf{n} \leftarrow P_{\mathcal{C}}(\mathbf{n} - \tau_{\mathrm{ls}}\,\mathbf{g})$
+with $\tau_{\mathrm{ls}} =$ `rdmft_alpha_step`, resets the occupation optimizer
+curvature state (CG / L-BFGS history), and continues.
 
-Pseudocode (SPG occupation inner loop; `P` denotes $P_{\mathcal{C}}$; no spin
-labels):
+**Stopping criteria (ABACUS inner loop).**  Let $\mathbf{g}_{\mathrm{proj}} =
+\bigl(\mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \tau \mathbf{g})\bigr)/\tau$
+(Bertsekas projected-gradient vector).  **$\tau$ is taken from the occupation
+line search** so the stationarity measure uses the same scale as the step:
+**pre-step**, $\tau = \alpha_0$ (the first Armijo trial from
+`rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein, or quad, with fallback to
+`rdmft_alpha_step` if the estimate is non-positive or non-finite); **post-step**
+after a successful line search, $\tau = \alpha_{\mathrm{acc}}$ (accepted
+Armijo step along $\mathbf{d}$); after **SD fallback** (failed line search),
+$\tau =$ `rdmft_alpha_step` (same step length as the recovery move).  The inner
+loop stops when $\|\mathbf{g}_{\mathrm{proj}}\|_\infty <$ `rdmft_occ_grad_tol`,
+evaluated **after** an accepted or fallback step (post-step $\mathbf{n}$ and
+gradient).  On the first inner iteration, if the **pre-step**
+$\|\mathbf{g}_{\mathrm{proj}}\|_\infty$ is already below tolerance, the inner
+loop exits immediately without a line search.
+**`rdmft_occ_energy_tol` is not used** for the PG occupation inner (kept for INPUT
+compatibility).  The iteration cap is `rdmft_occ_maxiter`.
+
+Numerical tips and implementation notes:
+
+- Use analytic gradients $\partial E/\partial n$; finite differences are costly.
+- **INPUT keywords (PG, ABACUS):** `rdmft_occ_optimizer`, `rdmft_occ_ls_init_step`
+  (sets Bertsekas pre-step $\tau=\alpha_0$ together with BB/quad clamps),
+  `rdmft_alpha_step` (fallback for invalid $\alpha_0$ and SD-fallback step length),
+  `rdmft_occ_grad_tol`, `rdmft_occ_maxiter`, `rdmft_line_search_c1`, and for the
+  `bb` branch of `rdmft_occ_ls_init_step` also `rdmft_alm_bb_mode`,
+  `rdmft_alm_bb_alpha_min`, `rdmft_alm_bb_alpha_max`.  Defaults and semantics
+  are tabulated in [`rdmft_usage.md`](rdmft_usage.md).
+- In practice, $P_{\mathcal{C}}$ is evaluated by solving the scalar dual
+  $\lambda$ in the shift–clip form above (bisection on a monotone
+  piecewise-linear map).  PG and active-set occupation updates in the code apply
+  this projection to trial occupation vectors after each line-search step.
+- If many occupations are interior (not at bounds), projected gradient is efficient.
+- If orthonormal orbitals are optimized concurrently, use separate step sizes for
+   orbitals and occupations or alternate updates (block coordinate style).
+- For orbital constraints (Stiefel), prefer Riemannian retraction (QR or polar)
+   rather than Euclidean clipping; see §5.4.
+
+Pseudocode (ABACUS projected-gradient inner loop; `project` denotes
+$P_{\mathcal{C}}$; neglect spin labels):
 
 ```text
-initialize n feasible; tol = rdmft_occ_proj_tol
-have_prev = false
+initialize n feasible; configure occ_optimizer, tol = rdmft_occ_grad_tol
 for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
-   r = n - P(n - g)
-   if ||r||_inf <= tol: break
-   if have_prev:
-      s = n - n_prev; y = g - g_prev
-      alpha_BB = clamp((s.s)/(s.y), alpha_min, alpha_max)   // BB1 + safeguard
-   else:
-      alpha_BB = 1 / max(1, ||g||_inf)
-   d = P(n - alpha_BB * g) - n         // spectral projected direction (descent)
-   dd = g . d                          // dd <= -||d||^2 / alpha_BB <= 0
-   f_ref = E(n)                        // monotone Armijo reference
-   lambda = 1
-   for ls = 1 .. line_search_max_iter:
-      if E(n + lambda*d) <= f_ref + c1 * lambda * dd: accept; break
-      lambda *= rho
-   n_prev = n; g_prev = g; have_prev = true
-   if accepted: n <- n + lambda * d
+   alpha0 = initial_step_from(rdmft_occ_ls_init_step, BB/quad, rdmft_alpha_step, clamps)
+   tau_pre = alpha0 if alpha0 > 0 else rdmft_alpha_step
+   g_proj_pre = (n - project(n - tau_pre * g)) / tau_pre
+   if inner == 0 and ||g_proj_pre||_inf < tol: break     // early exit
+   d = direction_from_optimizer(g, history)               // SD / CG / lbfgs / adam
+   if dot(d, g) >= 0: d = -g                              // descent safeguard
+   alpha = alpha0
+   n_save = n
+   success = false
+   alpha_acc = 0
+   for trial = 1 .. line_search_max_iter:
+      n_try = project(n + alpha * d)
+      if |sum(w*n_try) - N_e| > 1e-6: alpha *= rho; continue
+      delta = n_try - n
+      if dot(g, delta) >= 0: alpha *= rho; continue
+      if E(n_try) <= E(n) + c1 * dot(g, delta): success = true; n = n_try; alpha_acc = alpha; break
+      alpha *= rho
+   if not success:
+      n = project(n_save - rdmft_alpha_step * g)         // SD fallback
+      alpha_acc = rdmft_alpha_step
+      reset_optimizer_curvature_state()
+   recompute g at new n
+   tau_post = alpha_acc                                   // accepted α, or rdmft_alpha_step after fallback
+   g_proj_post = (n - project(n - tau_post * g)) / tau_post
+   if ||g_proj_post||_inf < tol: break
 end
 ```
 
 When not to use:
 
-- For convex inner sub-problems with a small active set near the solution,
-  an active-set / reduced-Newton solver (not currently implemented) would
-  achieve faster (superlinear) local convergence.
+- If the active-set (set of variables at bounds) is small and changes infrequently,
+   an active-set method or a second-order reduced Newton solve on the free set
+   may converge much faster near the solution.
 
-### 6.3 Active Set Method (alias)
+### 6.3 Active Set Method
 
-The `active_set` value of `rdmft_constraint` is now an **alias for
-`projected_gradient`**: both route to the SPG implementation in §6.2.  The
-projection $P_{\mathcal{C}}$ already handles bound activation implicitly; the
-bespoke active-set bookkeeping (with its own descent safeguard, optimiser
-restart on active-set change, two-stage SD-fallback line search and KKT
-complementarity stop) was removed in favour of the simpler SPG formulation,
-which has the same theoretical guarantees and is more robust on regularised
-separable functionals (Müller / Power / GEO) where $\partial E/\partial n$
-is bounded but very large near the regularisation cutoff.
+Maintain active sets
+$$\mathcal{A}_0 = \{I:\; n_I = 0\},\qquad \mathcal{A}_1 = \{I:\; n_I = 1\}$$
+and the free set $\mathcal{F} = \{I:\; 0 < n_I < 1\}$, where again $I=(i,\mathbf{k})$.
+
+Overview:
+
+- The active-set method iteratively guesses which bounds are active (occupied at
+   0 or 1) and solves a reduced equality-constrained optimization on the free set.
+   It then updates Lagrange multipliers for the active constraints and adjusts the
+   active set until KKT conditions are satisfied.
+
+Core algorithm (bound/simplex case):
+
+1. Choose an initial active set (for example from the current projected-gradient iterate).
+2. Solve the reduced problem on free variables: minimize $E(n)$ subject to
+    $\sum_{I\in\mathcal{F}} w_I n_I = N_e - \sum_{I\in\mathcal{A}_1} w_I$ and
+    $n_I$ fixed at 0 or 1 on active indices. This can be done via a Newton step
+    on free variables or by solving the KKT linear system for a quadratic model.
+3. If the step violates a bound for some free index, move along the step until
+    the first bound is hit; add that index to the corresponding active set and go to 2.
+4. Compute multipliers $\lambda_I$ for active constraints. If any multiplier
+    violates complementarity (wrong sign), remove its constraint from the active
+    set and go to 2.
+5. Stop when primal feasibility, complementary slackness and dual feasibility
+    (KKT residuals) are below tolerances.
+
+Pseudocode (sketch):
+
+```text
+initialize n, form A0, A1, F
+while not converged:
+   solve reduced Newton system on F (or perform CG on Hessian-free model)
+   compute candidate step and max step length before hitting bounds
+   if bound hit:
+      step to bound, add index to A0 or A1
+      continue
+   accept full step
+   compute multipliers for active constraints
+   if any multiplier violates sign condition:
+      remove violating index from active set
+      continue
+   check KKT residuals -> break if small
+end
+```
+
+Computing multipliers and KKT system:
+
+- If the reduced problem is solved by Newton, form the KKT linear system
+   (H_F  A^T; A 0) for Hessian on free set $H_F$ and equality constraint matrix
+   $A$ (the weighted-sum row). Solve for primal step and multiplier update.
+- For large systems use iterative solvers (CG, MINRES) preconditioned by a
+   diagonal or limited-memory factor.
+
+Numerical tips:
+
+- Warm-start linear solves: cache factorizations of the reduced Hessian and update
+   incrementally when the active set changes.
+- Use limited-memory quasi-Newton (lbfgs) on the free set if exact Hessians are
+   expensive; form a small KKT system for the equality constraint.
+- Add trust-region safeguards or fallback to projected-gradient when the
+   reduced-step increases the objective (nonconvexity caution).
+
+When to prefer active-set:
+
+- When only a small fraction of occupations are at the bounds (sparse active set),
+   the reduced Newton/QUASI-NEWTON solves can converge in very few outer iterations
+   and achieve fast (superlinear) local convergence.
+
+Hybrid strategies:
+
+- A practical pattern is to run projected-gradient iterations to approach
+   a neighborhood of the solution, then switch to an active-set solver to
+   enforce exact complementary slackness and remove the residual projected gradient.
+- For RDMFT: use projected gradient for several outer iterations, detect when
+   many occupations settle near 0 or 1, then invoke active-set on the remaining
+   free occupations while holding orbitals fixed (or solved together in a
+   reduced joint solve).
+
+Stopping and tolerances:
+
+- KKT residual tolerances for active-set: primal feasibility ~1e-8–1e-6,
+   dual complementarity ~1e-6–1e-4 depending on problem scale.
+- Use looser tolerances during early iterations and tighten near convergence.
+
+Examples and diagnostics:
+
+- Log active-set entries and multiplier signs each iteration to diagnose
+   oscillations (add/remove cycles). If oscillations occur, increase damping
+   or use a small trust-region.
+- Compare final active-set with projected-gradient saturations to validate
+   the hybrid strategy.
 
 
 ---
@@ -571,58 +659,8 @@ is bounded but very large near the regularisation cutoff.
 
 Alternate between:
 
-- **Occupation step**: Fix $C^{\mathbf{k}}$, optimise $n_{i\mathbf{k}}$ on the
-  feasible set $\mathcal{C} = \{0 \le n_{ik} \le 1,\; \sum_k w_k\sum_i n_{ik} = N_e\}$.
-  Implementation: the Spectral Projected Gradient method described in §6.2.
-
-- **Orbital step**: Fix $n_{i\mathbf{k}}$, optimise $X^{\mathbf{k}}$ on the
-  Stiefel manifold $\mathrm{St}(N_b, N_{\mathrm{basis}})$ in X-space
-  (after the Cholesky $S = U^H U$ change of variable, §3.4 + §5.4).
-
-  The orbital sub-problem uses a textbook Riemannian gradient method
-  (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix
-  Manifolds*, Princeton 2008, §4.2). Per inner iteration:
-
-  1. Evaluate $E$ and the Euclidean gradient $G$, then project to the
-     Riemannian gradient
-     $G_R = G - X\,\mathrm{sym}(X^H G)$ at the current iterate $X_k$.
-  2. Build the search direction $D \in T_{X_k}\mathrm{St}$ according to
-     `rdmft_orb_optimizer`:
-       - `sd`: $D = -G_R$.
-       - `cg`: Polak–Ribière⁺ with vector transport by tangent-space
-         projection of $(G_R^{\mathrm{prev}}, D_{\mathrm{prev}})$ at
-         $X_k$.
-     Descent safeguard: if $\langle G_R, D\rangle \ge 0$ (or non-finite),
-     reset $D = -G_R$.
-  3. Line search along the retracted curve
-     $X(\alpha) = R_{X_k}(\alpha\,D)$ where $R$ is one of three Stiefel
-     retractions selected by `rdmft_orb_retraction` (§5.4; default
-     `polar`): **monotone Strong Wolfe** (`nonmonotone_strong_wolfe_line_search`
-     in `rdmft_optimizer.h`), i.e. sufficient decrease vs $\varphi(0)$ and a curvature bound on
-     $|\varphi'(\alpha)|$. Initial trial uses INPUT `rdmft_alpha_step` (mapped to
-     `line_search_alpha_init` in code; with CG scaling from the previous accepted
-     step when available).
-  4. Commit $X_{k+1} = R_{X_k}(\alpha\,D)$ with the accepted $\alpha$.
-
-  No Barzilai–Borwein spectral step on this path (unlike SPG occupations), no
-  Wen–Yin trust radius, no suspicious-descent guard. Convergence
-  criterion: $\lVert G_R\rVert_F \le \varepsilon_g \max(1, \lVert G_R(X_0)\rVert_F)$
-  with `rdmft_orb_grad_tol` as $\varepsilon_g$ and $X_0$ the iterate at the start
-  of the orbital inner loop.
-
-  **Caveat for regularised functionals (Müller / Power / GEO).**  Because
-  the regularised functionals at fractional occupations have no global
-  lower bound as a function of $X$ (the exchange Coulomb integral
-  $K_{ij} = \langle \phi_i\phi_j|r_{12}^{-1}|\phi_i\phi_j\rangle$ can be
-  made arbitrarily large by orbital concentration), an aggressive line search can
-  in principle accept huge "descents" $E_{\mathrm{trial}} - E \sim -10^4$
-  Ry into a spurious unphysical basin. Mitigations: (i) tighten
-  `rdmft_orb_grad_tol` only as far as the physical basin's descent map
-  warrants; (ii) reduce `rdmft_alpha_step` so the first trial
-  $\alpha_0\,D$ is small relative to $\lVert X\rVert_F$; (iii) when the
-  alternating outer loop diverges in this way, switch to
-  `rdmft_solver_strategy = joint`, which scales the orbital block by
-  `joint_orb_scale` and avoids the alternating amplification.
+- **Orbital step**: Fix $n_{i\mathbf{k}}$, optimize $C^{\mathbf{k}}$ on Stiefel manifold
+- **Occupation step**: Fix $C^{\mathbf{k}}$, optimize $n_{i\mathbf{k}}$ with constraints
 
 ### 7.2 Joint (Product Manifold) Optimization
 
@@ -647,7 +685,7 @@ In the implementation (`rdmft_solver.cpp::solve_joint`), the occupation
 parameters and orbital coefficients are packed into **one** vector
 $z = (\,p\,,\,\mathrm{flat}(C^1), \ldots, \mathrm{flat}(C^{N_k})\,)$ and a
 **single** Euclidean optimiser, selected via the `rdmft_joint_optimizer`
-keyword (default `cg`), drives its evolution. Each outer iteration:
+keyword (default lbfgs), drives its evolution. Each outer iteration:
 
 1. evaluates the energy $E$ and Euclidean gradients $(\nabla_n E, \nabla_C E)$;
 2. chain-rules $\nabla_n E \to \nabla_p E$ through the occupation
@@ -657,20 +695,22 @@ keyword (default `cg`), drives its evolution. Each outer iteration:
    and asks the single unified optimiser for a packed descent direction
    $d = (d_p, \mathrm{flat}(d_{C^1}), \ldots)$;
 4. re-projects each orbital block $d_{C^{\mathbf{k}}}$ onto the tangent space
-   at the current $C^{\mathbf{k}}$ (the packed direction may drift slightly off
-   the tangent space numerically) and falls back to
+   at the current $C^{\mathbf{k}}$ (necessary because Euclidean preconditioners
+   used by lbfgs / Adam generally leave the tangent space) and falls back to
    the packed steepest-descent direction $d = -g$ if the joint directional
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
    is not negative;
-5. performs a single **monotone Strong Wolfe** line search along the packed
+5. performs a single Armijo backtracking line search along the packed
    direction: the occupation parameters are updated linearly
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
    $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_{C^{\mathbf{k}}})$;
-6. when `rdmft_joint_optimizer` is `cg`, builds the new packed gradient at the
-   step's end-point and calls `update()` so the conjugate-gradient state is
-   advanced; then refreshes the augmented-Lagrangian multiplier.
+6. builds the new packed gradient at the step's end-point and feeds
+   $(g_\text{new}, \alpha\, d)$ to the unified optimiser's `update()`, so its
+   history (lbfgs $(s,y)$ pairs, Adam moments, CG previous gradient) is
+   updated once with a coherent product-manifold view; then refreshes the
+   augmented-Lagrangian multiplier.
 
 This is precisely Riemannian optimisation on the product manifold
 $\mathcal{M}$ with a single shared optimiser and line search, rather than
@@ -689,8 +729,7 @@ $$
 x_{t+1} = R_{x_t}(-\alpha_t  \mathrm{grad} f(x_t))
 $$
 
-with step size $\alpha_t$ chosen by line search (here: monotone Strong Wolfe
-along the retraction / product update, except SPG occupations which use BB + monotone Armijo).
+with step size $\alpha_t$ chosen by line search (Armijo backtracking).
 
 ### 8.2 Conjugate Gradient (CG)
 
@@ -701,6 +740,16 @@ $$
 $$
 
 with Fletcher-Reeves or Polak-Ribière $\beta_t$.
+
+### 8.3 lbfgs
+
+limited-memory lbfgs adapted to Riemannian setting using vector transport
+to move previous gradients and steps to the current tangent space.
+
+### 8.4 Adam
+
+Riemannian Adam with bias-corrected first and second moment estimates,
+transported to the current tangent space.
 
 ---
 

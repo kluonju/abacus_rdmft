@@ -18,13 +18,12 @@ if(ENABLE_LCAO AND BUILD_TESTING)
         )
     endif()
     AddTest(
-        TARGET rdmft_optimizer_test
-        SOURCES test_rdmft_optimizer.cpp
+        TARGET rdmft_stiefel_test
+        SOURCES test_rdmft_stiefel.cpp
     )
     AddTest(
-        TARGET rdmft_orbital_step_test
-        LIBS ${math_libs}
-        SOURCES test_rdmft_orbital_step.cpp
+        TARGET rdmft_optimizer_test
+        SOURCES test_rdmft_optimizer.cpp
     )
     AddTest(
         TARGET rdmft_joint_test
@@ -32,12 +31,6 @@ if(ENABLE_LCAO AND BUILD_TESTING)
     )
     AddTest(
         TARGET rdmft_occ_optimizer_test
-        LIBS base ${math_libs} device parameter
         SOURCES test_rdmft_occ_optimizer.cpp
-    )
-    AddTest(
-        TARGET rdmft_psi_flat_test
-        LIBS parameter ${math_libs} base device psi
-        SOURCES test_rdmft_psi_flat.cpp
     )
 endif()

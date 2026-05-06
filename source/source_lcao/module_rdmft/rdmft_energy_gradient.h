@@ -86,7 +86,6 @@ class EnergyGradient
     double E_one_body() const { return E_one_; }
     double E_hartree() const { return E_hartree_; }
     double E_xc() const { return E_xc_; }
-    double E_xc_dft_semilocal() const { return E_xc_dft_semilocal_; }
     double E_ewald() const { return E_ewald_; }
     double E_total() const { return E_total_; }
     /// Binary-entropy regularization energy γ·Σ w_k f(n) from last compute / compute_energy.
@@ -101,40 +100,10 @@ class EnergyGradient
     void build_charge(const std::vector<double>& occ_flat,
                       const psi::Psi<TK>& wfc);
 
-    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|.
-    /// When `alpha_override > 0`, use n^alpha_override instead of the functional's g(n).
-    /// This is needed by non-separable functionals (e.g. GEO) whose energy is the sum of
-    /// several separable Power-like terms: each call evaluates one term.
+    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|
     void build_DM_xc(const std::vector<double>& occ_flat,
                      const psi::Psi<TK>& wfc,
-                     std::vector<std::vector<TK>>& DM_XC,
-                     double alpha_override = 0.0);
-
-    /// GEO: evaluate the three separable Power-like exchange contributions and
-    /// fill per-k accumulators usable in the main energy / gradient assembly:
-    ///
-    ///   vx_diag_E_acc[ik][ib]  = Σ_t c_t · n_{ik,ib}^{α_t} · ⟨φ| H_exx[γ^t] |φ⟩
-    ///   vx_diag_G_acc[ik][ib]  = Σ_t c_t · d/dn (n^{α_t}) · ⟨φ| H_exx[γ^t] |φ⟩
-    ///   Hpsi_x_acc[ik](ib,μ)   = Σ_t c_t · n_{ik,ib}^{α_t} · (H_exx[γ^t] · φ)_μ
-    ///
-    /// where (c_t, α_t) ∈ {(1/4, 1), (1/4, 1/2), (1/2, 3/4)} is the GEO decomposition
-    /// of f^GEO(n_p, n_q) = [n_p n_q + (n_p n_q)^{1/2} + 2(n_p n_q)^{3/4}] / 4.
-    /// `compute_orb_grad` controls whether `Hpsi_x_acc` is filled (skip for energy-only).
-    void compute_geo_exx_contributions(const std::vector<double>& occ_flat,
-                                        const psi::Psi<TK>& wfc,
-                                        std::vector<std::vector<double>>& vx_diag_E_acc,
-                                        std::vector<std::vector<double>>& vx_diag_G_acc,
-                                        std::vector<std::vector<TK>>& Hpsi_x_acc,
-                                        bool compute_orb_grad);
-
-    /// optGM: two-term EXX assembly for K_ij = (1−λ) n_i n_j + λ n_i^α n_j^α
-    /// (same accumulator layout as GEO).
-    void compute_optgm_exx_contributions(const std::vector<double>& occ_flat,
-                                         const psi::Psi<TK>& wfc,
-                                         std::vector<std::vector<double>>& vx_diag_E_acc,
-                                         std::vector<std::vector<double>>& vx_diag_G_acc,
-                                         std::vector<std::vector<TK>>& Hpsi_x_acc,
-                                         bool compute_orb_grad);
+                     std::vector<std::vector<TK>>& DM_XC);
 
     /// Compute one-body Hamiltonian * wfc and diagonal elements
     void compute_one_body(const psi::Psi<TK>& wfc,
@@ -159,25 +128,6 @@ class EnergyGradient
     void compute_diagonal(const TK* psi_k, const TK* Hpsi_k,
                           double* diag, int ik) const;
 
-    /// Polar retraction (Cholesky-QR S-orthonormalisation), MPI + serial.
-    /// Default retraction; the original retract_orbitals body.
-    void retract_polar(psi::Psi<TK>& wfc,
-                       const psi::Psi<TK>& grad_wfc,
-                       double alpha);
-
-    /// Householder QR retraction with sign-fixed R diagonal. Serial-only;
-    /// in MPI builds, retract_orbitals falls back to retract_polar.
-    void retract_qr_serial(psi::Psi<TK>& wfc,
-                           const psi::Psi<TK>& grad_wfc,
-                           double alpha);
-
-    /// Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397,
-    /// Algorithm 1). Serial-only; in MPI builds, retract_orbitals falls
-    /// back to retract_polar.
-    void retract_cayley_serial(psi::Psi<TK>& wfc,
-                               const psi::Psi<TK>& grad_wfc,
-                               double alpha);
-
   public:
     /// Project orbital gradient onto the tangent space of the Stiefel manifold
     /// with overlap matrix S (generalised Stiefel: C^H S C = I).
@@ -194,34 +144,12 @@ class EnergyGradient
 
     /// S-orthonormalise wfc along the direction grad_wfc with step -alpha:
     ///   C <- C - alpha * G
-    ///   C <- R(C - alpha G)
-    /// where R is one of three retractions on the standard Stiefel manifold
-    /// in X-space (X^H X = I), selected by `set_orb_retraction`:
-    ///
-    ///   Polar  (default): R(Y) = Y * (Y^H Y)^{-1/2}, Cholesky-QR implementation.
-    ///                     Cheap, MPI-supported. Loses ~half precision when
-    ///                     Y^H Y is ill-conditioned.
-    ///   QR             : R(Y) = qf(Y) via Householder QR with sign-fixed R
-    ///                     diagonal. More numerically robust. Serial-only;
-    ///                     MPI builds fall back to Polar with a one-time
-    ///                     warning.
-    ///   Cayley         : Wen-Yin low-rank Cayley retraction (Math. Prog. 142
-    ///                     (2013) 397, Algorithm 1). Solves a 2p x 2p system
-    ///                     and is exactly orthogonality-preserving without
-    ///                     factorisation. Serial-only; MPI falls back to
-    ///                     Polar with a one-time warning.
-    ///
-    /// The retraction choice can be changed at any time before calling this
-    /// function (typically by RDMFTSolver during `init`).
+    ///   C <- C * M^{-1/2}   where M = C^H S C
+    /// Ensures the new orbitals lie on the generalised Stiefel manifold
+    /// (C^H S C = I) to machine precision.
     void retract_orbitals(psi::Psi<TK>& wfc,
                           const psi::Psi<TK>& grad_wfc,
                           double alpha);
-
-    /// Select which retraction `retract_orbitals` uses. Default is Polar.
-    /// Setting this to QR or Cayley in an MPI build emits a one-time warning
-    /// and falls back to Polar inside `retract_orbitals`.
-    void set_orb_retraction(OrbRetraction r) { orb_retraction_ = r; }
-    OrbRetraction orb_retraction() const { return orb_retraction_; }
 
     /// Return pointer to overlap matrix at k-point ik (column-major).
     /// Rebuilt lazily the first time it is requested per ion step.
@@ -290,21 +218,17 @@ class EnergyGradient
     std::unique_ptr<hamilt::HContainer<TR>> HR_one_;
     std::unique_ptr<hamilt::HContainer<TR>> HR_hartree_;
     std::unique_ptr<hamilt::HContainer<TR>> HR_exx_;
-    /// Semilocal DFT XC (PotXC on RDMFT rho); used when rdmft_hybrid_dft_xc is enabled.
-    std::unique_ptr<hamilt::HContainer<TR>> HR_xc_dft_;
     std::unique_ptr<hamilt::HContainer<TR>> SR_;
 
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_one_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_hartree_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_exx_;
-    std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_xc_dft_;
     std::unique_ptr<hamilt::HS_Matrix_K<TK>> hsk_overlap_;
 
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_ekinetic_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_nonlocal_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_local_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_hartree_;
-    std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_xc_dft_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_exx_;
     std::unique_ptr<hamilt::OperatorLCAO<TK, TR>> op_overlap_;
 
@@ -321,8 +245,6 @@ class EnergyGradient
     double E_one_ = 0.0;
     double E_hartree_ = 0.0;
     double E_xc_ = 0.0;
-    /// Last compute: λ·E_xc^DFT[ρ] from PotXC when hybrid semilocal XC is active.
-    double E_xc_dft_semilocal_ = 0.0;
     double E_ewald_ = 0.0;
     double E_entropy_ = 0.0;
     double E_total_ = 0.0;
@@ -343,18 +265,9 @@ class EnergyGradient
     /// Stored in column-major format. Only the upper triangle is meaningful;
     /// the lower triangle may contain arbitrary values after the factorisation.
     /// Size is nbasis_local * nbasis_local (non-MPI) or ParaV_->nloc (MPI).
-    /// All X-space transforms that conceptually need U_k^{-1} (wfc_X_to_C,
-    /// grad_C_to_X) implement that as a triangular solve against U_k via
-    /// pdtrsm_, so we never store the explicit inverse — this halves the
-    /// per-k Cholesky memory footprint.
     std::vector<std::vector<TK>> Uk_;
-
-    /// Orbital retraction selector. Default Polar matches the historical
-    /// Cholesky-QR S-orthonormalisation. QR / Cayley are serial-only.
-    OrbRetraction orb_retraction_ = OrbRetraction::Polar;
-    /// Set true after the first time an MPI fallback warning is emitted, so
-    /// the message does not flood the log.
-    mutable bool orb_retraction_mpi_fallback_warned_ = false;
+    /// U_k^{-1} for each k-point, same upper-triangular column-major layout.
+    std::vector<std::vector<TK>> Uk_inv_;
 };
 
 } // namespace rdmft

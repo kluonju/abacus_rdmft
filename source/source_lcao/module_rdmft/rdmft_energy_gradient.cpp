@@ -59,31 +59,11 @@ extern "C" {
     void pztrtri_(const char* uplo, const char* diag, const int* n,
                   std::complex<double>* A, const int* ia, const int* ja, const int* descA,
                   int* info);
-
-    // Householder QR (serial-only; used by retract_qr_serial).
-    void dgeqrf_(const int* m, const int* n, double* A, const int* lda,
-                 double* tau, double* work, const int* lwork, int* info);
-    void zgeqrf_(const int* m, const int* n, std::complex<double>* A, const int* lda,
-                 std::complex<double>* tau, std::complex<double>* work,
-                 const int* lwork, int* info);
-    void dorgqr_(const int* m, const int* n, const int* k, double* A,
-                 const int* lda, const double* tau, double* work,
-                 const int* lwork, int* info);
-    void zungqr_(const int* m, const int* n, const int* k, std::complex<double>* A,
-                 const int* lda, const std::complex<double>* tau,
-                 std::complex<double>* work, const int* lwork, int* info);
-    // 2p x 2p LU solve (serial-only; used by retract_cayley_serial).
-    void dgesv_(const int* n, const int* nrhs, double* A, const int* lda,
-                int* ipiv, double* B, const int* ldb, int* info);
-    void zgesv_(const int* n, const int* nrhs, std::complex<double>* A,
-                const int* lda, int* ipiv, std::complex<double>* B,
-                const int* ldb, int* info);
 }
 
 #include <cmath>
 #include <cstdint>
 #include <algorithm>
-#include <numeric>
 #include <iostream>
 #include <iomanip>
 #include <memory>
@@ -261,41 +241,6 @@ constexpr double rdmft_occ_weight_eps = 1e-12;
 inline bool rdmft_skip_occ_weight(double x)
 {
     return std::fabs(x) < rdmft_occ_weight_eps;
-}
-
-/// Semilocal DFT XC hybrid: λ·E_xc[ρ] and (1−λ) on RI RDMFT exchange (INPUT).
-inline bool rdmft_hybrid_dft_xc_active()
-{
-    return PARAM.inp.rdmft_hybrid_dft_xc && PARAM.inp.rdmft_hybrid_dft_xc_lambda > 0.0;
-}
-
-inline double rdmft_hybrid_exchange_scale()
-{
-    return rdmft_hybrid_dft_xc_active() ? (1.0 - PARAM.inp.rdmft_hybrid_dft_xc_lambda) : 1.0;
-}
-
-/// Per-k descending occupation order: rank_out[ib] = 0 for highest n (ties: lower ib first).
-inline void rdmft_bbc3_band_ranks(int nbands, const double* occ_k, std::vector<int>& rank_out)
-{
-    rank_out.resize(nbands);
-    std::vector<int> ord(nbands);
-    std::iota(ord.begin(), ord.end(), 0);
-    std::stable_sort(ord.begin(), ord.end(),
-                     [&](int a, int b) { return occ_k[a] > occ_k[b]; });
-    for (int r = 0; r < nbands; ++r)
-    {
-        rank_out[ord[r]] = r;
-    }
-}
-
-/// Number of "strongly" occupied bands per k (BBC3-inspired): align with PARAM.inp.nelec / nspin.
-inline int rdmft_bbc3_n_strong_bands()
-{
-    const double ne = PARAM.inp.nelec;
-    int n_target = (PARAM.inp.nspin == 2) ? static_cast<int>(std::lround(0.5 * ne))
-                                          : static_cast<int>(std::lround(ne));
-    n_target = std::max(1, n_target);
-    return std::min(n_target, PARAM.inp.nbands);
 }
 } // namespace
 
@@ -512,24 +457,49 @@ void EnergyGradient<TK, TR>::init(
     HR_one_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     HR_hartree_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     HR_exx_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
-    HR_xc_dft_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
     SR_ = std::make_unique<hamilt::HContainer<TR>>(*ucell_, ParaV_);
 
     hsk_one_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     hsk_hartree_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     hsk_exx_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
-    hsk_xc_dft_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, true);
     // The overlap operator writes S(k) into hsk->sk via hsk->get_sk(),
     // so we must allocate sk (second arg false -> no_s==false)
     hsk_overlap_ = std::make_unique<hamilt::HS_Matrix_K<TK>>(ParaV_, false);
 
     if (PARAM.inp.gamma_only)
     {
+        // Match KS-LCAO's gamma-only convention exactly (HamiltLCAO::HamiltLCAO,
+        // hamilt_lcao.cpp:136): pre-fix_gamma the H-side containers but
+        // **leave SR_ alone**.
+        //
+        // Why: the operators that fill HR (EKinetic / Nonlocal /
+        // Veff_rdmft_local / Exx_LRI) all iterate `adjs_all` over every
+        // neighbour cell and += accumulate into `find_matrix(iat1,iat2,R)`,
+        // which on a gamma-only HContainer returns the single (0,0,0)
+        // BaseMatrix for every R query. So pre-fix_gamma is harmless on the
+        // H-side and matches KS exactly.
+        //
+        // BUT `Overlap::calculate_SR` (`overlap.cpp:143-163`) loops the
+        // AtomPair's `tmp.get_R_size()` instead of `adjs_all`, computes per-R
+        // S(R) values into per-R BaseMatrix entries, and only at the end of
+        // `calculate_SR` calls `SR->fix_gamma()` itself when TK==double.  If
+        // we pre-fix_gamma SR_ here, `populate_atom_pairs` collapses every
+        // inserted AtomPair to a single (0,0,0) entry **before** values are
+        // computed, so `calculate_SR` then only iterates that one entry and
+        // misses the periodic-image S(R≠0) sum.  The result is an
+        // S(Γ) that is **smaller** than the one KS-LCAO uses, and the wfc
+        // ABACUS hands to RDMFT (normalised against the KS S(Γ)) gives
+        // wrong matrix elements `<ψ|h|ψ>`, `<ψ|V_H|ψ>`, `<ψ|H_exx|ψ>` —
+        // exactly the H2_HF-on-gamma-only-with-small-cell symptom we
+        // diagnosed earlier (`||S||_F^2` was 10.04 in the buggy gamma-only
+        // path vs 11.87 with the multi-k single-Γ path that *did* match KS).
+        //
+        // Fix: only fix_gamma the H-side; leave SR_ to be populated and then
+        // auto-fix_gamma'd by `Overlap::calculate_SR` itself, exactly as KS
+        // does (it never pre-fix_gamma's its sR; see hamilt_lcao.cpp).
         HR_one_->fix_gamma();
         HR_hartree_->fix_gamma();
         HR_exx_->fix_gamma();
-        HR_xc_dft_->fix_gamma();
-        SR_->fix_gamma();
     }
 
 #ifdef __EXX
@@ -635,31 +605,10 @@ void EnergyGradient<TK, TR>::update_ion(
 #ifdef __EXX
     if (exx_enabled_)
     {
-        try
-        {
-            if (GlobalC::exx_info.info_ri.real_number)
-                exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
-            else
-                exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
-        }
-        catch (const std::bad_alloc& e)
-        {
-            // The EXX RI tensor build (Cs / Vs) is the dominant memory user in RDMFT
-            // setup.  When per-rank memory is insufficient a bare std::bad_alloc with
-            // no location is thrown, which confuses end users.  Wrap with a hint that
-            // points at the standard EXX memory knobs.
-            std::ostringstream msg;
-            msg << "RDMFT EXX RI tensor build (Exx_LRI::cal_exx_ions) ran out of memory: "
-                << e.what()
-                << ". Reduce per-rank memory by tightening EXX thresholds "
-                   "(exx_pca_threshold, exx_c_threshold, exx_v_threshold, "
-                   "exx_dm_threshold), reducing exx_ccp_rmesh_times, or increasing "
-                   "the number of MPI ranks / memory per rank.  See "
-                   "docs/CONTRIBUTING.md and source/source_lcao/module_rdmft/doc/"
-                   "rdmft_usage.md for guidance.";
-            GlobalV::ofs_running << msg.str() << std::endl;
-            throw std::runtime_error(msg.str());
-        }
+        if (GlobalC::exx_info.info_ri.real_number)
+            exx_lri_d_->cal_exx_ions(const_cast<UnitCell&>(ucell));
+        else
+            exx_lri_c_->cal_exx_ions(const_cast<UnitCell&>(ucell));
     }
 #endif
 
@@ -712,51 +661,18 @@ template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::build_DM_xc(
     const std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc,
-    std::vector<std::vector<TK>>& DM_XC,
-    double alpha_override)
+    std::vector<std::vector<TK>>& DM_XC)
 {
     DM_XC.resize(nk_, std::vector<TK>(ParaV_->nloc, TK(0)));
 
     // Build wk_g matrix: wk[ik] * g(n(ik, ib)). Bands with g(n)=0 do not enter the XC density matrix.
-    // BBC3-inspired (separable RI DM only; not full non-separable BBC3): natural orbitals sorted
-    // by decreasing n at each k (ties: lower band index first). Reference: K. Pernal, Phys. Rev. Lett.
-    // 94, 022002 (2005); BBC3 / BBC family in Baerends et al. Strong bands: Müller sqrt(n); weak: HF n.
-    // Permutation is fixed for the current n (piecewise constant w.r.t. small perturbations).
     ModuleBase::matrix wk_g(nk_, nbands_);
-    const bool bbc3 = (xc_func_.type() == XCFunctionalType::BBC3);
-    const bool use_override = (alpha_override > 0.0);
-    const int n_strong = bbc3 ? rdmft_bbc3_n_strong_bands() : 0;
-    std::vector<int> rank_ib;
     for (int ik = 0; ik < nk_; ++ik)
     {
-        const double wk = kv_->wk[ik];
-        const double* occ_k = &occ_flat[ik * nbands_];
-        if (bbc3)
-        {
-            rdmft_bbc3_band_ranks(nbands_, occ_k, rank_ib);
-        }
         for (int ib = 0; ib < nbands_; ++ib)
         {
-            const double n = occ_k[ib];
-            double eff_g = 0.0;
-            if (use_override)
-            {
-                // GEO term: build DM with n^{alpha_override}, regularised the same way as g().
-                eff_g = xc_func_.pow_reg(n, alpha_override);
-            }
-            else if (!bbc3)
-            {
-                eff_g = xc_func_.g(n);
-            }
-            else if (rank_ib[ib] < n_strong)
-            {
-                eff_g = xc_func_.g(n);
-            }
-            else
-            {
-                eff_g = n;
-            }
-            wk_g(ik, ib) = rdmft_skip_occ_weight(eff_g) ? 0.0 : wk * eff_g;
+            const double gn = xc_func_.g(occ_flat[ik * nbands_ + ib]);
+            wk_g(ik, ib) = rdmft_skip_occ_weight(gn) ? 0.0 : kv_->wk[ik] * gn;
         }
     }
 
@@ -915,247 +831,6 @@ inline TK* psi_k_ptr_or_dummy(psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
 }
 
 } // namespace
-
-template <typename TK, typename TR>
-void EnergyGradient<TK, TR>::compute_geo_exx_contributions(
-    const std::vector<double>& occ_flat,
-    const psi::Psi<TK>& wfc_eval,
-    std::vector<std::vector<double>>& vx_diag_E_acc,
-    std::vector<std::vector<double>>& vx_diag_G_acc,
-    std::vector<std::vector<TK>>& Hpsi_x_acc,
-    bool compute_orb_grad)
-{
-    assert(xc_func_.type() == XCFunctionalType::GEO);
-    vx_diag_E_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
-    vx_diag_G_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
-    const int nb_local = wfc_eval.get_nbands();
-    const int nbs_local = wfc_eval.get_nbasis();
-    const std::int64_t hpsi_alloc
-        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
-    if (compute_orb_grad)
-    {
-        Hpsi_x_acc.assign(nk_, std::vector<TK>(static_cast<size_t>(hpsi_alloc), TK(0)));
-    }
-    else
-    {
-        Hpsi_x_acc.clear();
-    }
-
-#ifdef __EXX
-    if (!exx_enabled_) return;
-
-    std::vector<TK> Hpsi_t(static_cast<size_t>(hpsi_alloc), TK(0));
-    std::vector<double> vx_t(nbands_, 0.0);
-    std::vector<TK> psi_dummy(1, TK(0));
-
-    for (int t = 0; t < XCFunctional::num_geo_terms(); ++t)
-    {
-        const double c_t = xc_func_.mixture_coef(t);
-        const double a_t = XCFunctional::geo_alpha(t);
-        if (c_t == 0.0) continue;
-
-        std::vector<std::vector<TK>> DM_XC;
-        build_DM_xc(occ_flat, wfc_eval, DM_XC, a_t);
-
-        if (exx_spacegroup_symmetry_)
-            DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
-
-        std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
-        for (size_t ik = 0; ik < DM_XC.size(); ++ik)
-            DM_XC_ptr[ik] = &DM_XC[ik];
-
-        if (GlobalC::exx_info.info_ri.real_number)
-        {
-            auto Ds = std::is_same<TK, double>::value
-                ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
-                : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
-                                                      exx_spacegroup_symmetry_);
-            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
-                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
-            else
-                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
-        }
-        else
-        {
-            auto Ds = std::is_same<TK, double>::value
-                ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
-                : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
-                                                                     exx_spacegroup_symmetry_);
-            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
-                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
-            else
-                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
-        }
-
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
-
-            hsk_exx_->set_zero_hk();
-            if (GlobalC::exx_info.info_ri.real_number)
-            {
-                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
-                    1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
-            }
-            else
-            {
-                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
-                    1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
-            }
-            std::fill(Hpsi_t.begin(), Hpsi_t.end(), TK(0));
-            apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_t.data());
-            std::fill(vx_t.begin(), vx_t.end(), 0.0);
-            compute_diagonal(psi_k, Hpsi_t.data(), vx_t.data(), ik);
-
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const double n = occ_flat[ik * nbands_ + ib];
-                vx_diag_E_acc[ik][ib] += c_t * xc_func_.pow_reg(n, a_t) * vx_t[ib];
-                vx_diag_G_acc[ik][ib] += c_t * xc_func_.dpow_reg(n, a_t) * vx_t[ib];
-            }
-            if (compute_orb_grad)
-            {
-                TK* acc_k = Hpsi_x_acc[ik].data();
-                for (int ib_local = 0; ib_local < nb_local; ++ib_local)
-                {
-                    int ib_global = ParaV_->local2global_col(ib_local);
-                    if (ib_global >= nbands_) continue;
-                    const double n = occ_flat[ik * nbands_ + ib_global];
-                    const double w = c_t * xc_func_.pow_reg(n, a_t);
-                    if (rdmft_skip_occ_weight(w)) continue;
-                    const TK* hp = &Hpsi_t[ib_local * nbs_local];
-                    TK* dst = &acc_k[ib_local * nbs_local];
-                    for (int mu = 0; mu < nbs_local; ++mu)
-                        dst[mu] += TK(w) * hp[mu];
-                }
-            }
-        }
-    }
-#else
-    (void)occ_flat; (void)wfc_eval; (void)compute_orb_grad;
-#endif
-}
-
-template <typename TK, typename TR>
-void EnergyGradient<TK, TR>::compute_optgm_exx_contributions(
-    const std::vector<double>& occ_flat,
-    const psi::Psi<TK>& wfc_eval,
-    std::vector<std::vector<double>>& vx_diag_E_acc,
-    std::vector<std::vector<double>>& vx_diag_G_acc,
-    std::vector<std::vector<TK>>& Hpsi_x_acc,
-    bool compute_orb_grad)
-{
-    assert(xc_func_.type() == XCFunctionalType::OptGM);
-    vx_diag_E_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
-    vx_diag_G_acc.assign(nk_, std::vector<double>(nbands_, 0.0));
-    const int nb_local = wfc_eval.get_nbands();
-    const int nbs_local = wfc_eval.get_nbasis();
-    const std::int64_t hpsi_alloc
-        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
-    if (compute_orb_grad)
-    {
-        Hpsi_x_acc.assign(nk_, std::vector<TK>(static_cast<size_t>(hpsi_alloc), TK(0)));
-    }
-    else
-    {
-        Hpsi_x_acc.clear();
-    }
-
-#ifdef __EXX
-    if (!exx_enabled_) return;
-
-    std::vector<TK> Hpsi_t(static_cast<size_t>(hpsi_alloc), TK(0));
-    std::vector<double> vx_t(nbands_, 0.0);
-    std::vector<TK> psi_dummy(1, TK(0));
-
-    for (int term = 0; term < 2; ++term)
-    {
-        const double c_t = (term == 0) ? XCFunctional::optgm_hf_weight()
-                                       : XCFunctional::optgm_power_weight();
-        const double a_t = (term == 0) ? 1.0 : XCFunctional::optgm_power_exponent();
-        if (c_t == 0.0) continue;
-
-        std::vector<std::vector<TK>> DM_XC;
-        build_DM_xc(occ_flat, wfc_eval, DM_XC, a_t);
-
-        if (exx_spacegroup_symmetry_)
-            DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
-
-        std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
-        for (size_t ik = 0; ik < DM_XC.size(); ++ik)
-            DM_XC_ptr[ik] = &DM_XC[ik];
-
-        if (GlobalC::exx_info.info_ri.real_number)
-        {
-            auto Ds = std::is_same<TK, double>::value
-                ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
-                : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
-                                                      exx_spacegroup_symmetry_);
-            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
-                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
-            else
-                exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
-        }
-        else
-        {
-            auto Ds = std::is_same<TK, double>::value
-                ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
-                : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
-                                                                     exx_spacegroup_symmetry_);
-            if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
-                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
-            else
-                exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
-        }
-
-        for (int ik = 0; ik < nk_; ++ik)
-        {
-            const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
-
-            hsk_exx_->set_zero_hk();
-            if (GlobalC::exx_info.info_ri.real_number)
-            {
-                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
-                    1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
-            }
-            else
-            {
-                RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
-                    1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
-            }
-            std::fill(Hpsi_t.begin(), Hpsi_t.end(), TK(0));
-            apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_t.data());
-            std::fill(vx_t.begin(), vx_t.end(), 0.0);
-            compute_diagonal(psi_k, Hpsi_t.data(), vx_t.data(), ik);
-
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const double n = occ_flat[ik * nbands_ + ib];
-                vx_diag_E_acc[ik][ib] += c_t * xc_func_.pow_reg(n, a_t) * vx_t[ib];
-                vx_diag_G_acc[ik][ib] += c_t * xc_func_.dpow_reg(n, a_t) * vx_t[ib];
-            }
-            if (compute_orb_grad)
-            {
-                TK* acc_k = Hpsi_x_acc[ik].data();
-                for (int ib_local = 0; ib_local < nb_local; ++ib_local)
-                {
-                    int ib_global = ParaV_->local2global_col(ib_local);
-                    if (ib_global >= nbands_) continue;
-                    const double n = occ_flat[ik * nbands_ + ib_global];
-                    const double w = c_t * xc_func_.pow_reg(n, a_t);
-                    if (rdmft_skip_occ_weight(w)) continue;
-                    const TK* hp = &Hpsi_t[ib_local * nbs_local];
-                    TK* dst = &acc_k[ib_local * nbs_local];
-                    for (int mu = 0; mu < nbs_local; ++mu)
-                        dst[mu] += TK(w) * hp[mu];
-                }
-            }
-        }
-    }
-#else
-    (void)occ_flat; (void)wfc_eval; (void)compute_orb_grad;
-#endif
-}
 
 template <typename TK, typename TR>
 double EnergyGradient<TK, TR>::s_inner_product(
@@ -1398,43 +1073,6 @@ void EnergyGradient<TK, TR>::retract_orbitals(
     const psi::Psi<TK>& grad_wfc,
     double alpha)
 {
-    // Dispatcher: select retraction implementation based on orb_retraction_.
-    // QR / Cayley are serial-only; in MPI builds we fall back to Polar with
-    // a one-time warning.
-#ifdef __MPI
-    if (orb_retraction_ != OrbRetraction::Polar
-        && !orb_retraction_mpi_fallback_warned_)
-    {
-        GlobalV::ofs_running
-            << "\n  RDMFT WARNING: rdmft_orb_retraction = "
-            << orb_retraction_to_string(orb_retraction_)
-            << " is currently serial-only; MPI build falls back to 'polar'."
-            << " This message is printed once.\n" << std::endl;
-        orb_retraction_mpi_fallback_warned_ = true;
-    }
-    retract_polar(wfc, grad_wfc, alpha);
-#else
-    switch (orb_retraction_)
-    {
-        case OrbRetraction::Polar:
-            retract_polar(wfc, grad_wfc, alpha);
-            break;
-        case OrbRetraction::QR:
-            retract_qr_serial(wfc, grad_wfc, alpha);
-            break;
-        case OrbRetraction::Cayley:
-            retract_cayley_serial(wfc, grad_wfc, alpha);
-            break;
-    }
-#endif
-}
-
-template <typename TK, typename TR>
-void EnergyGradient<TK, TR>::retract_polar(
-    psi::Psi<TK>& wfc,
-    const psi::Psi<TK>& grad_wfc,
-    double alpha)
-{
     // One retraction step on the standard Stiefel manifold in X-space:
     //   Y = X - alpha * G
     //   X_new = Y * (Y^H Y)^{-1/2}
@@ -1576,296 +1214,6 @@ void EnergyGradient<TK, TR>::retract_polar(
 #endif
 }
 
-namespace detail
-{
-// Serial-only helpers for the QR and Cayley retractions. Inline helpers used
-// only from this TU; isolating them here keeps the retract_*_serial bodies
-// readable. The extern "C" prototypes for ?geqrf, ?orgqr/?ungqr and ?gesv
-// are declared at file scope alongside the other LAPACK / ScaLAPACK
-// prototypes near the top of the TU.
-
-inline int geqrf(int m, int n, double* A, int lda, double* tau,
-                 double* work, int lwork)
-{
-    int info = 0;
-    dgeqrf_(&m, &n, A, &lda, tau, work, &lwork, &info);
-    return info;
-}
-inline int geqrf(int m, int n, std::complex<double>* A, int lda,
-                 std::complex<double>* tau, std::complex<double>* work, int lwork)
-{
-    int info = 0;
-    zgeqrf_(&m, &n, A, &lda, tau, work, &lwork, &info);
-    return info;
-}
-inline int orgqr(int m, int n, int k, double* A, int lda, const double* tau,
-                 double* work, int lwork)
-{
-    int info = 0;
-    dorgqr_(&m, &n, &k, A, &lda, tau, work, &lwork, &info);
-    return info;
-}
-inline int orgqr(int m, int n, int k, std::complex<double>* A, int lda,
-                 const std::complex<double>* tau, std::complex<double>* work, int lwork)
-{
-    int info = 0;
-    zungqr_(&m, &n, &k, A, &lda, tau, work, &lwork, &info);
-    return info;
-}
-inline int gesv(int n, int nrhs, double* A, int lda, int* ipiv,
-                double* B, int ldb)
-{
-    int info = 0;
-    dgesv_(&n, &nrhs, A, &lda, ipiv, B, &ldb, &info);
-    return info;
-}
-inline int gesv(int n, int nrhs, std::complex<double>* A, int lda, int* ipiv,
-                std::complex<double>* B, int ldb)
-{
-    int info = 0;
-    zgesv_(&n, &nrhs, A, &lda, ipiv, B, &ldb, &info);
-    return info;
-}
-
-// Sign / phase factor for the diagonal of R, used to make the Householder QR
-// retraction unique (R has positive real diagonal). For complex,
-// phase = R[i,i] / |R[i,i]|; for real, phase = sign(R[i,i]).
-inline double qr_diag_phase(double r) { return r >= 0.0 ? 1.0 : -1.0; }
-inline std::complex<double> qr_diag_phase(const std::complex<double>& r)
-{
-    const double m = std::abs(r);
-    if (m < 1.0e-300) return std::complex<double>(1.0, 0.0);
-    return r / m;
-}
-
-} // namespace detail
-
-template <typename TK, typename TR>
-void EnergyGradient<TK, TR>::retract_qr_serial(
-    psi::Psi<TK>& wfc,
-    const psi::Psi<TK>& grad_wfc,
-    double alpha)
-{
-    // Householder QR retraction in X-space:
-    //   Y = X - alpha * D
-    //   Y = Q R         (LAPACK ?geqrf, ?orgqr)
-    //   X_new = Q * diag(phase(R[i,i]))   so that the implicit R has
-    //                                     positive real diagonal and the
-    //                                     retraction is unique.
-    // More numerically robust than Cholesky-QR (Polar) when Y^H Y is close to
-    // singular, at the cost of one extra triangular operation.
-    const int nbasis = wfc.get_nbasis();
-    const int nbands = wfc.get_nbands();
-    if (nbasis == 0 || nbands == 0) return;
-
-    std::vector<TK> c_dummy(1, TK(0));
-    std::vector<TK> g_dummy(1, TK(0));
-
-    std::vector<TK> tau(nbands, TK(0));
-    // Workspace size query.
-    TK lwork_query = TK(0);
-    int info = detail::geqrf(nbasis, nbands, nullptr, nbasis,
-                             tau.data(), &lwork_query, -1);
-    int lwork = static_cast<int>(detail::real_of(lwork_query));
-    if (info != 0 || lwork < nbands) lwork = std::max(lwork, nbands);
-    int lwork_orgqr_query = 0;
-    {
-        TK q = TK(0);
-        info = detail::orgqr(nbasis, nbands, nbands, nullptr, nbasis,
-                             tau.data(), &q, -1);
-        const int lwq = static_cast<int>(detail::real_of(q));
-        if (info != 0 || lwq < nbands) lwork_orgqr_query = std::max(lwq, nbands);
-        else lwork_orgqr_query = lwq;
-    }
-    if (lwork_orgqr_query > lwork) lwork = lwork_orgqr_query;
-    std::vector<TK> work(static_cast<size_t>(std::max(lwork, 1)), TK(0));
-
-    for (int ik = 0; ik < nk_; ++ik)
-    {
-        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
-        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
-
-        // Y = C - alpha * G   (in-place on C).
-        for (int i = 0; i < nbasis * nbands; ++i)
-            C[i] -= TK(alpha) * G[i];
-
-        // QR factor Y in-place (writes R into upper triangle of C, reflectors
-        // below; tau holds the per-column reflector scalars).
-        info = detail::geqrf(nbasis, nbands, C, nbasis, tau.data(),
-                             work.data(), lwork);
-        if (info != 0)
-        {
-            GlobalV::ofs_running << "WARNING: QR retraction (geqrf) failed at ik="
-                << ik << " (info=" << info << "); skipping retraction." << std::endl;
-            continue;
-        }
-
-        // Capture R diagonal before orgqr overwrites C with Q.
-        std::vector<TK> r_diag(nbands, TK(0));
-        for (int j = 0; j < nbands; ++j) r_diag[j] = C[j + j * nbasis];
-
-        // Form Q in C.
-        info = detail::orgqr(nbasis, nbands, nbands, C, nbasis, tau.data(),
-                             work.data(), lwork);
-        if (info != 0)
-        {
-            GlobalV::ofs_running << "WARNING: QR retraction (orgqr) failed at ik="
-                << ik << " (info=" << info << "); skipping retraction." << std::endl;
-            continue;
-        }
-
-        // Sign-fix: column j of Q is multiplied by phase(R[j,j]) so the
-        // implicit R has positive real diagonal. Without this the QR
-        // retraction is not uniquely defined and round-off can flip signs
-        // between consecutive iterations, hurting CG / BB.
-        for (int j = 0; j < nbands; ++j)
-        {
-            const TK phase = detail::qr_diag_phase(r_diag[j]);
-            // Skip the cheap multiply when phase is +1.
-            if (phase == TK(1.0)) continue;
-            TK* col = C + static_cast<std::size_t>(j) * nbasis;
-            for (int i = 0; i < nbasis; ++i) col[i] *= phase;
-        }
-    }
-}
-
-template <typename TK, typename TR>
-void EnergyGradient<TK, TR>::retract_cayley_serial(
-    psi::Psi<TK>& wfc,
-    const psi::Psi<TK>& grad_wfc,
-    double alpha)
-{
-    // Wen-Yin low-rank Cayley retraction (Math. Prog. 142 (2013) 397, Alg. 1).
-    // The caller passes a (Riemannian) gradient G with the convention that
-    // a descent step is wfc <- wfc - alpha * G for alpha > 0. The Cayley
-    // curve uses the skew-Hermitian matrix W = G X^H - X G^H and is
-    //   Y(alpha) = (I + (alpha/2) W)^{-1} (I - (alpha/2) W) X.
-    // For W = U V^H of rank 2p (U = [G | X], V = [X | -G], both N x 2p)
-    // the Sherman-Morrison-Woodbury identity reduces the inversion to a
-    // 2p x 2p system:
-    //     Y = X - alpha * U * (I_{2p} + (alpha/2) V^H U)^{-1} * V^H X.
-    //
-    // V^H U is a 2x2 block matrix of p x p blocks; with the abbreviations
-    // XtX = X^H X, XtG = X^H G, GtX = G^H X, GtG = G^H G:
-    //     V^H U = [ XtG    XtX ]
-    //             [-GtG   -GtX ]
-    // V^H X has 2p rows by p columns:
-    //     V^H X = [ XtX ; -GtX ].
-    //
-    // We solve (I_{2p} + (alpha/2) V^H U) M = V^H X with one 2p x 2p LU,
-    // split M into top / bottom p x p halves, and apply
-    //     Y = X - alpha * (G * M_top + X * M_bottom)
-    // exactly preserving X^H X = I (no Cholesky / QR re-orthonormalisation).
-    //
-    // Cost per k-point: 4 p x p gemms + one 2p x 2p LU solve + 2 (N x p)
-    // gemms.  Attractive when N >> p and when Y^H Y is ill-conditioned.
-    // Skipping a step (LU singular) is safe: the outer line search rejects
-    // the trial point.
-    const int nbasis = wfc.get_nbasis();
-    const int nbands = wfc.get_nbands();
-    if (nbasis == 0 || nbands == 0) return;
-
-    const int p = nbands;
-    const int two_p = 2 * p;
-    const TK one = TK(1.0);
-    const TK zero = TK(0.0);
-    const char tc = detail::trans_char(TK());
-    const double half_tau = 0.5 * alpha;
-
-    std::vector<TK> c_dummy(1, TK(0));
-    std::vector<TK> g_dummy(1, TK(0));
-
-    std::vector<TK> XtX(p * p, TK(0));
-    std::vector<TK> XtG(p * p, TK(0));
-    std::vector<TK> GtX(p * p, TK(0));
-    std::vector<TK> GtG(p * p, TK(0));
-    std::vector<TK> Tmat(two_p * two_p, TK(0));
-    std::vector<TK> RHS(two_p * p, TK(0));
-    std::vector<int> ipiv(two_p, 0);
-
-    for (int ik = 0; ik < nk_; ++ik)
-    {
-        TK* C = psi_k_ptr_or_dummy(wfc, ik, c_dummy);
-        const TK* G = psi_k_ptr_or_dummy(grad_wfc, ik, g_dummy);
-
-        // Four p x p Gram-style products. With X^H X = I (X-space invariant)
-        // we could shortcut XtX = I, but we still compute it: numerical
-        // round-off from previous retractions may have drifted it slightly,
-        // and using the actual value preserves exact Cayley invariance.
-        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
-            one, C, nbasis, C, nbasis, zero, XtX.data(), p);
-        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
-            one, C, nbasis, G, nbasis, zero, XtG.data(), p);
-        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
-            one, G, nbasis, C, nbasis, zero, GtX.data(), p);
-        detail::gemm_wrapper(tc, 'N', p, p, nbasis,
-            one, G, nbasis, G, nbasis, zero, GtG.data(), p);
-
-        // Assemble T = I_{2p} + (alpha/2) * V^H U, column-major (2p x 2p).
-        // Block layout:
-        //   T(  0..p-1,   0..p-1) = (alpha/2) * XtG
-        //   T(  0..p-1,   p..2p-1) = (alpha/2) * XtX
-        //   T(  p..2p-1,  0..p-1) = -(alpha/2) * GtG
-        //   T(  p..2p-1,  p..2p-1) = -(alpha/2) * GtX
-        // plus I on the full 2p main diagonal.
-        std::fill(Tmat.begin(), Tmat.end(), TK(0));
-        auto Tref = [&](int gi, int gj) -> TK& {
-            return Tmat[gi + gj * two_p];
-        };
-        for (int j = 0; j < p; ++j)
-            for (int i = 0; i < p; ++i)
-            {
-                Tref(i, j)         = TK(half_tau) * XtG[i + j * p];
-                Tref(i, p + j)     = TK(half_tau) * XtX[i + j * p];
-                Tref(p + i, j)     = TK(-half_tau) * GtG[i + j * p];
-                Tref(p + i, p + j) = TK(-half_tau) * GtX[i + j * p];
-            }
-        for (int d = 0; d < two_p; ++d) Tref(d, d) += TK(1.0);
-
-        // Build RHS = V^H X = [XtX ; -GtX]   (2p x p).
-        std::fill(RHS.begin(), RHS.end(), TK(0));
-        for (int j = 0; j < p; ++j)
-            for (int i = 0; i < p; ++i)
-            {
-                RHS[i + j * two_p]     = XtX[i + j * p];
-                RHS[p + i + j * two_p] = -GtX[i + j * p];
-            }
-
-        // Solve T * M = RHS  =>  M overwrites RHS (2p x p column-major).
-        const int info = detail::gesv(two_p, p, Tmat.data(), two_p,
-                                      ipiv.data(), RHS.data(), two_p);
-        if (info != 0)
-        {
-            GlobalV::ofs_running << "WARNING: Cayley retraction LU solve failed at ik="
-                << ik << " (info=" << info
-                << "); skipping retraction (line search should reject)." << std::endl;
-            continue;
-        }
-
-        // Y = X - alpha * (G * M_top + X * M_bottom).
-        // M_top is RHS rows [0..p); M_bottom is rows [p..2p); both p x p.
-        std::vector<TK> Mtop(p * p, TK(0));
-        std::vector<TK> Mbot(p * p, TK(0));
-        for (int j = 0; j < p; ++j)
-            for (int i = 0; i < p; ++i)
-            {
-                Mtop[i + j * p] = RHS[i + j * two_p];
-                Mbot[i + j * p] = RHS[p + i + j * two_p];
-            }
-        // Order matters: form the X-dependent term BEFORE updating C.
-        std::vector<TK> Xnew(static_cast<size_t>(nbasis) * p, TK(0));
-        // Xnew := C * M_bottom
-        detail::gemm_wrapper('N', 'N', nbasis, p, p,
-            one, C, nbasis, Mbot.data(), p, zero, Xnew.data(), nbasis);
-        // Xnew += G * M_top
-        detail::gemm_wrapper('N', 'N', nbasis, p, p,
-            one, G, nbasis, Mtop.data(), p, one, Xnew.data(), nbasis);
-        // C <- C - alpha * Xnew
-        for (int i = 0; i < nbasis * p; ++i)
-            C[i] -= TK(alpha) * Xnew[i];
-    }
-}
-
 template <typename TK, typename TR>
 double EnergyGradient<TK, TR>::compute(
     const std::vector<double>& occ_flat,
@@ -1884,16 +1232,6 @@ double EnergyGradient<TK, TR>::compute(
 
     build_charge(occ_flat, wfc_eval);
 
-    if (rdmft_hybrid_dft_xc_active() && nspin_ == 4 && std::is_same<TR, std::complex<double>>::value)
-    {
-        ModuleBase::WARNING_QUIT("RDMFT_EG",
-                                 "rdmft_hybrid_dft_xc is not implemented for nspin=4 with TR=complex LCAO.");
-    }
-
-    etxc_ = 0.0;
-    vtxc_ = 0.0;
-    E_xc_dft_semilocal_ = 0.0;
-
     // 2. Build Hartree potential
     HR_hartree_->set_zero();
     if (!op_hartree_)
@@ -1904,29 +1242,9 @@ double EnergyGradient<TK, TR>::compute(
     }
     op_hartree_->contributeHR();
 
-    // Semilocal DFT XC on the RDMFT density (PotXC); energy uses λ·etxc, gradients use V_xc separately.
-    if (rdmft_hybrid_dft_xc_active())
-    {
-        HR_xc_dft_->set_zero();
-        if (!op_xc_dft_)
-        {
-            op_xc_dft_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
-                hsk_xc_dft_.get(), kv_->kvec_d, pelec_->pot, HR_xc_dft_.get(), ucell_,
-                orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "xc", &etxc_, &vtxc_);
-        }
-        op_xc_dft_->contributeHR();
-        E_xc_dft_semilocal_ = PARAM.inp.rdmft_hybrid_dft_xc_lambda * etxc_;
-    }
-
     // 3. Build exchange from modified DM (RDMFT's private EXX)
-    const bool is_geo_opt_exx = (xc_func_.type() == XCFunctionalType::GEO
-                                 || xc_func_.type() == XCFunctionalType::OptGM);
-    const bool is_geo_only = (xc_func_.type() == XCFunctionalType::GEO);
-    std::vector<std::vector<double>> geo_vx_E_acc;
-    std::vector<std::vector<double>> geo_vx_G_acc;
-    std::vector<std::vector<TK>> geo_Hpsi_x_acc;
 #ifdef __EXX
-    if (exx_enabled_ && !is_geo_opt_exx)
+    if (exx_enabled_)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1965,19 +1283,6 @@ double EnergyGradient<TK, TR>::compute(
         }
     
     }
-    else if (exx_enabled_ && is_geo_only)
-    {
-        // GEO: assemble per-k accumulators from the three Power-like terms.
-        compute_geo_exx_contributions(occ_flat, wfc_eval,
-                                       geo_vx_E_acc, geo_vx_G_acc, geo_Hpsi_x_acc,
-                                       /*compute_orb_grad=*/true);
-    }
-    else if (exx_enabled_ && xc_func_.type() == XCFunctionalType::OptGM)
-    {
-        compute_optgm_exx_contributions(occ_flat, wfc_eval,
-                                        geo_vx_E_acc, geo_vx_G_acc, geo_Hpsi_x_acc,
-                                        /*compute_orb_grad=*/true);
-    }
 #endif
 
     // 4. For each k-point: compute H*psi, diagonal elements, and assemble gradients
@@ -1997,20 +1302,13 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<double> h_one_diag(nbands_, 0.0);
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
-    std::vector<double> vxc_diag(nbands_, 0.0);
 
     const std::int64_t hpsi_alloc
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     std::vector<TK> Hpsi_one(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_h(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_x(static_cast<size_t>(hpsi_alloc), TK(0));
-    std::vector<TK> Hpsi_xc(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> psi_dummy(1, TK(0));
-
-    const double ex_scale = rdmft_hybrid_exchange_scale();
-    const bool is_bbc3 = (xc_func_.type() == XCFunctionalType::BBC3);
-    const int n_strong_bbc3 = is_bbc3 ? rdmft_bbc3_n_strong_bands() : 0;
-    std::vector<int> rank_bbc3;
 
     for (int ik = 0; ik < nk_; ++ik)
     {
@@ -2043,7 +1341,7 @@ double EnergyGradient<TK, TR>::compute(
         std::fill(Hpsi_x.begin(), Hpsi_x.end(), TK(0));
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && !is_geo_opt_exx)
+        if (exx_enabled_)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -2059,30 +1357,9 @@ double EnergyGradient<TK, TR>::compute(
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x.data());
             compute_diagonal(psi_k, Hpsi_x.data(), vx_diag.data(), ik);
         }
-        else if (exx_enabled_ && is_geo_opt_exx)
-        {
-            if (!geo_Hpsi_x_acc.empty())
-            {
-                std::copy(geo_Hpsi_x_acc[ik].begin(), geo_Hpsi_x_acc[ik].end(), Hpsi_x.begin());
-            }
-        }
 #endif
 
-        std::fill(vxc_diag.begin(), vxc_diag.end(), 0.0);
-        std::fill(Hpsi_xc.begin(), Hpsi_xc.end(), TK(0));
-        if (rdmft_hybrid_dft_xc_active())
-        {
-            hsk_xc_dft_->set_zero_hk();
-            op_xc_dft_->contributeHk(ik);
-            apply_Hk(hsk_xc_dft_->get_hk(), psi_k, Hpsi_xc.data());
-            compute_diagonal(psi_k, Hpsi_xc.data(), vxc_diag.data(), ik);
-        }
-
         double wk = kv_->wk[ik];
-        if (is_bbc3)
-        {
-            rdmft_bbc3_band_ranks(nbands_, &occ_flat[ik * nbands_], rank_bbc3);
-        }
 
         // Accumulate energies (skip terms that are identically zero when n=0 or g(n)=0)
         for (int ib = 0; ib < nbands_; ++ib)
@@ -2094,108 +1371,26 @@ double EnergyGradient<TK, TR>::compute(
                 E_one_ += wk * n * h_one_diag[ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
             }
-            if (is_geo_opt_exx)
+            if (!rdmft_skip_occ_weight(gn))
             {
-                // GEO / optGM: accumulator already encodes Σ_t c_t · n^{α_t} · vx_diag^t, so
-                // E_xc^t pieces sum directly here. The 0.5 prefactor is the same as
-                // the separable case (it comes from the −1/2 in E_xc = −1/2 Σ f K).
-                if (ik < static_cast<int>(geo_vx_E_acc.size()))
-                {
-                    E_xc_ += ex_scale * wk * geo_vx_E_acc[ik][ib] * 0.5;
-                }
-            }
-            else if (!rdmft_skip_occ_weight(gn))
-            {
-                E_xc_ += ex_scale * wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
+                E_xc_ += wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
             }
         }
-
-        // Goedecker–Umrigar diagonal self-exchange correction (J_ii via Muller DM proxy).
-        if (xc_func_.type() == XCFunctionalType::GU)
-        {
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const double n = occ_flat[ik * nbands_ + ib];
-                const double gn = xc_func_.g(n);
-                if (rdmft_skip_occ_weight(gn))
-                {
-                    continue;
-                }
-                const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
-                const double fac = xc_func_.gu_diag_factor(n);
-                if (std::fabs(fac) < 1e-40)
-                {
-                    continue;
-                }
-                E_xc_ += 0.5 * wk * wk * fac * Jii;
-            }
-        }
-
-        const double lam_h = PARAM.inp.rdmft_hybrid_dft_xc_lambda;
 
         // Occupation gradient: dE/dn_ik
         for (int ib = 0; ib < nbands_; ++ib)
         {
             double n = occ_flat[ik * nbands_ + ib];
-            double d_exx_dn = xc_func_.dg(n);
-            if (is_bbc3)
-            {
-                d_exx_dn = (rank_bbc3[ib] < n_strong_bbc3) ? xc_func_.dg(n) : 1.0;
-            }
-            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib]);
-            if (is_geo_opt_exx)
-            {
-                if (ik < static_cast<int>(geo_vx_G_acc.size()))
-                {
-                    grad_occ[ik * nbands_ + ib] += ex_scale * wk * geo_vx_G_acc[ik][ib];
-                }
-            }
-            else
-            {
-                grad_occ[ik * nbands_ + ib] += ex_scale * wk * d_exx_dn * vx_diag[ib];
-            }
-            if (xc_func_.type() == XCFunctionalType::GU)
-            {
-                const double gn = xc_func_.g(n);
-                if (!rdmft_skip_occ_weight(gn))
-                {
-                    const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
-                    grad_occ[ik * nbands_ + ib] += 0.5 * wk * wk * xc_func_.gu_diag_factor_deriv(n) * Jii;
-                }
-            }
-            if (rdmft_hybrid_dft_xc_active())
-            {
-                grad_occ[ik * nbands_ + ib] += lam_h * wk * vxc_diag[ib];
-            }
+            double dgn = xc_func_.dg(n);
+            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib])
+                                          + wk * dgn * vx_diag[ib];
         }
 
-        // Orbital gradient w.r.t. LCAO coefficients (before X transform).
-        //
-        //   Complex TK (multi-k LCAO):  E = wk * n * C^H H C  (Hermitian H)
-        //     dE = wk * n * [C^H H dC + dC^H H C] = 2 wk * n * Re[(HC)^H dC]
-        //     so the derivative wrt the real-valued objective along ANY direction
-        //     deltaC is `2 Re[<HC, deltaC>]`.  The conventional Wirtinger
-        //     derivative  partial_E / partial_C^*  = wk * n * H * C  is HALF
-        //     of this slope; using it as the line-search "gradient" leaves the
-        //     Armijo condition `f(alpha) <= f0 + c1*alpha*dd` permissive by
-        //     exactly a factor of two.
-        //
-        //   Real TK (gamma-only / Gamma-point real LCAO):  E = wk * n * C^T H C
-        //   with symmetric H gives dE/dC = 2 wk * n * H * C - the comment in
-        //   the previous version of this code already noted this but the
-        //   multiplication was not applied.
-        //
-        // Apply factor 2 in BOTH branches so the line-search slope `dd =
-        // <G, dir>` matches the true `dE/dalpha`.  The finite-difference
-        // orbital directional-derivative check (`rdmft_grad_check 1`)
-        // previously caught this as a ~100 % relative error (`fd_fwd =
-        // -2 <G_R, G_R>` while `analytic_dd = -<G_R, G_R>`). The
-        // undercounted gradient corrupted the line search slope by exactly
-        // a factor of two and let the Armijo condition accept overshoots
-        // that the true slope would reject.  See `rdmft_derivation.md` for
-        // the derivation.  GU: dJ_ii / dC is omitted here (would require
-        // RI response); see same reference.
-        constexpr double k_orb_grad_factor = 2.0;
+        // Orbital gradient w.r.t. LCAO coefficients (before X transform):
+        //   TK = std::complex<...>: Wirtinger ∂E/∂C* as wk * [n * (H_one + V_H) * C + g(n) * H_exx * C].
+        //   TK = double (real gamma-only LCAO): for n * C^T H C with symmetric H,
+        //   ∂E/∂C_μ = 2 wk n (H C)_μ (same H·C factors); apply the factor below.
+        // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {
             int ib_global = ParaV_->local2global_col(ib_local);
@@ -2204,13 +1399,8 @@ double EnergyGradient<TK, TR>::compute(
             const double n = occ_flat[ik * nbands_ + ib_global];
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
-            // For GEO / optGM, Hpsi_x already contains Σ_t c_t · n^{α_t} · H_exx^t · φ, so the
-            // exchange contribution is meaningful as long as any mixture weight is
-            // non-trivial (which is true unless n is at the regularisation cutoff).
-            const bool use_exx = is_geo_opt_exx ? !rdmft_skip_occ_weight(n)
-                                        : !rdmft_skip_occ_weight(gn);
-            const bool use_xc_dft = rdmft_hybrid_dft_xc_active() && !rdmft_skip_occ_weight(n);
-            if (!use_one_hart && !use_exx && !use_xc_dft)
+            const bool use_exx = !rdmft_skip_occ_weight(gn);
+            if (!use_one_hart && !use_exx)
             {
                 continue;
             }
@@ -2219,9 +1409,7 @@ double EnergyGradient<TK, TR>::compute(
             const TK* hone_ptr = &Hpsi_one[ib_local * nbs_local];
             const TK* hh_ptr = &Hpsi_h[ib_local * nbs_local];
             const TK* hx_ptr = &Hpsi_x[ib_local * nbs_local];
-            const TK* hxc_ptr = &Hpsi_xc[ib_local * nbs_local];
 
-            const double prefactor = wk * k_orb_grad_factor;
             for (int mu = 0; mu < nbs_local; ++mu)
             {
                 TK acc = TK(0);
@@ -2229,22 +1417,11 @@ double EnergyGradient<TK, TR>::compute(
                 {
                     acc += TK(n) * (hone_ptr[mu] + hh_ptr[mu]);
                 }
-                if (use_xc_dft)
-                {
-                    acc += TK(lam_h * n) * hxc_ptr[mu];
-                }
                 if (use_exx)
                 {
-                    if (is_geo_opt_exx)
-                    {
-                        acc += TK(ex_scale) * hx_ptr[mu];
-                    }
-                    else
-                    {
-                        acc += TK(ex_scale * gn) * hx_ptr[mu];
-                    }
+                    acc += TK(gn) * hx_ptr[mu];
                 }
-                grad_ptr[mu] = TK(prefactor) * acc;
+                grad_ptr[mu] = wk * acc;
             }
         }
     }
@@ -2269,7 +1446,7 @@ double EnergyGradient<TK, TR>::compute(
     // count). The same is true for grad_occ.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_ + E_xc_dft_semilocal_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
 
     // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
     grad_C_to_X(grad_wfc);
@@ -2295,20 +1472,6 @@ double EnergyGradient<TK, TR>::compute_energy(
     // Rebuild charge and Hartree (these always depend on occupations)
     build_charge(occ_flat, wfc_eval);
 
-    if (rdmft_hybrid_dft_xc_active() && nspin_ == 4 && std::is_same<TR, std::complex<double>>::value)
-    {
-        ModuleBase::WARNING_QUIT("RDMFT_EG",
-                                 "rdmft_hybrid_dft_xc is not implemented for nspin=4 with TR=complex LCAO.");
-    }
-    if (rdmft_hybrid_dft_xc_active())
-    {
-        hone_cache_valid_ = false;
-    }
-
-    etxc_ = 0.0;
-    vtxc_ = 0.0;
-    E_xc_dft_semilocal_ = 0.0;
-
     HR_hartree_->set_zero();
     if (!op_hartree_)
     {
@@ -2318,31 +1481,12 @@ double EnergyGradient<TK, TR>::compute_energy(
     }
     op_hartree_->contributeHR();
 
-    if (rdmft_hybrid_dft_xc_active())
-    {
-        HR_xc_dft_->set_zero();
-        if (!op_xc_dft_)
-        {
-            op_xc_dft_ = std::make_unique<Veff_rdmft_local<TK, TR>>(
-                hsk_xc_dft_.get(), kv_->kvec_d, pelec_->pot, HR_xc_dft_.get(), ucell_,
-                orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "xc", &etxc_, &vtxc_);
-        }
-        op_xc_dft_->contributeHR();
-        E_xc_dft_semilocal_ = PARAM.inp.rdmft_hybrid_dft_xc_lambda * etxc_;
-    }
-
     // Exchange must also be rebuilt because the modified DM gamma_xc depends
     // on occupations (and on orbitals, but those are fixed for compute_energy
     // use cases). Without this, line-search / finite-difference calls would
     // use a stale H_exx from the last compute() call.
-    const bool is_geo_opt_exx_ce = (xc_func_.type() == XCFunctionalType::GEO
-                                    || xc_func_.type() == XCFunctionalType::OptGM);
-    const bool is_geo_only_ce = (xc_func_.type() == XCFunctionalType::GEO);
-    std::vector<std::vector<double>> geo_vx_E_acc_ce;
-    std::vector<std::vector<double>> geo_vx_G_acc_ce;
-    std::vector<std::vector<TK>> geo_Hpsi_x_acc_ce;
 #ifdef __EXX
-    if (exx_enabled_ && !is_geo_opt_exx_ce)
+    if (exx_enabled_)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -2379,18 +1523,6 @@ double EnergyGradient<TK, TR>::compute_energy(
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
         }
-    }
-    else if (exx_enabled_ && is_geo_only_ce)
-    {
-        compute_geo_exx_contributions(occ_flat, wfc_eval,
-                                       geo_vx_E_acc_ce, geo_vx_G_acc_ce, geo_Hpsi_x_acc_ce,
-                                       /*compute_orb_grad=*/false);
-    }
-    else if (exx_enabled_ && xc_func_.type() == XCFunctionalType::OptGM)
-    {
-        compute_optgm_exx_contributions(occ_flat, wfc_eval,
-                                        geo_vx_E_acc_ce, geo_vx_G_acc_ce, geo_Hpsi_x_acc_ce,
-                                        /*compute_orb_grad=*/false);
     }
 #endif
 
@@ -2434,8 +1566,6 @@ double EnergyGradient<TK, TR>::compute_energy(
     E_xc_ = 0.0;
     E_entropy_ = 0.0;
 
-    const double ex_scale_ce = rdmft_hybrid_exchange_scale();
-
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
@@ -2451,7 +1581,7 @@ double EnergyGradient<TK, TR>::compute_energy(
         // Exchange diag (RDMFT's private EXX)
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_ && !is_geo_opt_exx_ce)
+        if (exx_enabled_)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -2480,35 +1610,9 @@ double EnergyGradient<TK, TR>::compute_energy(
                 E_one_ += wk * n * cached_h_one_diag_[ik][ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5;
             }
-            if (is_geo_opt_exx_ce)
+            if (!rdmft_skip_occ_weight(gn))
             {
-                if (ik < static_cast<int>(geo_vx_E_acc_ce.size()))
-                {
-                    E_xc_ += ex_scale_ce * wk * geo_vx_E_acc_ce[ik][ib] * 0.5;
-                }
-            }
-            else if (!rdmft_skip_occ_weight(gn))
-            {
-                E_xc_ += ex_scale_ce * wk * gn * vx_diag[ib] * 0.5;
-            }
-        }
-        if (xc_func_.type() == XCFunctionalType::GU)
-        {
-            for (int ib = 0; ib < nbands_; ++ib)
-            {
-                const double n = occ_flat[ik * nbands_ + ib];
-                const double gn = xc_func_.g(n);
-                if (rdmft_skip_occ_weight(gn))
-                {
-                    continue;
-                }
-                const double Jii = vx_diag[ib] / std::max(gn, 1e-20);
-                const double fac = xc_func_.gu_diag_factor(n);
-                if (std::fabs(fac) < 1e-40)
-                {
-                    continue;
-                }
-                E_xc_ += 0.5 * wk * wk * fac * Jii;
+                E_xc_ += wk * gn * vx_diag[ib] * 0.5;
             }
         }
     }
@@ -2530,7 +1634,7 @@ double EnergyGradient<TK, TR>::compute_energy(
     // reduction of E_* is needed here.
 
     E_ewald_ = pelec_->f_en.ewald_energy;
-    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_ + E_xc_dft_semilocal_;
+    E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
 
     ModuleBase::timer::end("RDMFT_EG", "compute_energy");
     return E_total_;
@@ -2552,13 +1656,7 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
     }
 
     Uk_.resize(nk_);
-    // NOTE: Uk_inv_ is intentionally NOT allocated.  All transforms that
-    // previously used U^{-1} (wfc_X_to_C, grad_C_to_X) now use the upper
-    // triangular Cholesky factor Uk_ + a triangular solve (pdtrsm_) instead
-    // of an explicit inverse.  Halving the per-k Cholesky storage matters on
-    // memory-tight runs (large LCAO bases × many k-points), e.g. magnetic
-    // NiO with 16 MPI ranks where the previous code path could crash with
-    // std::bad_alloc inside RDMFT setup.
+    Uk_inv_.resize(nk_);
 
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
@@ -2607,6 +1705,33 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
                                          + std::to_string(ik) + " info=" + std::to_string(info));
             }
         }
+
+        // Compute U^{-1} by inverting the upper triangular factor
+        Uk_inv_[ik] = Uk_[ik];
+        {
+            int info = 0;
+            int one_int = 1;
+            char uplo = 'U';
+            char diag = 'N';
+            if (std::is_same<TK, double>::value)
+            {
+                pdtrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
+                    reinterpret_cast<double*>(Uk_inv_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            else
+            {
+                pztrtri_(&uplo, &diag, const_cast<int*>(&nbasis),
+                    reinterpret_cast<std::complex<double>*>(Uk_inv_[ik].data()),
+                    &one_int, &one_int, const_cast<int*>(ParaV_->desc), &info);
+            }
+            if (info != 0)
+            {
+                ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+                throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
+                                         + std::to_string(ik) + " info=" + std::to_string(info));
+            }
+        }
     }
 #else
     // Non-MPI: nbs_local == nbasis
@@ -2631,6 +1756,16 @@ void EnergyGradient<TK, TR>::precompute_cholesky_S()
         {
             ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
             throw std::runtime_error("RDMFT X-space setup failed: Cholesky factorisation of S_k failed at ik="
+                                     + std::to_string(ik) + " info=" + std::to_string(info));
+        }
+
+        // Compute U^{-1}
+        Uk_inv_[ik] = Uk_[ik];
+        info = detail::trtri_upper(Uk_inv_[ik].data(), nbasis);
+        if (info != 0)
+        {
+            ModuleBase::timer::end("RDMFT_EG", "precompute_cholesky_S");
+            throw std::runtime_error("RDMFT X-space setup failed: triangular inverse of U_k failed at ik="
                                      + std::to_string(ik) + " info=" + std::to_string(info));
         }
     }

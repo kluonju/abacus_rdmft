@@ -4,6 +4,7 @@
 #include "rdmft_type.h"
 #include "rdmft_xc_functional.h"
 #include "rdmft_occupation.h"
+#include "rdmft_stiefel.h"
 #include "rdmft_optimizer.h"
 #include "rdmft_energy_gradient.h"
 
@@ -50,11 +51,6 @@ class RDMFTSolver
                                     const psi::Psi<TK>& wfc);
 
     /// Run orbital optimization only (occupations fixed).
-    /// Riemannian gradient method on the Stiefel manifold with the
-    /// optimiser selected by config_.orb_optimizer (sd or cg).
-    /// Line search: monotone Strong Wolfe along the retraction.
-    /// Inner convergence: \(\|G_R\|_F \le \varepsilon_g \max(1,\|G_R(x_0)\|_F)\)
-    /// with \(x_0\) the iterate at the start of this orbital inner solve.
     OptResult optimize_orbitals(const std::vector<double>& occ_flat,
                                  psi::Psi<TK>& wfc);
 
@@ -106,10 +102,10 @@ class RDMFTSolver
     // Orbital sub-components
     std::unique_ptr<EuclideanOptimizer> orb_optimizer_;
 
-    OptResult last_result_;
+    // Stiefel manifold per k-point
+    std::vector<StiefelManifold<TK>> stiefel_;
 
-    /// Cleared in solve(); set after logging once so the first occ-gradient evaluation point is printed.
-    bool logged_initial_occ_for_first_occ_gradient_ = false;
+    OptResult last_result_;
 };
 
 } // namespace rdmft

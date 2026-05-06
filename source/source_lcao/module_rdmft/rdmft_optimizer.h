@@ -3,6 +3,7 @@
 
 #include "rdmft_type.h"
 #include <vector>
+#include <deque>
 #include <functional>
 #include <utility>
 #include <cmath>
@@ -23,7 +24,7 @@ struct OptResult
     bool converged = false;
 };
 
-/// Result of a line search (Strong Wolfe, etc.)
+/// Result of Armijo backtracking (and similar) line search
 struct LineSearchResult
 {
     /// Accepted or last-tried step size
@@ -31,10 +32,10 @@ struct LineSearchResult
     /// Objective at `step` (or last energy evaluation on failure)
     double f_new = 0.0;
     bool success = false;
-    /// Initial trial step passed into the line search
+    /// Initial trial step (the `alpha_init` argument to `armijo_line_search`)
     double alpha_init = 0.0;
-    /// Number of scalar objective evaluations `phi(alpha)` plus derivative
-    /// evaluations `phi'(alpha)` (each counted once).
+    /// Number of objective evaluations in `f_at_step` (one per trial, plus
+    /// one on the failure finalisation path when `success` is false).
     int n_feval = 0;
 };
 
@@ -235,204 +236,258 @@ inline double cubic_local_min_t(
 
 } // namespace detail
 
-/// Strong Wolfe line search (Nocedal & Wright, Algorithms 3.5–3.6),
-/// with sufficient decrease
-/// \f$\varphi(\alpha)\le f_{\text{ref}}+c_1\alpha\varphi'(0)\f$.
-/// Pass \f$f_{\text{ref}}=\varphi(0)\f$ for the standard monotone Armijo
-/// condition. Requires \f$\varphi'(0)<0\f$, \f$0<c_1<c_2<1\f$.
-///
-/// `phi` evaluates \f$\varphi(\alpha)\f$; `deriv_phi` evaluates
-/// \f$\varphi'(\alpha)\f$ (directional derivative along the search ray).
-inline LineSearchResult nonmonotone_strong_wolfe_line_search(
-    const std::function<double(double)>& phi,
-    const std::function<double(double)>& deriv_phi,
-    double phi0,
-    double derphi0,
-    double f_ref_nm,
-    double alpha_init,
-    double c1,
-    double c2,
-    int max_bracket_iter,
-    int max_zoom_iter,
-    double alpha_expand_cap = 1e10)
+/// Armijo backtracking line search. When `use_polynomial` is true, a failed
+/// trial is followed by: (1) a quadratic model using \f$(0,f_0,\phi'_0)\f$ and
+/// the first failed \f$(\alpha,f(\alpha))\f$, and (2) on later failures, a
+/// cubic through \f$(0,f_0,\phi'_0)\f$ and the last two \f$(\alpha,f(\alpha))\f$
+/// pairs. The polynomial suggestion is then clamped to \f$[0.1,0.5]\f$ times the
+/// last failed step length (Nocedal & Wright style), then capped by
+/// \f$0.99\,\alpha_{\text{fail}}\f$. Otherwise use pure geometric backtracking:
+/// multiply by `rho` only.
+inline LineSearchResult armijo_line_search(
+    std::function<double(double step)> f_at_step,
+    double f0,
+    double directional_deriv,
+    double alpha_init = 0.1,
+    double c1 = 1e-4,
+    double rho = 0.5,
+    int max_iter = 30,
+    bool use_polynomial = true)
 {
+    // Safeguard multipliers for the polynomial trial (fixed; not user-tunable).
+    constexpr double k_poly_clamp_lo = 0.1;
+    constexpr double k_poly_clamp_hi = 0.5;
     LineSearchResult result;
     result.alpha_init = alpha_init;
-    result.f_new = phi0;
-    result.step = 0.0;
-    result.success = false;
-    result.n_feval = 0;
-
-    if (!(derphi0 < 0.0) || !std::isfinite(derphi0) || !std::isfinite(phi0) || !std::isfinite(f_ref_nm)
-        || !(alpha_init > 0.0) || !(c1 > 0.0 && c1 < 1.0) || !(c2 > c1 && c2 < 1.0)
-        || max_bracket_iter <= 0 || max_zoom_iter <= 0)
-    {
-        return result;
-    }
-
-    const auto armijo_nm = [&](double a, double fa) {
-        return fa <= f_ref_nm + c1 * a * derphi0;
-    };
-    const auto curvature_ok = [&](double gp) {
-        return std::abs(gp) <= -c2 * derphi0;
-    };
-
-    // Precondition: alpha_lo < alpha_hi and phi_lo_known = phi(alpha_lo).
-    auto zoom = [&](double alpha_lo,
-                    double alpha_hi,
-                    double phi_lo_known,
-                    double& alpha_out,
-                    double& f_out,
-                    bool& ok_zoom) {
-        ok_zoom = false;
-        alpha_out = alpha_lo;
-        f_out = phi_lo_known;
-        double lo = alpha_lo;
-        double hi = alpha_hi;
-        double flo = phi_lo_known;
-        if (!(lo < hi) || !std::isfinite(lo) || !std::isfinite(hi) || !std::isfinite(flo))
-        {
-            return;
-        }
-        constexpr double tol = 1e-12;
-        for (int z = 0; z < max_zoom_iter; ++z)
-        {
-            if (hi - lo <= tol * (1.0 + std::abs(hi)))
-            {
-                break;
-            }
-            const double alpha_j = 0.5 * (lo + hi);
-            const double phi_j = phi(alpha_j);
-            ++result.n_feval;
-            if (!std::isfinite(phi_j))
-            {
-                hi = alpha_j;
-                continue;
-            }
-            if (!armijo_nm(alpha_j, phi_j) || phi_j >= flo)
-            {
-                hi = alpha_j;
-                continue;
-            }
-            const double der_j = deriv_phi(alpha_j);
-            ++result.n_feval;
-            if (!std::isfinite(der_j))
-            {
-                hi = alpha_j;
-                continue;
-            }
-            if (curvature_ok(der_j))
-            {
-                alpha_out = alpha_j;
-                f_out = phi_j;
-                ok_zoom = true;
-                return;
-            }
-            if (der_j * (hi - lo) >= 0.0)
-            {
-                hi = lo;
-            }
-            lo = alpha_j;
-            flo = phi_j;
-        }
-    };
-
-    double alpha_prev = 0.0;
-    double phi_prev = phi0;
     double alpha = alpha_init;
+    double prev_fail_alpha = -1.0;
+    double prev_fail_f = 0.0;
 
-    for (int i = 0; i < max_bracket_iter; ++i)
+    for (int i = 0; i < max_iter; ++i)
     {
-        const double phi_a = phi(alpha);
+        const double fail_alpha = alpha;
+        const double f_new = f_at_step(fail_alpha);
         ++result.n_feval;
-        if (!std::isfinite(phi_a))
+        if (f_new <= f0 + c1 * fail_alpha * directional_deriv)
         {
-            alpha *= 0.5;
-            if (alpha < 1e-30 * std::max(alpha_init, 1.0))
-            {
-                return result;
-            }
-            continue;
-        }
-
-        if (!armijo_nm(alpha, phi_a) || (phi_a >= phi_prev && alpha_prev > 0.0))
-        {
-            double z_alpha = 0.0;
-            double z_f = 0.0;
-            bool zok = false;
-            if (alpha_prev < alpha)
-            {
-                zoom(alpha_prev, alpha, phi_prev, z_alpha, z_f, zok);
-            }
-            else if (alpha_prev > alpha)
-            {
-                zoom(alpha, alpha_prev, phi_a, z_alpha, z_f, zok);
-            }
-            else
-            {
-                zok = false;
-            }
-            result.step = z_alpha;
-            result.f_new = z_f;
-            result.success = zok;
-            return result;
-        }
-
-        const double der_a = deriv_phi(alpha);
-        ++result.n_feval;
-        if (!std::isfinite(der_a))
-        {
-            alpha *= 0.5;
-            if (alpha < 1e-30 * std::max(alpha_init, 1.0))
-            {
-                return result;
-            }
-            continue;
-        }
-
-        if (curvature_ok(der_a))
-        {
-            result.step = alpha;
-            result.f_new = phi_a;
+            result.step = fail_alpha;
+            result.f_new = f_new;
             result.success = true;
             return result;
         }
 
-        if (der_a >= 0.0)
+        double alpha_next = 0.0;
+        if (use_polynomial)
         {
-            double z_alpha = 0.0;
-            double z_f = 0.0;
-            bool zok = false;
-            if (alpha_prev < alpha)
+            double t_s = std::numeric_limits<double>::quiet_NaN();
+            if (prev_fail_alpha > 0.0 && std::isfinite(prev_fail_f)
+                && std::abs(fail_alpha - prev_fail_alpha)
+                       > 1.0e-20 * (1.0 + std::abs(fail_alpha) + std::abs(prev_fail_alpha)))
             {
-                zoom(alpha_prev, alpha, phi_prev, z_alpha, z_f, zok);
-            }
-            else if (alpha_prev > alpha)
-            {
-                zoom(alpha, alpha_prev, phi_a, z_alpha, z_f, zok);
+                const double cap = std::min(fail_alpha, prev_fail_alpha);
+                t_s = detail::cubic_local_min_t(
+                    f0, directional_deriv, prev_fail_alpha, prev_fail_f, fail_alpha, f_new, cap);
             }
             else
             {
-                zok = false;
+                t_s = detail::quadratic_unconstrained_min_t(
+                    f0, directional_deriv, fail_alpha, f_new);
             }
-            result.step = z_alpha;
-            result.f_new = z_f;
-            result.success = zok;
+            if (!std::isfinite(t_s) || t_s <= 0.0)
+            {
+                alpha_next = rho * fail_alpha;
+            }
+            else
+            {
+                const double lo = k_poly_clamp_lo * fail_alpha;
+                const double hi = k_poly_clamp_hi * fail_alpha;
+                if (lo <= hi)
+                    t_s = std::min(hi, std::max(lo, t_s));
+                else
+                    t_s = std::min(lo, std::max(hi, t_s));
+                t_s = std::min(t_s, 0.99 * fail_alpha);
+                if (t_s <= 0.0 || t_s >= fail_alpha * (1.0 - 1.0e-10))
+                    alpha_next = rho * fail_alpha;
+                else
+                    alpha_next = t_s;
+            }
+        }
+        else
+        {
+            alpha_next = rho * fail_alpha;
+        }
+
+        prev_fail_alpha = fail_alpha;
+        prev_fail_f = f_new;
+        alpha = alpha_next;
+        const double alpha_floor = 1.0e-16 * std::max(alpha_init, 1.0);
+        if (alpha < alpha_floor)
+        {
+            alpha = alpha_floor;
+        }
+    }
+
+    result.step = alpha;
+    result.f_new = f_at_step(alpha);
+    ++result.n_feval;
+    result.success = false;
+    return result;
+}
+
+/// Strong Wolfe line search (Nocedal & Wright, Algorithm 3.5 + 3.6).
+///
+/// `phi(alpha)` returns `{ f(alpha), g(alpha) }` where `g(alpha) = f'(0)` along
+/// the line at `x + alpha d` = ((grad f at trial) . direction).
+/// `f0`, `g0` are the values at `alpha = 0` (`g0` must be < 0 for a descent
+/// direction). Returns a step satisfying strong Wolfe, or a best-effort
+/// `success == false` when the budget is exceeded.
+inline LineSearchResult strong_wolfe_line_search(
+    std::function<std::pair<double, double>(double)> phi,
+    double f0,
+    double g0,
+    double alpha_init = 1.0,
+    double c1 = 1e-4,
+    double c2 = 0.9,
+    int max_iter = 20,
+    int max_zoom = 20)
+{
+    LineSearchResult result;
+    result.alpha_init = alpha_init;
+    int n_feval = 0;
+    auto phi_wrap = [&](double a) -> std::pair<double, double> {
+        ++n_feval;
+        return phi(a);
+    };
+
+    if (!(g0 < 0.0))
+    {
+        result.step = 0.0;
+        result.f_new = f0;
+        result.n_feval = 0;
+        result.success = false;
+        return result;
+    }
+
+    // Cubic interpolation: bracket (a, fa, ga) and (b, fb, gb) -> local minimizer.
+    auto cubic_min = [](double a, double fa, double ga, double b, double fb, double gb) -> double
+    {
+        if (std::abs(b - a) <= std::numeric_limits<double>::epsilon()
+            * (std::abs(a) + std::abs(b) + 1.0))
+        {
+            return 0.5 * (a + b);
+        }
+        const double d1 = ga + gb - 3.0 * (fb - fa) / (b - a);
+        const double d2_sq = d1 * d1 - ga * gb;
+        if (d2_sq < 0.0)
+        {
+            return 0.5 * (a + b);
+        }
+        const double d2 = std::sqrt(d2_sq);
+        const double alpha_star = b - (b - a) * (gb + d2 - d1) / (gb - ga + 2.0 * d2);
+        const double lo = std::min(a, b);
+        const double hi = std::max(a, b);
+        const double margin = 0.1 * (hi - lo);
+        return std::min(std::max(alpha_star, lo + margin), hi - margin);
+    };
+
+    auto zoom = [&](double alpha_lo, double f_lo, double g_lo, double alpha_hi, double f_hi, double g_hi) -> LineSearchResult
+    {
+        LineSearchResult z_result;
+        for (int j = 0; j < max_zoom; ++j)
+        {
+            const double alpha_j = cubic_min(alpha_lo, f_lo, g_lo, alpha_hi, f_hi, g_hi);
+
+            std::pair<double, double> fg_j = phi_wrap(alpha_j);
+            double f_j = fg_j.first;
+            double g_j = fg_j.second;
+
+            if (f_j > f0 + c1 * alpha_j * g0 || f_j >= f_lo)
+            {
+                alpha_hi = alpha_j;
+                f_hi = f_j;
+                g_hi = g_j;
+            }
+            else
+            {
+                if (std::abs(g_j) <= c2 * std::abs(g0))
+                {
+                    z_result.step = alpha_j;
+                    z_result.f_new = f_j;
+                    z_result.n_feval = n_feval;
+                    z_result.alpha_init = alpha_init;
+                    z_result.success = true;
+                    return z_result;
+                }
+                if (g_j * (alpha_hi - alpha_lo) >= 0.0)
+                {
+                    alpha_hi = alpha_lo;
+                    f_hi = f_lo;
+                    g_hi = g_lo;
+                }
+                alpha_lo = alpha_j;
+                f_lo = f_j;
+                g_lo = g_j;
+            }
+        }
+        z_result.step = alpha_lo;
+        z_result.f_new = f_lo;
+        z_result.n_feval = n_feval;
+        z_result.alpha_init = alpha_init;
+        z_result.success = false;
+        return z_result;
+    };
+
+    const double alpha_max = alpha_init * 100.0;
+    double alpha_prev = 0.0;
+    double f_prev = f0;
+    double g_prev = g0;
+    double alpha = alpha_init;
+
+    for (int i = 0; i < max_iter; ++i)
+    {
+        std::pair<double, double> fg_i = phi_wrap(alpha);
+        double f_i = fg_i.first;
+        double g_i = fg_i.second;
+
+        if (f_i > f0 + c1 * alpha * g0 || (i > 0 && f_i >= f_prev))
+        {
+            LineSearchResult zr
+                = zoom(alpha_prev, f_prev, g_prev, alpha, f_i, g_i);
+            return zr;
+        }
+
+        if (std::abs(g_i) <= c2 * std::abs(g0))
+        {
+            result.step = alpha;
+            result.f_new = f_i;
+            result.n_feval = n_feval;
+            result.success = true;
             return result;
         }
 
-        alpha_prev = alpha;
-        phi_prev = phi_a;
-        const double alpha_next = std::min(2.0 * alpha, alpha_expand_cap);
-        if (alpha_next <= alpha * (1.0 + 1e-14))
+        if (g_i >= 0.0)
         {
+            return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
+        }
+
+        double alpha_new = std::min(2.0 * alpha, alpha_max);
+        if (alpha_new <= alpha)
+        {
+            result.step = alpha;
+            result.f_new = f_i;
+            result.n_feval = n_feval;
+            result.success = false;
             return result;
         }
-        alpha = alpha_next;
+        alpha_prev = alpha;
+        f_prev = f_i;
+        g_prev = g_i;
+        alpha = alpha_new;
     }
 
     result.step = alpha_prev;
-    result.f_new = phi_prev;
+    result.f_new = f_prev;
+    result.n_feval = n_feval;
     result.success = false;
     return result;
 }
@@ -454,6 +509,17 @@ class EuclideanOptimizer
         step_ = 0;
         prev_grad_.assign(n_, 0.0);
         prev_dir_.assign(n_, 0.0);
+
+        if (type_ == OptimizerType::Adam)
+        {
+            m_.assign(n_, 0.0);
+            v_.assign(n_, 0.0);
+        }
+        if (type_ == OptimizerType::LBFGS)
+        {
+            s_history_.clear();
+            y_history_.clear();
+        }
     }
 
     /// Compute search direction from current gradient.
@@ -471,13 +537,42 @@ class EuclideanOptimizer
             case OptimizerType::ConjugateGradient:
                 compute_cg_direction(grad, dir);
                 break;
+
+            case OptimizerType::LBFGS:
+                compute_lbfgs_direction(grad, dir);
+                break;
+
+            case OptimizerType::Adam:
+                compute_adam_direction(grad, dir);
+                break;
         }
         prev_grad_ = grad;
     }
 
-    /// Update state after a step (advances CG counters and stores the new gradient).
-    void update(const std::vector<double>& new_grad, const std::vector<double>& /*step_vec*/)
+    /// Update state after a step (for lbfgs history, etc.)
+    void update(const std::vector<double>& new_grad, const std::vector<double>& step_vec)
     {
+        if (type_ == OptimizerType::LBFGS)
+        {
+            std::vector<double> y(n_);
+            for (int i = 0; i < n_; ++i)
+                y[i] = new_grad[i] - prev_grad_[i];
+
+            double sy = 0.0;
+            for (int i = 0; i < n_; ++i)
+                sy += step_vec[i] * y[i];
+
+            if (sy > 1e-12)
+            {
+                s_history_.push_back(step_vec);
+                y_history_.push_back(y);
+                if (static_cast<int>(s_history_.size()) > config_.lbfgs_memory)
+                {
+                    s_history_.pop_front();
+                    y_history_.pop_front();
+                }
+            }
+        }
         prev_grad_ = new_grad;
         step_++;
     }
@@ -514,12 +609,102 @@ class EuclideanOptimizer
         prev_dir_ = dir;
     }
 
+    void compute_lbfgs_direction(const std::vector<double>& grad, std::vector<double>& dir)
+    {
+        dir = grad; // q = grad
+        int m = s_history_.size();
+
+        std::vector<double> alpha_hist(m);
+        std::vector<double> rho_hist(m);
+
+        // First loop
+        for (int i = m - 1; i >= 0; --i)
+        {
+            double sy = 0.0, yy = 0.0;
+            for (int j = 0; j < n_; ++j)
+            {
+                sy += s_history_[i][j] * y_history_[i][j];
+                yy += y_history_[i][j] * y_history_[i][j];
+            }
+            rho_hist[i] = (sy > 1e-30) ? 1.0 / sy : 0.0;
+
+            double a = 0.0;
+            for (int j = 0; j < n_; ++j)
+                a += s_history_[i][j] * dir[j];
+            alpha_hist[i] = rho_hist[i] * a;
+
+            for (int j = 0; j < n_; ++j)
+                dir[j] -= alpha_hist[i] * y_history_[i][j];
+        }
+
+        // Scale by gamma = s_k^T y_k / y_k^T y_k
+        if (m > 0)
+        {
+            double sy = 0.0, yy = 0.0;
+            for (int j = 0; j < n_; ++j)
+            {
+                sy += s_history_.back()[j] * y_history_.back()[j];
+                yy += y_history_.back()[j] * y_history_.back()[j];
+            }
+            double gamma = (yy > 1e-30) ? sy / yy : 1.0;
+            for (int j = 0; j < n_; ++j)
+                dir[j] *= gamma;
+        }
+
+        // Second loop
+        for (int i = 0; i < m; ++i)
+        {
+            double b = 0.0;
+            for (int j = 0; j < n_; ++j)
+                b += y_history_[i][j] * dir[j];
+            b *= rho_hist[i];
+            for (int j = 0; j < n_; ++j)
+                dir[j] += (alpha_hist[i] - b) * s_history_[i][j];
+        }
+
+        // Negate for descent
+        for (int j = 0; j < n_; ++j)
+            dir[j] = -dir[j];
+    }
+
+    void compute_adam_direction(const std::vector<double>& grad, std::vector<double>& dir)
+    {
+        step_++;
+        double beta1 = config_.adam_beta1;
+        double beta2 = config_.adam_beta2;
+        double eps = config_.adam_eps;
+
+        for (int i = 0; i < n_; ++i)
+        {
+            m_[i] = beta1 * m_[i] + (1.0 - beta1) * grad[i];
+            v_[i] = beta2 * v_[i] + (1.0 - beta2) * grad[i] * grad[i];
+        }
+
+        double bc1 = 1.0 - std::pow(beta1, step_);
+        double bc2 = 1.0 - std::pow(beta2, step_);
+
+        for (int i = 0; i < n_; ++i)
+        {
+            double m_hat = m_[i] / bc1;
+            double v_hat = v_[i] / bc2;
+            dir[i] = -config_.adam_lr * m_hat / (std::sqrt(v_hat) + eps);
+        }
+    }
+
     OptimizerType type_;
     RDMFTConfig config_;
     int n_ = 0;
     int step_ = 0;
     std::vector<double> prev_grad_;
     std::vector<double> prev_dir_;
+
+    // Adam state
+    std::vector<double> m_;
+    std::vector<double> v_;
+
+    // lbfgs history
+    std::deque<std::vector<double>> s_history_;
+    std::deque<std::vector<double>> y_history_;
 };
 
 } // namespace rdmft

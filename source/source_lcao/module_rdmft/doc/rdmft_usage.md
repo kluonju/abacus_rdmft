@@ -24,6 +24,14 @@ for a good starting guess), then hand the converged orbitals and occupation
 numbers to the RDMFT optimiser.  The RDMFT stage uses `rdmft_functional`.  All
 RDMFT-specific keywords below are optional and have sensible defaults.
 
+### k-point sampling
+
+Both `gamma_only = 1` (gamma-only LCAO) and `gamma_only = 0` (multi-k LCAO,
+optionally with a single Γ point) are supported and produce RDMFT energies
+that match the KS reference to machine precision at the converged HF orbital.
+On the shipped `H2_HF` and `LiH_HF` examples we verify
+`E_RDMFT_HF == E_KS_HF` byte-for-byte at the converged HF point.
+
 ---
 
 ## Complete keyword reference
@@ -107,65 +115,69 @@ The total electron number must satisfy Σ_k w_k Σ_i n_{ik} = N_e.
   automatic updates of λ and μ.
 - **`projected_gradient`** — Occupations are **physical** band weights
   \(n_{ik}\in[0,1]\) (not the `cosine_sq` / `logistic` maps).  Each inner
-  iteration is a **Spectral Projected Gradient** (Birgin–Martínez–Raydan,
-  SIAM J. Optim. 10 (2000) 1196) step with a Barzilai–Borwein spectral step
-  length and a **monotone** Armijo line search along the spectral projected
-  direction; see
+  iteration uses the Euclidean `rdmft_occ_optimizer` direction in \(n\)-space,
+  a **projected Armijo** line search onto the feasible set (clip to \([0,1]\)
+  then dual rescaling so \(\sum_k w_k\sum_i n_{ik}=N_e\)), and a **Bertsekas
+  projected-gradient map** for convergence; see
   [Projected gradient details](#projected-gradient-details) below.
-- **`active_set`** — Alias for `projected_gradient` in the current
-  implementation: both route to the same SPG inner loop.  Kept for
-  backward INPUT compatibility.
+- **`active_set`** — Legacy reduced equality-constrained solver on the free
+  occupations. It remains available, but it is not one of the main recommended
+  paths above.
 
 <a id="projected-gradient-details"></a>
 ### Projected gradient details (`rdmft_constraint = projected_gradient`)
 
-PG (and its alias `active_set`) is the **Spectral Projected Gradient (SPG)**
-method of Birgin–Martínez–Raydan (SIAM J. Optim. 10 (2000) 1196), with a
-**monotone** Armijo line search along the spectral projected direction
-(sufficient decrease vs the current energy \(E(\mathbf{n}_k)\)).  It works **directly in occupation space** on the
-convex set \(0\le n_{ik}\le 1\) with the linear equality
-\(\sum_k w_k\sum_i n_{ik}=N_e\); the `rdmft_occ_param` keyword is ignored
-on this path (ALM uses `cosine_sq` / `logistic`; `sigma_shift` is only used
-with `joint`).
+PG works **directly in occupation space** on the convex set
+\(0\le n_{ik}\le 1\) with the linear equality \(\sum_k w_k\sum_i n_{ik}=N_e\).
+The `rdmft_occ_param` keyword is ignored for this path (ALM uses `cosine_sq` /
+`logistic`; `sigma_shift` is only used with `joint`).
 
-**Per inner iteration** \(k\):
+**Feasible set and projection.**  After a trial move \(n+\alpha d\), the code
+clips each \(n_{ik}\) to \([0,1]\) and applies a **one-dimensional dual solve**
+(rescaling with a per–\(k\)-weight shift \(\lambda\)) so the weighted electron
+sum matches \(N_e\).  If the bracket for \(\lambda\) fails (too many states
+pinned at 0 or 1), the trial is rejected and the line search shrinks \(\alpha\).
 
-1. Compute \(\mathbf{g}_k = \partial E/\partial \mathbf{n}\) at \(\mathbf{n}_k\).
-2. **Spectral (BB1) step length.**  With \(\mathbf{s}_k = \mathbf{n}_k - \mathbf{n}_{k-1}\),
-   \(\mathbf{y}_k = \mathbf{g}_k - \mathbf{g}_{k-1}\),
-   \(\alpha_k^{\mathrm{BB}} = (\mathbf{s}_k\cdot\mathbf{s}_k)/(\mathbf{s}_k\cdot\mathbf{y}_k)\)
-   safeguarded into \([10^{-10}, 10^{10}]\).  At the first iteration the fallback
-   is \(\alpha_0 = 1/\max(1, \|\mathbf{g}\|_\infty)\).
-3. **Spectral projected direction**
-   \(\mathbf{d}_k = P_{\mathcal{C}}(\mathbf{n}_k - \alpha_k^{\mathrm{BB}}\, \mathbf{g}_k)
-   - \mathbf{n}_k\).  This is provably a descent direction for any closed
-   convex \(\mathcal{C}\) (BMR Lemma 2.1), with
-   \(\mathbf{g}_k\cdot\mathbf{d}_k \le -\|\mathbf{d}_k\|^2 / \alpha_k^{\mathrm{BB}} \le 0\).
-4. **Monotone Armijo** along \(\mathbf{n}_k(\lambda) = \mathbf{n}_k + \lambda \mathbf{d}_k\),
-   \(\lambda = 1, \rho, \rho^2, \ldots\): accept the smallest \(\lambda\) with
-   \(E(\mathbf{n}_k(\lambda)) \le E(\mathbf{n}_k) + c_1 \lambda\, \mathbf{g}_k\cdot\mathbf{d}_k\).
-   Each trial is the convex combination
-   \((1-\lambda)\mathbf{n}_k + \lambda P_{\mathcal{C}}(\cdots)\) of two feasible
-   points, hence automatically feasible — **no per-trial re-projection**.
+**Search direction.**  The gradient \(\partial E/\partial n\) is taken at fixed
+orbitals.  The same Euclidean optimisers as for ALM (`sd`, `cg`, `lbfgs`, `adam`)
+build a descent direction \(d\); if \(d^\top \nabla_n E\ge 0\), the code falls
+back to **steepest descent**, \(d = -\nabla_n E\).
 
-`rdmft_occ_optimizer` is **not** consulted on this path: SPG already has a
-proven globally convergent step, so no SD/CG direction or curvature
-history is used.
+**Line search (projected Armijo).**  For trial \(n' = P(n+\alpha d)\) with
+feasible projection \(P\):
 
-**Closed form of \(P_{\mathcal{C}}\).**  The Euclidean foot point on
-\(\mathcal{C}\) has the standard shifted-clipping form
-\(y_{ik}(\lambda) = \min(1, \max(0, x_{ik} - \lambda\, w_k))\) with a single
-scalar \(\lambda\) determined by bisection from
-\(\sum_k w_k \sum_i y_{ik}(\lambda) = N_e\).  We do **not** pre-clip \(x\)
-to \([0,1]\) before solving for \(\lambda\) — the box clip is part of the
-dual map.
+1. If the equality residual after projection is too large, reduce \(\alpha\)
+   (no energy evaluation).
+2. Let \(\Delta n = n'-n\).  If \(\nabla_n E\cdot \Delta n \ge 0\), reduce
+   \(\alpha\) (the projected segment is not a first-order descent at linear
+   order).
+3. Otherwise evaluate \(E(n')\) and accept the step if
+   \(E(n') \le E(n) + c_1\,(\nabla_n E\cdot \Delta n)\) with Armijo constant
+   \(c_1 =\) `rdmft_line_search_c1` (same keyword as for orbital Armijo and AS
+   occupations).
+4. On rejection, multiply \(\alpha\) by a fixed factor (default \(0.5\) in the
+   solver) until the iteration cap is hit.
 
-**Convergence criterion (inner).**  The textbook SPG stationarity measure is
-the Bertsekas projected-gradient residual at unit step,
-\(\mathbf{r}(\mathbf{n}) = \mathbf{n} - P_{\mathcal{C}}(\mathbf{n} - \nabla_{\mathbf{n}}E)\)
-(BMR Eq. 2.6).  At a KKT point \(\mathbf{r} = 0\).  The inner loop stops when
-\(\|\mathbf{r}\|_\infty \le\) `rdmft_occ_proj_tol` (no energy-difference test).
-The iteration cap is `rdmft_occ_maxiter`.
+If **no** trial in that backtracking loop is accepted, the solver applies a
+**single projected steepest step**
+\(n \leftarrow P\bigl(n - \tau\,\nabla_n E\bigr)\) with \(\tau =\)
+`rdmft_alpha_step`, then **resets** the occupation optimiser state (CG / L-BFGS
+/ Adam history).  This mirrors the recovery used in the `active_set` path when
+its line search fails.
+
+**Convergence criterion (inner).**  Define the **projected-gradient** (Bertsekas)
+\(\mathbf{g}_{\mathrm{proj}} = \tfrac{1}{\tau}\bigl(\mathbf{n} - P(\mathbf{n} -
+\tau \nabla_{\mathbf{n}}E)\bigr)\) with **\(\tau\) tied to the occupation line
+search**: before stepping, \(\tau\) equals the first Armijo trial \(\alpha_0\)
+from `rdmft_occ_ls_init_step` (with fallback to `rdmft_alpha_step` if \(\alpha_0\)
+is invalid); after a successful line search, \(\tau\) is the **accepted** Armijo
+step \(\alpha\); after an SD fallback (failed line search), \(\tau =\)
+`rdmft_alpha_step`, matching the recovery step.  The PG inner loop stops only
+when \(\|\mathbf{g}_{\mathrm{proj}}\|_\infty <\) `rdmft_occ_grad_tol` (evaluated
+**post-step**; the log reports the unscaled map \(\|\mathbf{n} - P(\cdot)\|_\infty\)
+and the \(\tau\) used).  The first inner may exit early if the **pre-step**
+\(\|\mathbf{g}_{\mathrm{proj}}\|_\infty\) is already below the tolerance.  INPUT
+`rdmft_occ_energy_tol` is **not** used for PG stopping.
 
 **Outer (alternating / joint).**  A run is not considered **globally** converged
 on `rdmft_energy_tol` alone: the outer loop requires (after the first cycle)
@@ -174,14 +186,20 @@ small \(|E - E_{\mathrm{prev}}|\) between outer iterations.  If
 `rdmft_energy_tol` \(\le 0\), the outer energy test is off and the loop stops
 when the inner flags alone indicate convergence.
 
+**When to use PG.**  Useful for experiments or when you want updates purely in
+\(n\)-space without ALM penalties.  For difficult functionals (e.g. Müller at
+stretched geometries), **ALM (`augmented_lagrangian`) is usually more robust**.
+If the log shows repeated `PG line search failed` / `applied SD fallback`, try
+smaller `rdmft_alpha_step`, looser `rdmft_line_search_c1`, more inner iterations
+`rdmft_occ_maxiter`, or switch constraint method.
+
 ### Optimiser selection
 
 | Keyword | Type | Default | Allowed values |
 |---------|------|---------|----------------|
-| `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg` |
-| `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg` |
-| `rdmft_orb_retraction` | string | `polar` | `polar`, `qr`, `cayley` (`qr` / `cayley` serial-only; MPI builds fall back to `polar` with a one-time warning) |
-| `rdmft_joint_optimizer` | string | `cg` | `sd`, `cg` |
+| `rdmft_occ_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_orb_optimizer` | string | `cg` | `sd`, `cg`, `lbfgs`, `adam` |
+| `rdmft_joint_optimizer` | string | `lbfgs` | `sd`, `cg`, `lbfgs`, `adam` |
 
 `rdmft_occ_optimizer` and `rdmft_orb_optimizer` control the two sub-problem
 optimisers used by the `alternating` strategy.  `rdmft_joint_optimizer`
@@ -189,30 +207,19 @@ selects the **single** unified optimiser used by the `joint` strategy on the
 packed `(p, C)` variable.  Only the keyword matching the active strategy is
 consulted; the others are ignored.
 
-`rdmft_orb_optimizer` chooses the Riemannian optimiser used by the
-`alternating` orbital sub-problem (Stiefel SD or CG; see *Optimiser semantics*
-below).  Both are first-order Riemannian methods on `St(N_b, N_basis)` with
-monotone Strong Wolfe line search along the retraction.
-
-`rdmft_orb_retraction` selects the Stiefel retraction used by every orbital
-step (both `alternating` and `joint`):
-
-| Value | Algorithm | Notes |
-|-------|-----------|-------|
-| `polar` (default) | $R_X(\eta) = (X+\eta)\bigl[(X+\eta)^\dagger (X+\eta)\bigr]^{-1/2}$ via Cholesky-QR. | Cheap (one Cholesky + one triangular solve) and fully MPI-parallelised (ScaLAPACK `pdpotrf` + `pdtrsm`). Loses about half the working precision when $(X+\eta)^\dagger (X+\eta)$ is ill-conditioned. |
-| `qr` | Householder QR of $X+\eta = QR$ with sign-fixed $R$ diagonal. | More numerically robust than `polar` when $(X+\eta)^\dagger(X+\eta)$ is near-singular. **Serial-only**; MPI builds emit a one-time warning and fall back to `polar`. |
-| `cayley` | Wen–Yin low-rank Cayley retraction (Wen & Yin, *Math. Prog.* **142** (2013) 397, Algorithm 1). Solves a $2p \times 2p$ system via Sherman–Morrison–Woodbury; preserves orthogonality exactly without a triangular factor. | Attractive when $N_{\mathrm{basis}} \gg N_{\mathrm{bands}}$. **Serial-only**; MPI builds emit a one-time warning and fall back to `polar`. |
-
 You can choose different optimisers for the occupation and orbital
 sub-problems:
 
 | Value | Algorithm | Notes |
 |-------|-----------|-------|
 | `sd` | Steepest descent | Most robust, slowest convergence |
-| `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability. For **orbitals**, if the line search fails, the next inner iteration restarts along steepest descent (-G_R). |
+| `cg` | Conjugate gradient (Polak–Ribière / Fletcher–Reeves with Powell restart) | Good balance of speed and reliability. For **orbitals**, if an Armijo line search fails, the next inner iteration restarts along steepest descent (-G_R). |
+| `lbfgs` | limited-memory lbfgs | Fast for smooth landscapes, uses `rdmft_lbfgs_memory` history vectors. For the orbital sub-problem, the quasi-Newton direction is projected back onto the Stiefel tangent space (Riemannian lbfgs by projection). |
+| `adam` | Adam | Adaptive learning rate, useful for noisy or ill-conditioned problems. For the orbital sub-problem Adam's Euclidean update is projected onto the tangent space and retracted onto the Stiefel manifold at each step. |
 
-Both optimisers are available for `rdmft_occ_optimizer` and `rdmft_orb_optimizer`
-and may be mixed (e.g. `cg` on occupations and `sd` on orbitals).
+All four optimisers are available for both `rdmft_occ_optimizer` and
+`rdmft_orb_optimizer` and may be mixed freely (e.g. `cg` on occupations and
+`lbfgs` on orbitals).
 
 ### Convergence control
 
@@ -222,9 +229,11 @@ and may be mixed (e.g. `cg` on occupations and `sd` on orbitals).
 | `rdmft_occ_maxiter` | int | `50` | Maximum **inner** iterations for the occupation sub-problem (orbitals fixed) within one outer cycle. |
 | `rdmft_orb_maxiter` | int | `50` | Maximum **inner** iterations for the orbital sub-problem (occupations fixed) within one outer cycle. |
 | `rdmft_energy_tol` | real | `1e-8` | Outer: require **smaller** than this for \(\|E - E_{\mathrm{prev}}\|\) (Ry) **and** both occupation- and orbital-inner `converged` flags, after the first outer step.  Set `<=0` to disable the energy part (stopping uses inner flags only). |
-| `rdmft_orb_grad_tol` | real | `1e-5` | Alternating orbitals and **joint** orbital block: relative factor \(\varepsilon_g\) — stop when \(\|G_R\|_F \le \varepsilon_g \max(1, \|G_R(x_0)\|_F)\), with \(x_0\) the iterate at the start of the orbital inner loop (joint: reference norms at outer iteration 0). |
-| `rdmft_occ_grad_tol` | real | `1e-5` | **ALM** occupations and **joint** occupation block: \(\varepsilon_g\) for \(\|\nabla_p L\| \le \varepsilon_g \max(1, \|\nabla_p L(x_0)\|)\) with \(x_0\) at the first ALM inner iteration (respectively joint outer iter 0). Not used on the SPG path. |
-| `rdmft_occ_proj_tol` | real | `1e-5` | **SPG** (`projected_gradient` / `active_set`): stop when \(\|n - P_\Omega(n - \nabla_n E)\|_\infty \le \varepsilon_{\mathrm{proj}}\) (Bertsekas residual; BMR SIOPT 2000). |
+| `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
+| `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: when `> 0`, stopping requires **both** `||G_R|| <` `rdmft_orb_grad_tol` **and** small energy moves: `|E_k - E_{k-1}|` before the step and `|E_{\mathrm{new}} - E|` after an accepted line search must stay below this (Ry). Set `<= 0` for gradient-only stopping. |
+| `rdmft_occ_tol` | real | `1e-7` | **ALM / active_set:** tolerance on occupation inner updates (e.g. sum \(|\Delta n|\) and KKT-style checks for AS). **Not** the PG stopping rule. |
+| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, with \(\tau\) from the occupation line search (initial \(\alpha_0\), accepted \(\alpha\), or `rdmft_alpha_step` after SD fallback—see projected-gradient details).  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
+| `rdmft_occ_energy_tol` | real | `1e-8` | **Not used** for `projected_gradient` (PG inner stop is `rdmft_occ_grad_tol` vs \(\|g_{\mathrm{proj}}\|_\infty\) only). Kept for backward-compatible INPUT. |
 
 ### Initial occupation setup
 
@@ -233,38 +242,37 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `binary`, `uniform`. |
+| `rdmft_occ_init_mode` | string | `ks` | Initial occupation mode: `ks`, `perturbed`, `uniform`. |
 | `rdmft_occ_init_perturb` | real | `0.0` | Perturbation magnitude `delta` used by `rdmft_occ_init_mode = perturbed`. |
-| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` (per k-point): `K` bands above and `K` bands below the Fermi boundary. Used by `perturbed`, `binary`, and `uniform`. For `perturbed`, `K > 0` sets the window; `K <= 0` uses an automatic small window (default half-width 3, capped by `nbands`). For `binary`/`uniform`, `K <= 0` falls back to `ks`. |
+| `rdmft_occ_init_nbands_top` | int | `0` | Fermi-window half-width `K` used by `perturbed`/`uniform`: select `K` bands above and `K` bands below the Fermi boundary (per k-point). |
 
 - `ks`: use KS occupations directly as RDMFT initial occupations.
-- `perturbed` (ELK/Exciting-style): for each k-point, apply `+delta` to selected empty-side bands and `-delta` to selected occupied-side bands **only within the Fermi window** around the boundary (same band set as `binary`/`uniform` for a given `K`), then project back to the feasible set. This avoids shifting deep valence and high empty bands, which is closer to only perturbing fractional `OCCSV` near the Fermi level in codes such as ELK.
-- `binary`: same Fermi window as above; set occupations to `1-delta` if the KS value is `>= 0.5`, otherwise `delta`, then project.
+- `perturbed`: for each k-point and selected Fermi-window bands, apply `+delta` to bands above Fermi and `-delta` to bands below Fermi, then project back to the feasible set.
 - `uniform`: for each k-point, compute `N_top` over the selected `2K` Fermi-window bands and set each selected occupation to `N_top / (2K)` (or `N_top / N_selected` near band edges), then project.
-- If `K <= 0`, `binary` and `uniform` fall back to `ks`. If `delta <= 0`, `perturbed` falls back to `ks`. When `K <= 0` and `perturbed` is active, a default Fermi window is used (see table).
+- If `K <= 0`, `perturbed` and `uniform` fall back to `ks`.
 
 ### Line search and optimiser tuning
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Initial trial step \(\alpha_0\) for **Strong Wolfe** on alternating **orbitals**, **ALM** occupations, and **joint** steps (when ALM BB seed is off, orbitals/joint use this directly). The SPG occupation block (`projected_gradient` / `active_set`) uses Barzilai–Borwein plus **monotone** Armijo and does not consult this keyword. |
-| `rdmft_line_search_c1` | real | `1e-4` | Sufficient-decrease \(c_1\in(0,1)\): \(\varphi(\alpha)\le \varphi(0)+c_1\alpha\varphi'(0)\) in Strong Wolfe (joint / ALM / orbitals), and the same constant in **SPG** monotone Armijo (here the reference is \(E(\mathbf{n}_k)\) at the current iterate). Smaller is stricter. |
-| `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature: \(|\varphi'(\alpha)|\le c_2|\varphi'(0)|\). Must satisfy `rdmft_line_search_c1` \(< c_2 < 1\). Not used by SPG. |
-| `rdmft_line_search_max_iter` | int | `30` | Max **bracket expansion** steps in Strong Wolfe (joint, ALM, orbitals). |
-| `rdmft_line_search_max_zoom` | int | `30` | Max **zoom** (interval refinement) iterations inside Strong Wolfe. |
+| `rdmft_alpha_step` | real | `1.0` | Default / fallback trial step for RDMFT line searches. Orbitals (Armijo) use it for non–quasi-Newton optimisers. For **PG** occupations it is the fallback if the line-search initial \(\alpha_0\) is non-positive / non-finite, the step length in the **SD fallback** after a failed line search, and (matching that move) the post-step Bertsekas \(\tau\) when fallback runs; the usual post-step \(\tau\) is the **accepted** Armijo \(\alpha\). For ALM it is also the fallback when `rdmft_occ_ls_init_step` does not supply \(\alpha_0\). |
+| `rdmft_occ_ls_init_step` | string | `bb` | Occupation line-search **first trial** step: `fixed` (always 1.0), `bb` (Barzilai–Borwein estimate; uses `rdmft_alm_bb_*` clamps), or `quad` (quadratic interpolation from the previous inner iteration’s first energy trial). Used for `projected_gradient` and `active_set`. |
+| `rdmft_line_search_c1` | real | `1e-4` | Armijo sufficient-decrease \(c_1\) in \((0,1)\): smaller is stricter. Used for alternating **orbital** Armijo, ALM / PG / AS **occupation** line searches, and joint Armijo; also the Armijo side of **Strong Wolfe** when \(c_2\) is used. |
+| `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature \(c_2\): used when **Strong Wolfe** runs (`rdmft_occ_optimizer = lbfgs` with ALM, or `rdmft_joint_optimizer = lbfgs` in joint mode). Require \(\lvert g^\top d\rvert \le c_2 \lvert g_0^\top d\rvert\). |
+| `rdmft_line_search_max_zoom` | int | `20` | Maximum **zoom** iterations in Strong Wolfe (Nocedal & Wright). |
+| `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by lbfgs. |
+| `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
 | `rdmft_alm_lambda_init` | real | `0.0` | Initial ALM Lagrange multiplier `lambda` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` seed the **Strong Wolfe** initial step for **ALM** occupations in occupation-parameter space. **ALM**, alternating **orbitals**, and **joint** use **monotone Strong Wolfe** with `rdmft_line_search_c1`, `rdmft_line_search_c2`, and the bracket/zoom iteration caps. The **SPG** path (`projected_gradient` / `active_set`) keeps the standard **BB1 spectral step + monotone Armijo** along the projected direction; it does **not** use Strong Wolfe or `rdmft_occ_optimizer`.
-
-The **alternating orbital** sub-problem is Riemannian SD or Polak–Ribière⁺ CG on the Stiefel manifold (Absil–Mahony–Sepulchre, *Optimization Algorithms on Matrix Manifolds*, Princeton 2008), with **monotone Strong Wolfe** along `rdmft_orb_retraction` (default `polar`). For ill-conditioned regularised functionals (Müller / Power / GEO), reduce `rdmft_alpha_step` or switch to `rdmft_solver_strategy = joint` if the alternating map diverges (see `rdmft_derivation.md` §7.1).
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true) and bound the BB branch of `rdmft_occ_ls_init_step = bb`. **Strong Wolfe** (bracket + zoom) is used for lbfgs in ALM occupations and for the **joint** strategy when `rdmft_joint_optimizer = lbfgs`; otherwise **Armijo** applies with `rdmft_line_search_c1`.  **ALM** occupation Armijo may use optional **polynomial** suggestions when `rdmft_line_search_polynomial` is true; **PG** and **active_set** occupation line searches use **geometric** backtracking only (same \(c_1\), no polynomial branch). Alternating **orbital** optimisation uses Armijo only (no polynomial there). `rdmft_occ_ls_init_step` is not read for orbital optimisation.
 
 ### Debugging
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_grad_check` | bool | `false` | If `true`, run a finite-difference gradient verification **at the start of the RDMFT solve**, immediately after the LCAO coefficients are converted to internal **X-space** (`precompute_cholesky_S` / `wfc_C_to_X`) and before the main alternating or joint loop. Occupations use a central difference in `n`; the **orbital** check uses the projected Riemannian gradient `G_R` and a **forward** difference along the same polar retraction as the line search `(E(t)-E_0)/t`, which matches the directional derivative \(\langle G_R, D\rangle\) at \(t=0\) more reliably than a symmetric `±t` probe. This is expensive but essential for development and validation. Results are written to the running log. |
+| `rdmft_grad_check` | bool | `false` | If `true`, run a finite-difference gradient verification **at the start of the RDMFT solve**, immediately after the LCAO coefficients are converted to internal **X-space** (`precompute_cholesky_S` / `wfc_C_to_X`) and before the main alternating or joint loop. Occupations use a central difference in `n`; the **orbital** check uses the projected Riemannian gradient `G_R` and a **forward** difference along the same polar retraction as the line search `(E(t)-E_0)/t`, which matches the Armijo slope `-||G_R||^2` more reliably than a symmetric `±t` probe. This is expensive but essential for development and validation. Results are written to the running log. |
 
 ---
 
@@ -290,7 +298,7 @@ This runs a KS-SCF with PBE to convergence, then optimises natural occupations
 (CG with augmented-Lagrangian constraint) and natural orbitals (CG on the Stiefel
 manifold) in an alternating fashion using the Müller functional.
 
-### Example 2: Power functional with CG and gradient check
+### Example 2: Power functional with lbfgs and gradient check
 
 ```
 INPUT_PARAMETERS
@@ -301,8 +309,9 @@ rdmft_functional     power
 rdmft               1
 rdmft_power_alpha       0.55
 rdmft_solver_strategy   alternating
-rdmft_occ_optimizer     cg
-rdmft_orb_optimizer     cg
+rdmft_occ_optimizer     lbfgs
+rdmft_orb_optimizer     lbfgs
+rdmft_lbfgs_memory      20
 rdmft_outer_maxiter        200
 rdmft_energy_tol        1e-8
 rdmft_grad_check        1
@@ -325,7 +334,7 @@ rdmft               1
 rdmft_solver_strategy   joint
 rdmft_occ_param         logistic
 rdmft_constraint        augmented_lagrangian
-rdmft_joint_optimizer   cg
+rdmft_joint_optimizer   lbfgs
 rdmft_alpha_step         0.01
 rdmft_outer_maxiter        300
 ```
@@ -336,11 +345,11 @@ can stabilise joint HF steps; omit it to use the default.
 Here occupations and orbitals are optimised simultaneously on the product
 manifold (new `joint` keyword; `product_manifold` is still accepted as a
 deprecated alias).  The packed variable `(p, C)` is handled by a single
-optimiser (`rdmft_joint_optimizer` = `sd` or `cg`): every outer iteration the
-solver evaluates the packed gradient `(dE/dp, G_R)`, computes a descent
-direction, re-projects the orbital block onto the Stiefel tangent space, and
-runs one Armijo line search along the packed direction (linear update for the
-occupation parameters, Stiefel retraction for the orbitals).
+lbfgs optimiser (`rdmft_joint_optimizer lbfgs`): every outer iteration the
+solver evaluates the packed gradient `(dE/dp, G_R)`, asks lbfgs for a
+descent direction, re-projects the orbital block onto the Stiefel tangent
+space, and runs one Armijo line search along the packed direction (linear
+update for the occupation parameters, Stiefel retraction for the orbitals).
 
 ### Example 4: Gamma-only solid with projected gradient
 
@@ -419,12 +428,13 @@ fallback (clip + dual rescaling); see
 - **Augmented Lagrangian is usually best** for the electron-number constraint,
   especially combined with cosine-squared parameterisation.
 
-- **Projected gradient (SPG)** ignores `rdmft_occ_param` and optimises raw
-  \(n_{ik}\) with a Barzilai–Borwein spectral step and a **monotone** Armijo line
-  search along the spectral projected direction; no tuning is normally required.
+- **Projected gradient** ignores `rdmft_occ_param` and optimises raw \(n_{ik}\).
+  If PG line searches fail often, reduce `rdmft_alpha_step`, relax
+  `rdmft_line_search_c1`, or prefer ALM.
 
-- **CG** is the recommended optimiser for production in most cases.  Steepest
-  descent is useful for debugging.
+- **CG or lbfgs** are the recommended optimisers for production.  Steepest
+  descent is useful for debugging.  Adam can help with difficult convergence
+  but may require tuning `rdmft_adam_lr`.
 
 - **For periodic systems with multiple k-points**, the constraint
   Σ_k w_k Σ_i n_{ik} = N_e is automatically handled using the k-point weights.
@@ -433,17 +443,16 @@ fallback (clip + dual rescaling); see
 
 ## Troubleshooting
 
-### SPG occupation line search fails
+### PG occupation line search always fails or resets the optimiser
 
-The SPG inner loop logs lines of the form
-`occ line search (SPG monotone Armijo): ... ok|fail`.  Because the
-spectral projected direction is *guaranteed* to be a descent direction
-(BMR Lemma 2.1), the line search can only fail in floating-point
-arithmetic when `g · d ≈ 0` (the iterate is essentially stationary).  When
-this happens a zero step is accepted and the outer loop's convergence
-criteria still apply.  If failures occur at non-stationary points, run
-`rdmft_grad_check 1` to verify \(\partial E/\partial n\) against finite
-differences.
+The running log may show `occ line search (PG Armijo): ... fail` and
+`applied SD fallback and reset optimizer` when no trial satisfies projected
+Armijo within the backtracking cap.  Typical mitigations: smaller
+`rdmft_alpha_step`, slightly **larger** `rdmft_line_search_c1` (e.g. `1e-3`–`1e-2`),
+more `rdmft_occ_maxiter`, or `rdmft_occ_optimizer sd`.  For stubborn cases switch
+to `rdmft_constraint augmented_lagrangian`.  If failures persist with plausible
+inputs, run `rdmft_grad_check 1` to verify \(\partial E/\partial n\) against
+finite differences.
 
 ### ABACUS runs for a long time with no RDMFT output
 
