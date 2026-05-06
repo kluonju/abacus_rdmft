@@ -225,6 +225,9 @@ struct RDMFTConfig
     ///   weak Wolfe (LBFGS): g(alpha) >= c2 * g0
     /// Typical: 0.9 (lbfgs), smaller for nonlinear CG (e.g. 0.1).
     double line_search_c2 = 0.9;
+    /// Zhang–Hager memory η for non-monotone Strong Wolfe (PG/AS occupation + CG
+    /// in alternating mode only; ALM keeps monotone Wolfe). Must be in (0, 1].
+    double occ_cg_nonmonotone_eta = 0.85;
     /// Zoom iteration cap in `strong_wolfe_line_search` (Nocedal & Wright zoom).
     int line_search_max_zoom = 20;
     /// If true, backtracking after a failed Armijo trial uses a quadratic
@@ -235,10 +238,11 @@ struct RDMFTConfig
     bool line_search_polynomial = true;
     LineSearchInitStep occ_line_search_init_step = LineSearchInitStep::BarzilaiBorwein;
 
-    /// ALM occupation line-search seed policy.
-    /// When enabled, Armijo starts from a Barzilai-Borwein step estimate
-    /// computed in occupation-parameter space (fallback to
-    /// line_search_alpha_init when unavailable).
+    /// Barzilai–Borwein line-search seed (ALM params, joint packed SD/CG).
+    /// When enabled, the first trial α uses BB (spectral ratio ||x||/||g|| when
+    /// no prior step exists, else BB1/BB2 per alm_bb_mode), clamped to
+    /// [alm_bb_alpha_min, alm_bb_alpha_max], with fallback to
+    /// line_search_alpha_init when the estimate is unusable.
     bool alm_bb_enabled = true;
     BBStepMode alm_bb_mode = BBStepMode::Alternate;
     double alm_bb_alpha_min = 1e-8;

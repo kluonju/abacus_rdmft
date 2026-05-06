@@ -88,7 +88,10 @@ class BarzilaiBorweinStep
     {
         if (!have_prev_ || prev_x_.size() != x.size() || prev_g_.size() != grad.size())
         {
-            return clamp_alpha(fallback_alpha);
+            // No BB pair (s, y) yet: use a spectral-style first trial
+            //   α ≈ ||x|| / ||g||  (same units as BB1/BB2 in Euclidean form),
+            // falling back to `fallback_alpha` when the ratio is unusable.
+            return clamp_alpha(cold_start_alpha(x, grad, fallback_alpha));
         }
 
         double ss = 0.0;
@@ -134,6 +137,32 @@ class BarzilaiBorweinStep
     }
 
   private:
+    static double cold_start_alpha(const std::vector<double>& x,
+                                   const std::vector<double>& grad,
+                                   const double fallback_alpha)
+    {
+        double xn2 = 0.0;
+        double gn2 = 0.0;
+        for (size_t i = 0; i < x.size(); ++i)
+        {
+            xn2 += x[i] * x[i];
+            gn2 += grad[i] * grad[i];
+        }
+        const double xn = std::sqrt(xn2);
+        const double gn = std::sqrt(gn2);
+        constexpr double eps = 1.0e-30;
+        if (!(gn > eps) || !std::isfinite(gn) || !std::isfinite(xn))
+        {
+            return fallback_alpha;
+        }
+        const double a = xn / gn;
+        if (!std::isfinite(a) || a <= 0.0)
+        {
+            return fallback_alpha;
+        }
+        return a;
+    }
+
     double clamp_alpha(double alpha) const
     {
         if (!std::isfinite(alpha) || alpha <= 0.0)
@@ -455,6 +484,162 @@ inline LineSearchResult strong_wolfe_line_search(
         double g_i = fg_i.second;
 
         if (f_i > f0 + c1 * alpha * g0 || (i > 0 && f_i >= f_prev))
+        {
+            LineSearchResult zr
+                = zoom(alpha_prev, f_prev, g_prev, alpha, f_i, g_i);
+            return zr;
+        }
+
+        if (std::abs(g_i) <= c2 * std::abs(g0))
+        {
+            result.step = alpha;
+            result.f_new = f_i;
+            result.n_feval = n_feval;
+            result.success = true;
+            return result;
+        }
+
+        if (g_i >= 0.0)
+        {
+            return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
+        }
+
+        double alpha_new = std::min(2.0 * alpha, alpha_max);
+        if (alpha_new <= alpha)
+        {
+            result.step = alpha;
+            result.f_new = f_i;
+            result.n_feval = n_feval;
+            result.success = false;
+            return result;
+        }
+        alpha_prev = alpha;
+        f_prev = f_i;
+        g_prev = g_i;
+        alpha = alpha_new;
+    }
+
+    result.step = alpha_prev;
+    result.f_new = f_prev;
+    result.n_feval = n_feval;
+    result.success = false;
+    return result;
+}
+
+/// Strong Wolfe with a **non-monotone** sufficient decrease:
+/// \f$f(\alpha)\le f_{\mathrm{ref}}+c_1\alpha\phi'(0)\f$ (Zhang–Hager-style
+/// reference \f$f_{\mathrm{ref}}\f$ fixed for this search). Curvature tests
+/// match `strong_wolfe_line_search` (use \f$\phi'(0)=g_0\f$, trial slopes
+/// \f$g(\alpha)\f$ from `phi`).
+inline LineSearchResult strong_wolfe_nm_line_search(
+    std::function<std::pair<double, double>(double)> phi,
+    double f0,
+    double g0,
+    double f_ref,
+    double alpha_init = 1.0,
+    double c1 = 1e-4,
+    double c2 = 0.9,
+    int max_iter = 20,
+    int max_zoom = 20)
+{
+    LineSearchResult result;
+    result.alpha_init = alpha_init;
+    int n_feval = 0;
+    auto phi_wrap = [&](double a) -> std::pair<double, double> {
+        ++n_feval;
+        return phi(a);
+    };
+
+    if (!(g0 < 0.0))
+    {
+        result.step = 0.0;
+        result.f_new = f0;
+        result.n_feval = 0;
+        result.success = false;
+        return result;
+    }
+
+    auto cubic_min = [](double a, double fa, double ga, double b, double fb, double gb) -> double
+    {
+        if (std::abs(b - a) <= std::numeric_limits<double>::epsilon()
+            * (std::abs(a) + std::abs(b) + 1.0))
+        {
+            return 0.5 * (a + b);
+        }
+        const double d1 = ga + gb - 3.0 * (fb - fa) / (b - a);
+        const double d2_sq = d1 * d1 - ga * gb;
+        if (d2_sq < 0.0)
+        {
+            return 0.5 * (a + b);
+        }
+        const double d2 = std::sqrt(d2_sq);
+        const double alpha_star = b - (b - a) * (gb + d2 - d1) / (gb - ga + 2.0 * d2);
+        const double lo = std::min(a, b);
+        const double hi = std::max(a, b);
+        const double margin = 0.1 * (hi - lo);
+        return std::min(std::max(alpha_star, lo + margin), hi - margin);
+    };
+
+    auto zoom = [&](double alpha_lo, double f_lo, double g_lo, double alpha_hi, double f_hi, double g_hi) -> LineSearchResult
+    {
+        LineSearchResult z_result;
+        for (int j = 0; j < max_zoom; ++j)
+        {
+            const double alpha_j = cubic_min(alpha_lo, f_lo, g_lo, alpha_hi, f_hi, g_hi);
+
+            std::pair<double, double> fg_j = phi_wrap(alpha_j);
+            double f_j = fg_j.first;
+            double g_j = fg_j.second;
+
+            if (f_j > f_ref + c1 * alpha_j * g0 || f_j >= f_lo)
+            {
+                alpha_hi = alpha_j;
+                f_hi = f_j;
+                g_hi = g_j;
+            }
+            else
+            {
+                if (std::abs(g_j) <= c2 * std::abs(g0))
+                {
+                    z_result.step = alpha_j;
+                    z_result.f_new = f_j;
+                    z_result.n_feval = n_feval;
+                    z_result.alpha_init = alpha_init;
+                    z_result.success = true;
+                    return z_result;
+                }
+                if (g_j * (alpha_hi - alpha_lo) >= 0.0)
+                {
+                    alpha_hi = alpha_lo;
+                    f_hi = f_lo;
+                    g_hi = g_lo;
+                }
+                alpha_lo = alpha_j;
+                f_lo = f_j;
+                g_lo = g_j;
+            }
+        }
+        z_result.step = alpha_lo;
+        z_result.f_new = f_lo;
+        z_result.n_feval = n_feval;
+        z_result.alpha_init = alpha_init;
+        z_result.success = false;
+        return z_result;
+    };
+
+    const double alpha_max = alpha_init * 100.0;
+    double alpha_prev = 0.0;
+    double f_prev = f0;
+    double g_prev = g0;
+    double alpha = alpha_init;
+
+    for (int i = 0; i < max_iter; ++i)
+    {
+        std::pair<double, double> fg_i = phi_wrap(alpha);
+        double f_i = fg_i.first;
+        double g_i = fg_i.second;
+
+        if (f_i > f_ref + c1 * alpha * g0 || (i > 0 && f_i >= f_prev))
         {
             LineSearchResult zr
                 = zoom(alpha_prev, f_prev, g_prev, alpha, f_i, g_i);

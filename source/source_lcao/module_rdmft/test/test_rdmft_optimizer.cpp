@@ -459,6 +459,15 @@ TEST_F(OptimizerTest, LBFGS_and_SD_both_reach_Stiefel_minimum)
     EXPECT_NEAR(E_lb, E_ref, 1e-5);
 }
 
+TEST_F(OptimizerTest, BBStep_cold_start_uses_norm_ratio)
+{
+    BarzilaiBorweinStep bb;
+    bb.set_bounds(1e-8, 10.0);
+    // No record_state: suggest uses ||x||/||g|| = 3/6 = 0.5
+    const double a = bb.suggest({3.0, 0.0}, {6.0, 0.0}, 0.1);
+    EXPECT_NEAR(a, 0.5, 1e-14);
+}
+
 TEST_F(OptimizerTest, BBStep_BB1_and_BB2_match_formula)
 {
     // x_prev -> x, g_prev -> g
@@ -502,4 +511,18 @@ TEST_F(OptimizerTest, BBStep_Alternate_toggles_BB1_BB2)
     // Second query (BB2): s=[1,0], y=[1,0] => 1.0
     const double a_second = bb.suggest({2.0, 0.0}, {3.0, 0.0}, 0.1);
     EXPECT_NEAR(a_second, 1.0, 1e-14);
+}
+
+TEST_F(OptimizerTest, StrongWolfeNM_accepts_step_with_loose_f_ref)
+{
+    // phi(alpha) = (1 - alpha)^2,  phi'(alpha) = -2(1 - alpha);  at alpha=0: f0=1, g0=-2.
+    auto phi = [](double a) -> std::pair<double, double> {
+        const double t = 1.0 - a;
+        return {t * t, -2.0 * t};
+    };
+    const double f_ref = 2.0;
+    const LineSearchResult r = strong_wolfe_nm_line_search(phi, 1.0, -2.0, f_ref, 0.5, 1e-4, 0.9, 30, 30);
+    EXPECT_TRUE(r.success);
+    EXPECT_GT(r.step, 0.0);
+    EXPECT_LT(r.f_new, f_ref + 1e-10);
 }

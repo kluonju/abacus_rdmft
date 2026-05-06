@@ -699,6 +699,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         add_kv(keys, vals, "line_search_polynomial", cfg.line_search_polynomial ? "true" : "false");
         add_kv(keys, vals, "line_search_c2", as_sci(cfg.line_search_c2));
         add_kv(keys, vals, "line_search_max_zoom", std::to_string(cfg.line_search_max_zoom));
+        add_kv(keys, vals, "occ_cg_nonmonotone_eta", as_sci(cfg.occ_cg_nonmonotone_eta));
         add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
         add_kv(keys, vals, "rdmft_print_evals", cfg.print_evals ? "true" : "false");
         emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
@@ -1519,6 +1520,11 @@ double RDMFTSolver<TK, TR>::solve_joint(
     EuclideanOptimizer joint_opt(joint_type, config_);
     joint_opt.init(packed_size);
 
+    BarzilaiBorweinStep joint_bb;
+    joint_bb.set_mode(config_.alm_bb_mode);
+    joint_bb.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
+    joint_bb.reset();
+
     // Work buffer for line-search rollback.
     psi::Psi<TK> wfc_save(wfc);
 
@@ -1551,6 +1557,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     std::vector<double> packed_grad(packed_size, 0.0);
     std::vector<double> packed_dir(packed_size, 0.0);
     std::vector<double> packed_step(packed_size, 0.0);
+    std::vector<double> packed_iterate(packed_size, 0.0);
 
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
@@ -1630,6 +1637,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
             packed_grad[i] = grad_params[i];
         for (int i = 0; i < orb_flat_size; ++i)
             packed_grad[n_occ_params + i] = orb_scale * grad_orb_flat[i];
+
+        auto fill_packed_iterate = [&]() {
+            for (int i = 0; i < n_occ_params; ++i)
+                packed_iterate[i] = params[i];
+            std::vector<double> wfc_flat_tmp;
+            psi_to_flat(wfc, wfc_flat_tmp);
+            for (int i = 0; i < orb_flat_size; ++i)
+                packed_iterate[n_occ_params + i] = orb_scale * wfc_flat_tmp[i];
+        };
 
         // Ask the single unified optimiser for a packed descent direction.
         joint_opt.compute_direction(packed_grad, packed_dir);
@@ -1744,9 +1760,17 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         // Joint line search policy follows the optimizer:
         //   CG -> strong Wolfe, LBFGS -> weak Wolfe, others -> Armijo.
-        const double alpha_init = (joint_is_lbfgs || joint_is_adam)
-                                      ? 1.0
-                                      : config_.line_search_alpha_init;
+        // Initial trial step: BB estimate in packed (p, orb_scale·C) space when
+        // rdmft_alm_bb_enabled (same bounds/mode as ALM/PG occupation BB);
+        // LBFGS/Adam keep α₀ = 1.
+        double alpha_init = (joint_is_lbfgs || joint_is_adam)
+                                ? 1.0
+                                : config_.line_search_alpha_init;
+        if (!(joint_is_lbfgs || joint_is_adam) && config_.alm_bb_enabled)
+        {
+            fill_packed_iterate();
+            alpha_init = joint_bb.suggest(packed_iterate, packed_grad, config_.line_search_alpha_init);
+        }
         double alpha = alpha_init;
         const double joint_ls_alpha0 = alpha_init;
         const double c1 = config_.line_search_c1;
@@ -1928,6 +1952,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             }
 
             joint_opt.init(packed_size);
+            joint_bb.reset();
 
             GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
                 << "  line search (joint " << line_search_policy_name(joint_ls_policy) << ") failed: alpha_init="
@@ -1980,7 +2005,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
 
         // Update the unified optimiser's history with the new packed gradient.
-        if (joint_is_lbfgs || joint_is_adam)
+        const bool joint_bb_track = config_.alm_bb_enabled && !joint_is_lbfgs && !joint_is_adam;
+        if (joint_is_lbfgs || joint_is_adam || joint_bb_track)
         {
             std::vector<double> new_grad_occ;
             psi::Psi<TK> new_grad_wfc;
@@ -2015,7 +2041,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
             for (int i = 0; i < orb_flat_size; ++i)
                 new_packed_grad[n_occ_params + i] = orb_scale * new_grad_orb_flat[i];
 
-            joint_opt.update(new_packed_grad, packed_step);
+            if (joint_is_lbfgs || joint_is_adam)
+            {
+                joint_opt.update(new_packed_grad, packed_step);
+            }
+            if (joint_bb_track)
+            {
+                fill_packed_iterate();
+                joint_bb.record_state(packed_iterate, new_packed_grad);
+            }
         }
 
         // Augmented-Lagrangian multiplier refresh (not needed for sigma-shift).
@@ -2410,8 +2444,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //   1. Compute energy E and gradient dE/dn at current n.
             //   2. Use the configured optimizer (SD/CG/lbfgs/Adam) to compute
             //      a search direction d in the occupation space.
-            //   3. Set initial alpha from rdmft_occ_ls_init_step and backtrack
-            //      until the projected step monotonically lowers E.
+            //   3. Set initial alpha from rdmft_occ_ls_init_step; SD/L-BFGS/Adam use
+            //      monotone projected backtracking; CG uses non-monotone Strong Wolfe
+            //      (alternating PG only — ALM keeps monotone Wolfe on parameters).
             //   4. Accept trial; update optimizer with (step, new gradient).
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
@@ -2423,6 +2458,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
                                  << "  rdmft_occ_maxiter=" << config_.occ_maxiter << std::endl;
 
+            const bool pg_occ_cg_nm_sw
+                = (config_.occ_optimizer == OptimizerType::ConjugateGradient);
+
             BarzilaiBorweinStep bb_step;
             bb_step.set_mode(config_.alm_bb_mode);
             bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
@@ -2433,6 +2471,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
             bool have_E_prev = false;
+            double pg_nm_C = std::numeric_limits<double>::quiet_NaN();
+            double pg_nm_Q = 1.0;
 
             for (int inner = 0; inner < config_.occ_maxiter; ++inner)
             {
@@ -2443,6 +2483,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 psi::Psi<TK> grad_wfc_dummy;
                 const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                        grad_occ, grad_wfc_dummy);
+
+                if (pg_occ_cg_nm_sw && !std::isfinite(pg_nm_C))
+                {
+                    pg_nm_C = E;
+                    pg_nm_Q = 1.0;
+                }
 
                 const double c_abs = std::abs(occ_constraint_->constraint_violation(occ_flat));
                 const double dE = have_E_prev ? (E - E_prev) : 0.0;
@@ -2526,7 +2572,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 // Line-search initial step: fixed 1, BB seed, or quadratic
                 // interpolation from the previous inner iteration (same α₀ as τ above).
                 const std::vector<double> occ_before_step(occ_flat);
-                double alpha = alpha_pg0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 int pg_ls_trial = 0;
@@ -2537,71 +2582,140 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double proj_constraint_tol = 1e-6;
                 bool pg_first_ls_recorded = false;
 
-                for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                if (pg_occ_cg_nm_sw)
                 {
-                    pg_ls_trial = ls + 1;
-                    const double alpha_try = alpha;
-                    occ_trial = occ_flat;
-                    for (size_t i = 0; i < occ_trial.size(); ++i)
-                        occ_trial[i] += alpha * dir[i];
-                    occ_constraint_->project(occ_trial);
+                    auto phi_pg = [&](double step) -> std::pair<double, double> {
+                        std::vector<double> trial = occ_flat;
+                        for (size_t i = 0; i < trial.size(); ++i)
+                            trial[i] += step * dir[i];
+                        occ_constraint_->project(trial);
+                        if (std::abs(occ_constraint_->constraint_violation(trial)) > proj_constraint_tol)
+                        {
+                            return {pg_nm_C + 1.0e+10, 1.0};
+                        }
+                        std::vector<double> g_tr;
+                        psi::Psi<TK> gw;
+                        const double Et = energy_grad_->compute(trial, const_cast<psi::Psi<TK>&>(wfc), g_tr, gw);
+                        double dphi = 0.0;
+                        for (size_t i = 0; i < dir.size(); ++i)
+                            dphi += g_tr[i] * dir[i];
+                        return {Et, dphi};
+                    };
 
-                    // Reject if the projection failed to satisfy the constraint
-                    // (occurs when too many occupations clip to 0 or 1).
-                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                    {
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
-
-                    // First-order descent along the projected segment (same as active_set).
-                    double dd_proj = 0.0;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                    {
-                        dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                    }
-                    if (dd_proj >= 0.0)
-                    {
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
-
-                    const double E_trial = energy_grad_->compute_energy(
-                        occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                    E_last_trial = E_trial;
-                    if (!pg_first_ls_recorded)
-                    {
-                        pg_ls_qhist
-                            = {true, alpha_try, E, E_trial, dd_line};
-                        pg_first_ls_recorded = true;
-                    }
-                    if (E_trial <= E)
-                    {
-                        pg_step_acc = alpha_try;
-                        pg_dd_proj_acc = dd_proj;
-                        ls_success = true;
-                        break;
-                    }
-                    alpha *= config_.line_search_rho;
-                }
-
-                {
-                    std::ostringstream pg_ls;
-                    pg_ls << "      occ line search (PG Monotone): alpha_init=" << std::scientific << alpha_pg0
-                          << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
-                          << " E0=" << E << " E_trial=" << E_last_trial;
+                    const LineSearchResult ls_nm = strong_wolfe_nm_line_search(phi_pg,
+                        E,
+                        dd_line,
+                        pg_nm_C,
+                        alpha_pg0,
+                        config_.line_search_c1,
+                        config_.line_search_c2,
+                        config_.line_search_max_iter,
+                        config_.line_search_max_zoom);
+                    pg_ls_trial = ls_nm.n_feval;
+                    E_last_trial = ls_nm.f_new;
+                    ls_success = ls_nm.success;
                     if (ls_success)
                     {
-                        pg_ls << " dTw=" << pg_dd_proj_acc << " E_monotone_bound=" << E;
+                        pg_step_acc = ls_nm.step;
+                        occ_trial = occ_flat;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                            occ_trial[i] += ls_nm.step * dir[i];
+                        occ_constraint_->project(occ_trial);
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            ls_success = false;
+                        }
+                        else
+                        {
+                            pg_dd_proj_acc = 0.0;
+                            for (size_t i = 0; i < occ_flat.size(); ++i)
+                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+                            occ_flat = occ_trial;
+                        }
                     }
-                    pg_ls << "  rho=" << std::defaultfloat << config_.line_search_rho
-                          << (ls_success ? "  ok" : "  fail");
-                    log_occ_inner_line(pg_ls.str());
+
+                    {
+                        std::ostringstream pg_ls;
+                        pg_ls << "      occ line search (PG NonMonotoneStrongWolfe CG): alpha_init="
+                              << std::scientific << alpha_pg0 << " step=" << (ls_success ? pg_step_acc : 0.0)
+                              << " n_feval=" << pg_ls_trial << " E0=" << E << " E_last=" << E_last_trial
+                              << " f_ref=" << pg_nm_C << "  c1=" << std::defaultfloat << config_.line_search_c1
+                              << " c2=" << config_.line_search_c2
+                              << (ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(pg_ls.str());
+                    }
+                }
+                else
+                {
+                    double alpha = alpha_pg0;
+                    for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                    {
+                        pg_ls_trial = ls + 1;
+                        const double alpha_try = alpha;
+                        occ_trial = occ_flat;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                            occ_trial[i] += alpha * dir[i];
+                        occ_constraint_->project(occ_trial);
+
+                        // Reject if the projection failed to satisfy the constraint
+                        // (occurs when too many occupations clip to 0 or 1).
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            alpha *= config_.line_search_rho;
+                            continue;
+                        }
+
+                        // First-order descent along the projected segment (same as active_set).
+                        double dd_proj = 0.0;
+                        for (size_t i = 0; i < occ_flat.size(); ++i)
+                        {
+                            dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+                        }
+                        if (dd_proj >= 0.0)
+                        {
+                            alpha *= config_.line_search_rho;
+                            continue;
+                        }
+
+                        const double E_trial = energy_grad_->compute_energy(
+                            occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                        E_last_trial = E_trial;
+                        if (!pg_first_ls_recorded)
+                        {
+                            pg_ls_qhist = {true, alpha_try, E, E_trial, dd_line};
+                            pg_first_ls_recorded = true;
+                        }
+                        if (E_trial <= E)
+                        {
+                            pg_step_acc = alpha_try;
+                            pg_dd_proj_acc = dd_proj;
+                            ls_success = true;
+                            break;
+                        }
+                        alpha *= config_.line_search_rho;
+                    }
+
+                    {
+                        std::ostringstream pg_ls;
+                        pg_ls << "      occ line search (PG Monotone): alpha_init=" << std::scientific << alpha_pg0
+                              << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
+                              << " E0=" << E << " E_trial=" << E_last_trial;
+                        if (ls_success)
+                        {
+                            pg_ls << " dTw=" << pg_dd_proj_acc << " E_monotone_bound=" << E;
+                        }
+                        pg_ls << "  rho=" << std::defaultfloat << config_.line_search_rho
+                              << (ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(pg_ls.str());
+                    }
                 }
 
                 if (ls_success)
                 {
-                    occ_flat = occ_trial;
+                    if (!pg_occ_cg_nm_sw)
+                    {
+                        occ_flat = occ_trial;
+                    }
                 }
                 else
                 {
@@ -2616,6 +2730,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
                     pg_ls_qhist = {};
+                    if (pg_occ_cg_nm_sw)
+                    {
+                        pg_nm_C = std::numeric_limits<double>::quiet_NaN();
+                        pg_nm_Q = 1.0;
+                    }
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
                                          << ", applied SD fallback and reset optimizer" << std::endl;
                 }
@@ -2628,6 +2747,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> new_grad_occ;
                 const double E_post = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                              new_grad_occ, grad_wfc_dummy);
+                if (pg_occ_cg_nm_sw && ls_success)
+                {
+                    const double eta = config_.occ_cg_nonmonotone_eta;
+                    const double Qn = eta * pg_nm_Q + 1.0;
+                    pg_nm_C = (eta * pg_nm_Q * pg_nm_C + E_post) / Qn;
+                    pg_nm_Q = Qn;
+                }
                 double grad_l2_post = 0.0;
                 for (double g : new_grad_occ)
                 {
@@ -2697,8 +2823,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //      gradient lies in the null space of the equality constraint.
             //   4. Compute search direction from the configured optimizer on the
             //      modified (reduced) gradient.
-            //   5. Armijo backtracking with clipping to [0,1] and re-projection
-            //      to restore the equality constraint.
+            //   5. Line search: SD/L-BFGS/Adam use Armijo on the projected segment;
+            //      CG uses non-monotone Strong Wolfe (alternating AS only; ALM
+            //      unchanged). Clipping to [0,1] and re-projection restore N_e.
             //   6. When the active set changes significantly, restart the optimizer
             //      to avoid using stale curvature information.
             EuclideanOptimizer as_opt(config_.occ_optimizer, config_);
@@ -2707,6 +2834,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             as_bb_step.set_mode(config_.alm_bb_mode);
             as_bb_step.set_bounds(config_.alm_bb_alpha_min, config_.alm_bb_alpha_max);
             as_bb_step.reset();
+
+            const bool as_occ_cg_nm_sw
+                = (config_.occ_optimizer == OptimizerType::ConjugateGradient);
 
             QuadInitHistory as_ls_qhist;
 
@@ -2717,6 +2847,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             std::vector<double> occ_snap_start;
             double E_prev = 0.0;
             bool have_E_prev = false;
+            double as_nm_C = std::numeric_limits<double>::quiet_NaN();
+            double as_nm_Q = 1.0;
 
             for (int inner = 0; inner < config_.occ_maxiter; ++inner)
             {
@@ -2727,6 +2859,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 psi::Psi<TK> grad_wfc_dummy;
                 const double E = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                        grad_occ, grad_wfc_dummy);
+
+                if (as_occ_cg_nm_sw && !std::isfinite(as_nm_C))
+                {
+                    as_nm_C = E;
+                    as_nm_Q = 1.0;
+                }
 
                 // Identify active set and compute modified (reduced) gradient.
                 auto as_info = occ_constraint_->identify_active_set(occ_flat, grad_occ);
@@ -2743,6 +2881,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     as_opt.init(static_cast<int>(occ_flat.size()));
                     as_bb_step.reset();
                     as_ls_qhist = {};
+                    if (as_occ_cg_nm_sw)
+                    {
+                        as_nm_C = std::numeric_limits<double>::quiet_NaN();
+                        as_nm_Q = 1.0;
+                    }
                     GlobalV::ofs_running << "      AS active set changed (n_active "
                                          << prev_n_active << " -> " << n_active
                                          << "), reset optimizer" << std::endl;
@@ -2827,12 +2970,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     dd_line += dir[i] * grad_mod[i];
                 }
 
-                // Armijo backtracking: trial = clip(n + alpha * dir, 0, 1)
-                // then project (rescale) to restore the equality constraint.
+                // Line search: trial = clip(n + alpha * dir, 0, 1) then project (N_e).
                 const std::vector<double> occ_before_step(occ_flat);
                 const double as_alpha0 = choose_occ_ls_alpha0(
                     config_, occ_flat, grad_mod, &as_bb_step, as_ls_qhist);
-                double alpha = as_alpha0;
                 bool ls_success = false;
                 std::vector<double> occ_trial;
                 double E_after = E;
@@ -2844,74 +2985,148 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double proj_constraint_tol = 1e-6;
                 bool as_first_ls_recorded = false;
 
-                for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                if (as_occ_cg_nm_sw)
                 {
-                    as_ls_trial = ls + 1;
-                    const double alpha_try = alpha;
-                    occ_trial = occ_flat;
-                    for (size_t i = 0; i < occ_trial.size(); ++i)
-                        occ_trial[i] += alpha * dir[i];
-                    // Clip to [0,1].
-                    for (auto& n : occ_trial)
-                        n = std::max(0.0, std::min(1.0, n));
-                    // Rescale to preserve the electron number.
-                    occ_constraint_->project(occ_trial);
+                    auto phi_as = [&](double step) -> std::pair<double, double> {
+                        std::vector<double> trial = occ_flat;
+                        for (size_t i = 0; i < trial.size(); ++i)
+                            trial[i] += step * dir[i];
+                        for (auto& n : trial)
+                            n = std::max(0.0, std::min(1.0, n));
+                        occ_constraint_->project(trial);
+                        if (std::abs(occ_constraint_->constraint_violation(trial)) > proj_constraint_tol)
+                        {
+                            return {as_nm_C + 1.0e+10, 1.0};
+                        }
+                        std::vector<double> g_tr;
+                        psi::Psi<TK> gw;
+                        const double Et = energy_grad_->compute(trial, const_cast<psi::Psi<TK>&>(wfc), g_tr, gw);
+                        double dphi = 0.0;
+                        for (size_t i = 0; i < dir.size(); ++i)
+                            dphi += g_tr[i] * dir[i];
+                        return {Et, dphi};
+                    };
 
-                    // Reject if the projection failed to satisfy the constraint.
-                    if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                    {
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
-
-                    double dd_proj = 0.0;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                        dd_proj += grad_mod[i] * (occ_trial[i] - occ_flat[i]);
-
-                    if (dd_proj >= 0.0)
-                    {
-                        alpha *= config_.line_search_rho;
-                        continue;
-                    }
-
-                    const double E_trial = energy_grad_->compute_energy(
-                        occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                    E_last_trial = E_trial;
-                    if (!as_first_ls_recorded)
-                    {
-                        as_ls_qhist
-                            = {true, alpha_try, E, E_trial, dd_line};
-                        as_first_ls_recorded = true;
-                    }
-                    if (E_trial <= E + config_.line_search_c1 * dd_proj)
-                    {
-                        E_after = E_trial;
-                        as_step_acc = alpha_try;
-                        as_dd_proj_acc = dd_proj;
-                        ls_success = true;
-                        break;
-                    }
-                    alpha *= config_.line_search_rho;
-                }
-
-                {
-                    std::ostringstream as_ls;
-                    as_ls << "      occ line search (AS Armijo): alpha_init=" << std::scientific << as_alpha0
-                          << " step=" << (ls_success ? as_step_acc : 0.0) << " n_trial=" << as_ls_trial
-                          << " E0=" << E << " E_trial=" << E_last_trial;
+                    const LineSearchResult ls_nm = strong_wolfe_nm_line_search(phi_as,
+                        E,
+                        dd_line,
+                        as_nm_C,
+                        as_alpha0,
+                        config_.line_search_c1,
+                        config_.line_search_c2,
+                        config_.line_search_max_iter,
+                        config_.line_search_max_zoom);
+                    as_ls_trial = ls_nm.n_feval;
+                    E_last_trial = ls_nm.f_new;
+                    ls_success = ls_nm.success;
                     if (ls_success)
                     {
-                        as_ls << " dTw=" << as_dd_proj_acc
-                              << " E0+c1*dTw=" << E + config_.line_search_c1 * as_dd_proj_acc;
+                        as_step_acc = ls_nm.step;
+                        occ_trial = occ_flat;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                            occ_trial[i] += ls_nm.step * dir[i];
+                        for (auto& n : occ_trial)
+                            n = std::max(0.0, std::min(1.0, n));
+                        occ_constraint_->project(occ_trial);
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            ls_success = false;
+                        }
+                        else
+                        {
+                            as_dd_proj_acc = 0.0;
+                            for (size_t i = 0; i < occ_flat.size(); ++i)
+                                as_dd_proj_acc += grad_mod[i] * (occ_trial[i] - occ_flat[i]);
+                            occ_flat = occ_trial;
+                            E_after = ls_nm.f_new;
+                        }
                     }
-                    as_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
-                          << " rho=" << config_.line_search_rho << (ls_success ? "  ok" : "  fail");
-                    log_occ_inner_line(as_ls.str());
+
+                    {
+                        std::ostringstream as_ls;
+                        as_ls << "      occ line search (AS NonMonotoneStrongWolfe CG): alpha_init="
+                              << std::scientific << as_alpha0 << " step=" << (ls_success ? as_step_acc : 0.0)
+                              << " n_feval=" << as_ls_trial << " E0=" << E << " E_last=" << E_last_trial
+                              << " f_ref=" << as_nm_C << "  c1=" << std::defaultfloat << config_.line_search_c1
+                              << " c2=" << config_.line_search_c2
+                              << (ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(as_ls.str());
+                    }
+                }
+                else
+                {
+                    double alpha = as_alpha0;
+                    for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
+                    {
+                        as_ls_trial = ls + 1;
+                        const double alpha_try = alpha;
+                        occ_trial = occ_flat;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                            occ_trial[i] += alpha * dir[i];
+                        // Clip to [0,1].
+                        for (auto& n : occ_trial)
+                            n = std::max(0.0, std::min(1.0, n));
+                        // Rescale to preserve the electron number.
+                        occ_constraint_->project(occ_trial);
+
+                        // Reject if the projection failed to satisfy the constraint.
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            alpha *= config_.line_search_rho;
+                            continue;
+                        }
+
+                        double dd_proj = 0.0;
+                        for (size_t i = 0; i < occ_flat.size(); ++i)
+                            dd_proj += grad_mod[i] * (occ_trial[i] - occ_flat[i]);
+
+                        if (dd_proj >= 0.0)
+                        {
+                            alpha *= config_.line_search_rho;
+                            continue;
+                        }
+
+                        const double E_trial = energy_grad_->compute_energy(
+                            occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                        E_last_trial = E_trial;
+                        if (!as_first_ls_recorded)
+                        {
+                            as_ls_qhist = {true, alpha_try, E, E_trial, dd_line};
+                            as_first_ls_recorded = true;
+                        }
+                        if (E_trial <= E + config_.line_search_c1 * dd_proj)
+                        {
+                            E_after = E_trial;
+                            as_step_acc = alpha_try;
+                            as_dd_proj_acc = dd_proj;
+                            ls_success = true;
+                            break;
+                        }
+                        alpha *= config_.line_search_rho;
+                    }
+
+                    {
+                        std::ostringstream as_ls;
+                        as_ls << "      occ line search (AS Armijo): alpha_init=" << std::scientific << as_alpha0
+                              << " step=" << (ls_success ? as_step_acc : 0.0) << " n_trial=" << as_ls_trial
+                              << " E0=" << E << " E_trial=" << E_last_trial;
+                        if (ls_success)
+                        {
+                            as_ls << " dTw=" << as_dd_proj_acc
+                                  << " E0+c1*dTw=" << E + config_.line_search_c1 * as_dd_proj_acc;
+                        }
+                        as_ls << "  c1=" << std::defaultfloat << config_.line_search_c1
+                              << " rho=" << config_.line_search_rho << (ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(as_ls.str());
+                    }
                 }
 
                 if (ls_success)
                 {
-                    occ_flat = occ_trial;
+                    if (!as_occ_cg_nm_sw)
+                    {
+                        occ_flat = occ_trial;
+                    }
                 }
                 else
                 {
@@ -2926,6 +3141,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     as_bb_step.reset();
                     as_ls_qhist = {};
                     prev_n_active = -1;
+                    if (as_occ_cg_nm_sw)
+                    {
+                        as_nm_C = std::numeric_limits<double>::quiet_NaN();
+                        as_nm_Q = 1.0;
+                    }
                     GlobalV::ofs_running << "      AS line search failed at inner=" << (inner + 1)
                                          << ", reset optimizer" << std::endl;
                 }
@@ -2937,8 +3157,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 // Compute new gradient for LBFGS/CG history update.
                 std::vector<double> new_grad_occ;
-                energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
+                const double E_post_as = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                        new_grad_occ, grad_wfc_dummy);
+                E_after = E_post_as;
+                if (as_occ_cg_nm_sw && ls_success)
+                {
+                    const double eta = config_.occ_cg_nonmonotone_eta;
+                    const double Qn = eta * as_nm_Q + 1.0;
+                    as_nm_C = (eta * as_nm_Q * as_nm_C + E_post_as) / Qn;
+                    as_nm_Q = Qn;
+                }
                 auto new_as_info = occ_constraint_->identify_active_set(occ_flat, new_grad_occ);
                 std::vector<double> new_grad_mod(new_grad_occ);
                 occ_constraint_->apply_active_set(new_as_info, new_grad_mod);
