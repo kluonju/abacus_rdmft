@@ -100,10 +100,15 @@ class EnergyGradient
     void build_charge(const std::vector<double>& occ_flat,
                       const psi::Psi<TK>& wfc);
 
-    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|
+    /// Build the modified DM for exchange: gamma_xc = sum_i w_k g(n_ik) |phi_i><phi_i|.
+    /// When alpha_override > 0, use n^alpha_override (regularized) instead of g(n).
+    /// When occ_weight_override is provided, use that flattened [nk*nbands] weight
+    /// directly and ignore alpha_override.
     void build_DM_xc(const std::vector<double>& occ_flat,
                      const psi::Psi<TK>& wfc,
-                     std::vector<std::vector<TK>>& DM_XC);
+                     std::vector<std::vector<TK>>& DM_XC,
+                     double alpha_override = 0.0,
+                     const std::vector<double>* occ_weight_override = nullptr);
 
     /// Compute one-body Hamiltonian * wfc and diagonal elements
     void compute_one_body(const psi::Psi<TK>& wfc,

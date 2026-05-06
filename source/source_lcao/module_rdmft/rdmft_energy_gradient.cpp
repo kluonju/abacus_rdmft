@@ -661,17 +661,34 @@ template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::build_DM_xc(
     const std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc,
-    std::vector<std::vector<TK>>& DM_XC)
+    std::vector<std::vector<TK>>& DM_XC,
+    double alpha_override,
+    const std::vector<double>* occ_weight_override)
 {
     DM_XC.resize(nk_, std::vector<TK>(ParaV_->nloc, TK(0)));
 
     // Build wk_g matrix: wk[ik] * g(n(ik, ib)). Bands with g(n)=0 do not enter the XC density matrix.
     ModuleBase::matrix wk_g(nk_, nbands_);
+    const bool use_override = (alpha_override > 0.0);
+    const bool use_occ_weight_override = (occ_weight_override != nullptr);
     for (int ik = 0; ik < nk_; ++ik)
     {
         for (int ib = 0; ib < nbands_; ++ib)
         {
-            const double gn = xc_func_.g(occ_flat[ik * nbands_ + ib]);
+            const double n = occ_flat[ik * nbands_ + ib];
+            double gn = 0.0;
+            if (use_occ_weight_override)
+            {
+                gn = (*occ_weight_override)[ik * nbands_ + ib];
+            }
+            else if (use_override)
+            {
+                gn = xc_func_.pow_reg(n, alpha_override);
+            }
+            else
+            {
+                gn = xc_func_.g(n);
+            }
             wk_g(ik, ib) = rdmft_skip_occ_weight(gn) ? 0.0 : kv_->wk[ik] * gn;
         }
     }
@@ -1243,8 +1260,68 @@ double EnergyGradient<TK, TR>::compute(
     op_hartree_->contributeHR();
 
     // 3. Build exchange from modified DM (RDMFT's private EXX)
+    const int nb_local = wfc_eval.get_nbands();
+    const int nbs_local = wfc_eval.get_nbasis();
+    const std::int64_t hpsi_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    const bool is_mixed_exx = (xc_func_.type() == XCFunctionalType::GEO
+                               || xc_func_.type() == XCFunctionalType::OptGM
+                               || xc_func_.type() == XCFunctionalType::CHF
+                               || xc_func_.type() == XCFunctionalType::CGA);
+    auto mixed_num_terms = [&]() -> int {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return XCFunctional::num_geo_terms();
+            case XCFunctionalType::OptGM:
+            case XCFunctionalType::CHF:
+            case XCFunctionalType::CGA: return 2;
+            default: return 0;
+        }
+    };
+    auto mixed_term_coeff = [&](int t) -> double {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return XCFunctional::geo_coef(t);
+            case XCFunctionalType::OptGM:
+                return (t == 0) ? XCFunctional::optgm_hf_weight() : XCFunctional::optgm_power_weight();
+            case XCFunctionalType::CHF:
+                return (t == 0) ? XCFunctional::chf_hf_weight() : XCFunctional::chf_corr_weight();
+            case XCFunctionalType::CGA:
+                return (t == 0) ? XCFunctional::cga_hf_weight() : XCFunctional::cga_corr_weight();
+            default: return 0.0;
+        }
+    };
+    auto mixed_term_weight = [&](int t, double n) -> double {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return xc_func_.pow_reg(n, XCFunctional::geo_alpha(t));
+            case XCFunctionalType::OptGM:
+                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::CHF:
+                return (t == 0) ? n : xc_func_.chf_corr_term(n);
+            case XCFunctionalType::CGA:
+                return (t == 0) ? n : xc_func_.cga_corr_term(n);
+            default: return 0.0;
+        }
+    };
+    auto mixed_term_weight_deriv = [&](int t, double n) -> double {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return xc_func_.dpow_reg(n, XCFunctional::geo_alpha(t));
+            case XCFunctionalType::OptGM:
+                return (t == 0) ? 1.0 : xc_func_.dpow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::CHF:
+                return (t == 0) ? 1.0 : xc_func_.chf_corr_term_deriv(n);
+            case XCFunctionalType::CGA:
+                return (t == 0) ? 1.0 : xc_func_.cga_corr_term_deriv(n);
+            default: return 0.0;
+        }
+    };
+    std::vector<std::vector<double>> mix_vx_E_acc(nk_, std::vector<double>(nbands_, 0.0));
+    std::vector<std::vector<double>> mix_vx_G_acc(nk_, std::vector<double>(nbands_, 0.0));
+    std::vector<std::vector<TK>> mix_Hpsi_x_acc(nk_, std::vector<TK>(static_cast<size_t>(hpsi_alloc), TK(0)));
 #ifdef __EXX
-    if (exx_enabled_)
+    if (exx_enabled_ && !is_mixed_exx)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1281,13 +1358,108 @@ double EnergyGradient<TK, TR>::compute(
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
         }
-    
+    }
+    else if (exx_enabled_ && is_mixed_exx)
+    {
+        const int n_terms = mixed_num_terms();
+        std::vector<TK> Hpsi_x_term(static_cast<size_t>(hpsi_alloc), TK(0));
+        std::vector<double> vx_diag_term(nbands_, 0.0);
+        std::vector<TK> psi_dummy_mix(1, TK(0));
+        std::vector<double> term_weights(nk_ * nbands_, 0.0);
+        for (int t = 0; t < n_terms; ++t)
+        {
+            const double coeff = mixed_term_coeff(t);
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                for (int ib = 0; ib < nbands_; ++ib)
+                {
+                    const double n = occ_flat[ik * nbands_ + ib];
+                    term_weights[ik * nbands_ + ib] = mixed_term_weight(t, n);
+                }
+            }
+
+            HR_exx_->set_zero();
+            std::vector<std::vector<TK>> DM_XC;
+            build_DM_xc(occ_flat, wfc_eval, DM_XC, 0.0, &term_weights);
+
+            if (exx_spacegroup_symmetry_)
+                DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
+
+            std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
+            for (size_t ik = 0; ik < DM_XC.size(); ++ik)
+                DM_XC_ptr[ik] = &DM_XC[ik];
+
+            if (GlobalC::exx_info.info_ri.real_number)
+            {
+                auto Ds = std::is_same<TK, double>::value
+                    ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                    : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                         exx_spacegroup_symmetry_);
+                if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                    exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+                else
+                    exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+            }
+            else
+            {
+                auto Ds = std::is_same<TK, double>::value
+                    ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                    : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                                        exx_spacegroup_symmetry_);
+                if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                    exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+                else
+                    exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+            }
+
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy_mix);
+                std::fill(Hpsi_x_term.begin(), Hpsi_x_term.end(), TK(0));
+                std::fill(vx_diag_term.begin(), vx_diag_term.end(), 0.0);
+                hsk_exx_->set_zero_hk();
+                if (GlobalC::exx_info.info_ri.real_number)
+                {
+                    RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                        1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+                }
+                else
+                {
+                    RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                        1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+                }
+                apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x_term.data());
+                compute_diagonal(psi_k, Hpsi_x_term.data(), vx_diag_term.data(), ik);
+
+                for (int ib = 0; ib < nbands_; ++ib)
+                {
+                    const double n = occ_flat[ik * nbands_ + ib];
+                    const double p = mixed_term_weight(t, n);
+                    const double dp = mixed_term_weight_deriv(t, n);
+                    mix_vx_E_acc[ik][ib] += coeff * p * vx_diag_term[ib];
+                    mix_vx_G_acc[ik][ib] += coeff * dp * vx_diag_term[ib];
+                }
+
+                for (int ib_local = 0; ib_local < nb_local; ++ib_local)
+                {
+                    const int ib_global = ParaV_->local2global_col(ib_local);
+                    if (ib_global >= nbands_) continue;
+                    const double n = occ_flat[ik * nbands_ + ib_global];
+                    const double p = mixed_term_weight(t, n);
+                    const double scale = coeff * p;
+                    TK* acc_ptr = &mix_Hpsi_x_acc[ik][static_cast<size_t>(ib_local) * nbs_local];
+                    const TK* term_ptr = &Hpsi_x_term[static_cast<size_t>(ib_local) * nbs_local];
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                    {
+                        acc_ptr[mu] += TK(scale) * term_ptr[mu];
+                    }
+                }
+            }
+        }
     }
 #endif
 
     // 4. For each k-point: compute H*psi, diagonal elements, and assemble gradients
-    const int nb_local = wfc_eval.get_nbands();
-    const int nbs_local = wfc_eval.get_nbasis();
 
     grad_occ.assign(nk_ * nbands_, 0.0);
     grad_wfc.resize(nk_, nb_local, nbs_local);
@@ -1303,8 +1475,6 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<double> vh_diag(nbands_, 0.0);
     std::vector<double> vx_diag(nbands_, 0.0);
 
-    const std::int64_t hpsi_alloc
-        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     std::vector<TK> Hpsi_one(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_h(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> Hpsi_x(static_cast<size_t>(hpsi_alloc), TK(0));
@@ -1341,7 +1511,7 @@ double EnergyGradient<TK, TR>::compute(
         std::fill(Hpsi_x.begin(), Hpsi_x.end(), TK(0));
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_)
+        if (exx_enabled_ && !is_mixed_exx)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1357,6 +1527,13 @@ double EnergyGradient<TK, TR>::compute(
             apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x.data());
             compute_diagonal(psi_k, Hpsi_x.data(), vx_diag.data(), ik);
         }
+        else if (exx_enabled_ && is_mixed_exx)
+        {
+            if (!mix_Hpsi_x_acc.empty())
+            {
+                std::copy(mix_Hpsi_x_acc[ik].begin(), mix_Hpsi_x_acc[ik].end(), Hpsi_x.begin());
+            }
+        }
 #endif
 
         double wk = kv_->wk[ik];
@@ -1371,7 +1548,11 @@ double EnergyGradient<TK, TR>::compute(
                 E_one_ += wk * n * h_one_diag[ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5; // factor 1/2 for Hartree
             }
-            if (!rdmft_skip_occ_weight(gn))
+            if (is_mixed_exx)
+            {
+                E_xc_ += wk * mix_vx_E_acc[ik][ib] * 0.5;
+            }
+            else if (!rdmft_skip_occ_weight(gn))
             {
                 E_xc_ += wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
             }
@@ -1381,9 +1562,16 @@ double EnergyGradient<TK, TR>::compute(
         for (int ib = 0; ib < nbands_; ++ib)
         {
             double n = occ_flat[ik * nbands_ + ib];
-            double dgn = xc_func_.dg(n);
-            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib])
-                                          + wk * dgn * vx_diag[ib];
+            grad_occ[ik * nbands_ + ib] = wk * (h_one_diag[ib] + vh_diag[ib]);
+            if (is_mixed_exx)
+            {
+                grad_occ[ik * nbands_ + ib] += wk * mix_vx_G_acc[ik][ib];
+            }
+            else
+            {
+                const double dgn = xc_func_.dg(n);
+                grad_occ[ik * nbands_ + ib] += wk * dgn * vx_diag[ib];
+            }
         }
 
         // Orbital gradient w.r.t. LCAO coefficients (before X transform):
@@ -1399,7 +1587,9 @@ double EnergyGradient<TK, TR>::compute(
             const double n = occ_flat[ik * nbands_ + ib_global];
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
-            const bool use_exx = !rdmft_skip_occ_weight(gn);
+            const bool use_exx = is_mixed_exx
+                                     ? !rdmft_skip_occ_weight(n)
+                                     : !rdmft_skip_occ_weight(gn);
             if (!use_one_hart && !use_exx)
             {
                 continue;
@@ -1419,7 +1609,14 @@ double EnergyGradient<TK, TR>::compute(
                 }
                 if (use_exx)
                 {
-                    acc += TK(gn) * hx_ptr[mu];
+                    if (is_mixed_exx)
+                    {
+                        acc += hx_ptr[mu];
+                    }
+                    else
+                    {
+                        acc += TK(gn) * hx_ptr[mu];
+                    }
                 }
                 grad_ptr[mu] = wk * acc;
             }
@@ -1480,13 +1677,54 @@ double EnergyGradient<TK, TR>::compute_energy(
             orb_->cutoffs(), gd_, nspin_, charge_, rho_basis_, vloc_, sf_, "hartree");
     }
     op_hartree_->contributeHR();
+    const bool is_mixed_exx = (xc_func_.type() == XCFunctionalType::GEO
+                               || xc_func_.type() == XCFunctionalType::OptGM
+                               || xc_func_.type() == XCFunctionalType::CHF
+                               || xc_func_.type() == XCFunctionalType::CGA);
+    auto mixed_num_terms = [&]() -> int {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return XCFunctional::num_geo_terms();
+            case XCFunctionalType::OptGM:
+            case XCFunctionalType::CHF:
+            case XCFunctionalType::CGA: return 2;
+            default: return 0;
+        }
+    };
+    auto mixed_term_coeff = [&](int t) -> double {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return XCFunctional::geo_coef(t);
+            case XCFunctionalType::OptGM:
+                return (t == 0) ? XCFunctional::optgm_hf_weight() : XCFunctional::optgm_power_weight();
+            case XCFunctionalType::CHF:
+                return (t == 0) ? XCFunctional::chf_hf_weight() : XCFunctional::chf_corr_weight();
+            case XCFunctionalType::CGA:
+                return (t == 0) ? XCFunctional::cga_hf_weight() : XCFunctional::cga_corr_weight();
+            default: return 0.0;
+        }
+    };
+    auto mixed_term_weight = [&](int t, double n) -> double {
+        switch (xc_func_.type())
+        {
+            case XCFunctionalType::GEO: return xc_func_.pow_reg(n, XCFunctional::geo_alpha(t));
+            case XCFunctionalType::OptGM:
+                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::CHF:
+                return (t == 0) ? n : xc_func_.chf_corr_term(n);
+            case XCFunctionalType::CGA:
+                return (t == 0) ? n : xc_func_.cga_corr_term(n);
+            default: return 0.0;
+        }
+    };
+    std::vector<std::vector<double>> mix_vx_E_acc(nk_, std::vector<double>(nbands_, 0.0));
 
     // Exchange must also be rebuilt because the modified DM gamma_xc depends
     // on occupations (and on orbitals, but those are fixed for compute_energy
     // use cases). Without this, line-search / finite-difference calls would
     // use a stale H_exx from the last compute() call.
 #ifdef __EXX
-    if (exx_enabled_)
+    if (exx_enabled_ && !is_mixed_exx)
     {
         HR_exx_->set_zero();
         std::vector<std::vector<TK>> DM_XC;
@@ -1522,6 +1760,90 @@ double EnergyGradient<TK, TR>::compute_energy(
             else
                 exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
 
+        }
+    }
+    else if (exx_enabled_ && is_mixed_exx)
+    {
+        const int n_terms = mixed_num_terms();
+        const int nb_local_mix = wfc_eval.get_nbands();
+        const int nbs_local_mix = wfc_eval.get_nbasis();
+        const std::int64_t hpsi_alloc_mix
+            = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local_mix * nbs_local_mix), 1);
+        std::vector<TK> Hpsi_x_term(static_cast<size_t>(hpsi_alloc_mix), TK(0));
+        std::vector<double> vx_diag_term(nbands_, 0.0);
+        std::vector<TK> psi_dummy_mix(1, TK(0));
+        std::vector<double> term_weights(nk_ * nbands_, 0.0);
+        for (int t = 0; t < n_terms; ++t)
+        {
+            const double coeff = mixed_term_coeff(t);
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                for (int ib = 0; ib < nbands_; ++ib)
+                {
+                    const double n = occ_flat[ik * nbands_ + ib];
+                    term_weights[ik * nbands_ + ib] = mixed_term_weight(t, n);
+                }
+            }
+
+            HR_exx_->set_zero();
+            std::vector<std::vector<TK>> DM_XC;
+            build_DM_xc(occ_flat, wfc_eval, DM_XC, 0.0, &term_weights);
+
+            if (exx_spacegroup_symmetry_)
+                DM_XC = symrot_exx_.restore_dm(*kv_, DM_XC, *ParaV_);
+
+            std::vector<const std::vector<TK>*> DM_XC_ptr(DM_XC.size());
+            for (size_t ik = 0; ik < DM_XC.size(); ++ik)
+                DM_XC_ptr[ik] = &DM_XC[ik];
+
+            if (GlobalC::exx_info.info_ri.real_number)
+            {
+                auto Ds = std::is_same<TK, double>::value
+                    ? RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                    : RI_2D_Comm::split_m2D_ktoR<double>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                         exx_spacegroup_symmetry_);
+                if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                    exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+                else
+                    exx_lri_d_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+            }
+            else
+            {
+                auto Ds = std::is_same<TK, double>::value
+                    ? RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_)
+                    : RI_2D_Comm::split_m2D_ktoR<std::complex<double>>(*ucell_, *kv_, DM_XC_ptr, *ParaV_, nspin_,
+                                                                        exx_spacegroup_symmetry_);
+                if (exx_spacegroup_symmetry_ && GlobalC::exx_info.info_ri.exx_symmetry_realspace)
+                    exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_, &symrot_exx_);
+                else
+                    exx_lri_c_->cal_exx_elec(Ds, *ucell_, *ParaV_);
+            }
+
+            for (int ik = 0; ik < nk_; ++ik)
+            {
+                const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy_mix);
+                std::fill(Hpsi_x_term.begin(), Hpsi_x_term.end(), TK(0));
+                std::fill(vx_diag_term.begin(), vx_diag_term.end(), 0.0);
+                hsk_exx_->set_zero_hk();
+                if (GlobalC::exx_info.info_ri.real_number)
+                {
+                    RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                        1.0, exx_lri_d_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+                }
+                else
+                {
+                    RI_2D_Comm::add_Hexx(*ucell_, *kv_, ik,
+                        1.0, exx_lri_c_->Hexxs, *ParaV_, hsk_exx_->get_hk());
+                }
+                apply_Hk(hsk_exx_->get_hk(), psi_k, Hpsi_x_term.data());
+                compute_diagonal(psi_k, Hpsi_x_term.data(), vx_diag_term.data(), ik);
+                for (int ib = 0; ib < nbands_; ++ib)
+                {
+                    const double n = occ_flat[ik * nbands_ + ib];
+                    const double p = mixed_term_weight(t, n);
+                    mix_vx_E_acc[ik][ib] += coeff * p * vx_diag_term[ib];
+                }
+            }
         }
     }
 #endif
@@ -1581,7 +1903,7 @@ double EnergyGradient<TK, TR>::compute_energy(
         // Exchange diag (RDMFT's private EXX)
         std::fill(vx_diag.begin(), vx_diag.end(), 0.0);
 #ifdef __EXX
-        if (exx_enabled_)
+        if (exx_enabled_ && !is_mixed_exx)
         {
             hsk_exx_->set_zero_hk();
             if (GlobalC::exx_info.info_ri.real_number)
@@ -1610,7 +1932,11 @@ double EnergyGradient<TK, TR>::compute_energy(
                 E_one_ += wk * n * cached_h_one_diag_[ik][ib];
                 E_hartree_ += wk * n * vh_diag[ib] * 0.5;
             }
-            if (!rdmft_skip_occ_weight(gn))
+            if (is_mixed_exx)
+            {
+                E_xc_ += wk * mix_vx_E_acc[ik][ib] * 0.5;
+            }
+            else if (!rdmft_skip_occ_weight(gn))
             {
                 E_xc_ += wk * gn * vx_diag[ib] * 0.5;
             }

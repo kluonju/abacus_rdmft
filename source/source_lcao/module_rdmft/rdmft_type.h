@@ -15,7 +15,19 @@ enum class XCFunctionalType
     HF,
     Muller,
     Power,
-    GU
+    GU,
+    /// Corrected Hartree-Fock (Csanyi-Arias PRB 61, 7348):
+    /// f(n_i,n_j) = 1/2 n_i n_j + 1/2 sqrt(n_i(1-n_i)) sqrt(n_j(1-n_j))
+    CHF,
+    /// Csanyi-Goedecker-Arias (PRA 65, 032510):
+    /// f(n_i,n_j) = 1/4 n_i n_j + 1/4 sqrt(n_i(2-n_i)) sqrt(n_j(2-n_j))
+    CGA,
+    /// GEO functional:
+    /// f(n_i, n_j) = [n_i n_j + (n_i n_j)^(1/2) + 2 (n_i n_j)^(3/4)] / 4
+    GEO,
+    /// OptGM functional: convex combination of HF and Power(alpha)
+    /// kernels with fixed literature parameters.
+    OptGM
 };
 
 enum class OccParamType
@@ -107,6 +119,10 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "muller") return XCFunctionalType::Muller;
     if (name == "power") return XCFunctionalType::Power;
     if (name == "gu") return XCFunctionalType::GU;
+    if (name == "chf") return XCFunctionalType::CHF;
+    if (name == "cga") return XCFunctionalType::CGA;
+    if (name == "geo") return XCFunctionalType::GEO;
+    if (name == "optgm") return XCFunctionalType::OptGM;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -118,6 +134,10 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::Muller: return "muller";
         case XCFunctionalType::Power: return "power";
         case XCFunctionalType::GU: return "gu";
+        case XCFunctionalType::CHF: return "chf";
+        case XCFunctionalType::CGA: return "cga";
+        case XCFunctionalType::GEO: return "geo";
+        case XCFunctionalType::OptGM: return "optgm";
     }
     return "unknown";
 }

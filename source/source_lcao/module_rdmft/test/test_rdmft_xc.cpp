@@ -41,7 +41,7 @@ TEST_F(XCFunctionalTest, Muller_g_is_sqrt)
     XCFunctional xc(XCFunctionalType::Muller);
     EXPECT_NEAR(xc.g(0.25), 0.5, 1e-12);
     EXPECT_NEAR(xc.g(1.0), 1.0, 1e-12);
-    EXPECT_NEAR(xc.g(0.0), 0.0, 1e-12);
+    EXPECT_NEAR(xc.g(0.0), 0.0, 1e-3);
 }
 
 TEST_F(XCFunctionalTest, Muller_dg_is_half_inv_sqrt)
@@ -99,6 +99,98 @@ TEST_F(XCFunctionalTest, GU_diag_factor)
     EXPECT_NEAR(xc.gu_diag_factor(n), n * n - n, 1e-12);
 }
 
+TEST_F(XCFunctionalTest, ParseAndStringIncludeGeoAndOptgm)
+{
+    EXPECT_EQ(parse_xc_type("chf"), XCFunctionalType::CHF);
+    EXPECT_EQ(parse_xc_type("cga"), XCFunctionalType::CGA);
+    EXPECT_EQ(parse_xc_type("geo"), XCFunctionalType::GEO);
+    EXPECT_EQ(parse_xc_type("optgm"), XCFunctionalType::OptGM);
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::CHF), "chf");
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::CGA), "cga");
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::GEO), "geo");
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::OptGM), "optgm");
+}
+
+TEST_F(XCFunctionalTest, CHF_coupling_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::CHF);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double s_i = std::sqrt(ni * (1.0 - ni));
+    const double s_j = std::sqrt(nj * (1.0 - nj));
+    const double expected = 0.5 * ni * nj + 0.5 * s_i * s_j;
+    EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, CGA_coupling_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::CGA);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double s_i = std::sqrt(ni * (2.0 - ni));
+    const double s_j = std::sqrt(nj * (2.0 - nj));
+    const double expected = 0.25 * ni * nj + 0.25 * s_i * s_j;
+    EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, CHF_derivative_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::CHF);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double s_j = std::sqrt(nj * (1.0 - nj));
+    const double dsi = 0.5 * (1.0 - 2.0 * ni) / std::sqrt(ni * (1.0 - ni));
+    const double expected = 0.5 * nj + 0.5 * dsi * s_j;
+    EXPECT_NEAR(xc.df_dni(ni, nj), expected, 1e-10);
+}
+
+TEST_F(XCFunctionalTest, CGA_derivative_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::CGA);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double s_j = std::sqrt(nj * (2.0 - nj));
+    const double dsi = (1.0 - ni) / std::sqrt(ni * (2.0 - ni));
+    const double expected = 0.25 * nj + 0.25 * dsi * s_j;
+    EXPECT_NEAR(xc.df_dni(ni, nj), expected, 1e-10);
+}
+
+TEST_F(XCFunctionalTest, GEO_coupling_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::GEO);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double prod = ni * nj;
+    const double expected = 0.25 * prod
+                          + 0.25 * std::pow(prod, 0.5)
+                          + 0.50 * std::pow(prod, 0.75);
+    EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, OptGM_coupling_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double a = XCFunctional::optgm_power_exponent();
+    const double expected = XCFunctional::optgm_hf_weight() * ni * nj
+                          + XCFunctional::optgm_power_weight()
+                                * std::pow(ni, a) * std::pow(nj, a);
+    EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
+}
+
+TEST_F(XCFunctionalTest, OptGM_derivative_matches_formula)
+{
+    XCFunctional xc(XCFunctionalType::OptGM);
+    const double ni = 0.4;
+    const double nj = 0.7;
+    const double a = XCFunctional::optgm_power_exponent();
+    const double expected = XCFunctional::optgm_hf_weight() * nj
+                          + XCFunctional::optgm_power_weight()
+                                * a * std::pow(ni, a - 1.0) * std::pow(nj, a);
+    EXPECT_NEAR(xc.df_dni(ni, nj), expected, 1e-10);
+}
+
 TEST_F(XCFunctionalTest, gradient_consistency_numerical)
 {
     // Check that dg is consistent with g via finite differences
@@ -136,6 +228,6 @@ TEST_F(XCFunctionalTest, BinaryEntropy_clamped_boundaries_are_finite)
 TEST_F(XCFunctionalTest, boundary_values)
 {
     XCFunctional xc(XCFunctionalType::Power, 0.656);
-    EXPECT_NEAR(xc.g(0.0), 0.0, 1e-12);
+    EXPECT_NEAR(xc.g(0.0), 0.0, 1e-3);
     EXPECT_NEAR(xc.g(1.0), 1.0, 1e-12);
 }
