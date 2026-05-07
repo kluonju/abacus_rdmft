@@ -2598,6 +2598,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 // interpolation from the previous inner iteration (same α₀ as τ above).
                 const std::vector<double> occ_before_step(occ_flat);
                 bool ls_success = false;
+                bool pg_step_applied = false;
+                bool pg_used_sd_fallback = false;
                 std::vector<double> occ_trial;
                 int pg_ls_trial = 0;
                 double pg_step_acc = 0.0;
@@ -2879,10 +2881,46 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     {
                         occ_flat = occ_trial;
                     }
+                    pg_step_applied = true;
                 }
                 else
                 {
-                    occ_flat = occ_before_step;
+                    if (pg_occ_cg_nm_sw)
+                    {
+                        // CG-specific deterministic fallback after PG line-search failure:
+                        // take one projected SD step with rdmft_alpha_step and
+                        // reset optimizer curvature history.
+                        const double alpha_sd_fallback
+                            = pg_bertsekas_tau_from_line_search(config_.line_search_alpha_init, 1.0);
+                        occ_trial = occ_before_step;
+                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                        {
+                            occ_trial[i] -= alpha_sd_fallback * grad_occ[i];
+                        }
+                        occ_constraint_->project(occ_trial);
+                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) <= proj_constraint_tol)
+                        {
+                            pg_step_acc = alpha_sd_fallback;
+                            pg_dd_proj_acc = 0.0;
+                            for (size_t i = 0; i < occ_flat.size(); ++i)
+                            {
+                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_before_step[i]);
+                            }
+                            E_last_trial = energy_grad_->compute_energy(
+                                occ_trial, const_cast<psi::Psi<TK>&>(wfc));
+                            occ_flat = occ_trial;
+                            pg_step_applied = true;
+                            pg_used_sd_fallback = true;
+                        }
+                        else
+                        {
+                            occ_flat = occ_before_step;
+                        }
+                    }
+                    else
+                    {
+                        occ_flat = occ_before_step;
+                    }
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
                     pg_ls_qhist = {};
@@ -2891,10 +2929,21 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         pg_nm_C = std::numeric_limits<double>::quiet_NaN();
                         pg_nm_Q = 1.0;
                     }
-                    GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << " (Wolfe + monotone fallback + recovery); no step, optimiser reset; "
-                                            "stopping inner iterations"
-                                         << std::endl;
+                    if (pg_step_applied)
+                    {
+                        GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
+                                             << " (Wolfe + monotone fallback + recovery); applied SD fallback "
+                                                "step="
+                                             << std::scientific << pg_step_acc
+                                             << " and reset optimizer" << std::defaultfloat << std::endl;
+                    }
+                    else
+                    {
+                        GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
+                                             << " (Wolfe + monotone fallback + recovery); no step, "
+                                                "optimiser reset; stopping inner iterations"
+                                             << std::endl;
+                    }
                 }
 
                 // Update the optimizer with the actual step taken.
@@ -2920,7 +2969,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 grad_l2_post = std::sqrt(grad_l2_post);
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, config_.line_search_alpha_init)
-                    : pg_bertsekas_tau_from_line_search(alpha_pg0, config_.line_search_alpha_init);
+                    : (pg_used_sd_fallback
+                          ? pg_bertsekas_tau_from_line_search(pg_step_acc, config_.line_search_alpha_init)
+                          : pg_bertsekas_tau_from_line_search(alpha_pg0, config_.line_search_alpha_init));
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
@@ -2932,7 +2983,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double g_inf_post = pg_map_inf_post / tau_post;
                 const double g_l2_post = pg_map_l2_post / tau_post;
                 result.grad_norm = g_inf_post;
-                pg_opt.update(new_grad_occ, step_vec);
+                if (pg_step_applied)
+                {
+                    pg_opt.update(new_grad_occ, step_vec);
+                }
                 if (ls_success)
                 {
                     bb_step.record_state(occ_flat, new_grad_occ);
@@ -2962,7 +3016,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     result.converged = true;
                     break;
                 }
-                if (!ls_success)
+                if (!pg_step_applied)
                 {
                     break;
                 }

@@ -212,9 +212,14 @@ struct PGRunner
             }
             else
             {
-                // Mirror the solver: reject unchecked fallback steps so the
-                // objective cannot increase because Armijo failed.
                 occ = occ_old;
+                if (config.occ_optimizer == OptimizerType::ConjugateGradient)
+                {
+                    // Mirror solver fallback: CG-only projected SD step and optimizer reset.
+                    for (int i = 0; i < prob.nb; ++i)
+                        occ[i] -= config.line_search_alpha_init * grad[i];
+                    constraint.project(occ);
+                }
                 opt.init(prob.nb);
             }
 
@@ -524,6 +529,34 @@ TEST_F(PGOptimizerTest, energy_is_monotone_nonincreasing)
     {
         EXPECT_LE(runner.energy_history[i], runner.energy_history[i - 1] + 1e-12);
     }
+}
+
+TEST_F(PGOptimizerTest, CG_line_search_failure_uses_sd_fallback)
+{
+    auto prob = make_4band(2.0);
+    RDMFTConfig cfg;
+    cfg.occ_optimizer = OptimizerType::ConjugateGradient;
+    cfg.line_search_alpha_init = 0.2;
+    cfg.line_search_max_iter = 0; // force line-search failure path
+    cfg.rdmft_occ_tol = 1e-12;
+
+    PGRunner runner{prob, cfg};
+    auto occ = initial_occ_uniform(prob.nb, prob.Ne);
+    const auto occ_before = occ;
+    const double E_before = prob.energy(occ_before);
+
+    runner.run(occ, 1);
+
+    OccupationConstraint constraint(ConstraintMethod::ProjectedGradient, prob.Ne, prob.wk, prob.nb);
+    auto grad = prob.gradient(occ_before);
+    auto occ_expected = occ_before;
+    for (int i = 0; i < prob.nb; ++i)
+        occ_expected[i] -= cfg.line_search_alpha_init * grad[i];
+    constraint.project(occ_expected);
+
+    for (int i = 0; i < prob.nb; ++i)
+        EXPECT_NEAR(occ[i], occ_expected[i], 1e-12);
+    EXPECT_LT(prob.energy(occ), E_before);
 }
 
 // ---------------------------------------------------------------------------

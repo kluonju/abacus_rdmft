@@ -31,6 +31,7 @@ if(ENABLE_LCAO AND BUILD_TESTING)
     )
     AddTest(
         TARGET rdmft_occ_optimizer_test
+        LIBS base ${math_libs} device parameter
         SOURCES test_rdmft_occ_optimizer.cpp
     )
 endif()
