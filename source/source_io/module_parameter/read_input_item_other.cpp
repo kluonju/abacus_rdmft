@@ -990,7 +990,7 @@ void ReadInput::item_others()
         item.type = "String";
         item.description = "Gradient-based optimiser for the orbital (Stiefel manifold) sub-problem. "
                            "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
-                           "Default line search is Armijo backtracking unless overridden by rdmft_orb_ls_type.";
+                           "With rdmft_orb_ls_type=auto: cg uses strong Wolfe, lbfgs weak Wolfe, sd/adam Armijo.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -1010,10 +1010,9 @@ void ReadInput::item_others()
         item.annotation = "RDMFT orbital inner line search: auto, armijo, sw, wolfe";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
-        item.description = "Selects the line-search algorithm for the alternating orbital sub-problem. "
-                           "auto and armijo: Armijo backtracking on the Stiefel manifold. "
-                           "sw / wolfe select strong or weak Wolfe. "
-                           "Same aliases as rdmft_occ_ls_type.";
+        item.description = "Line search for the alternating orbital sub-problem. auto: strong Wolfe if "
+                           "rdmft_orb_optimizer=cg, weak Wolfe if lbfgs, Armijo if sd or adam. "
+                           "armijo / sw / wolfe force that family (aliases same as rdmft_occ_ls_type).";
         item.default_value = "auto";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

@@ -854,39 +854,165 @@ inline TK* psi_k_ptr_or_dummy(psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
 
 } // namespace
 
-template <typename TK, typename TR>
-double EnergyGradient<TK, TR>::s_inner_product(
-    const psi::Psi<TK>& X,
-    const psi::Psi<TK>& Y)
+namespace {
+
+/// In-place at one k-point: column-major `G` is the ambient Riesz gradient Ḡ
+/// (pairing Re Tr(Ḡ^H ·)).  `X` is the Stiefel point (X^H X = I).  On exit, `G`
+/// is the canonical-metric Riemannian gradient ξ with
+///   ⟨ξ, V⟩_can = Re Tr(Ḡ^H V)  for every tangent V at X,
+/// using the same single-k term as `stiefel_canonical_inner_product`:
+///   ⟨U,V⟩_can = Re Tr(U^H V) − ½ Re Tr(U^H X X^H V).
+///
+/// Explicit construction:
+///   T = Ḡ − X sym(X^H Ḡ),
+///   W = T + X (X^H T) = (I + X X^H) T,
+///   Λ = −¼ (X^H W + W^H X),  ξ = W + 2 X Λ.
+template <typename TK>
+void canonical_stiefel_riemannian_gradient_one_k_dense(const TK* X,
+    TK* G,
+    const int nbasis,
+    const int nbands,
+    const char tc,
+    TK* work_W,
+    TK* SC,
+    TK* A,
+    TK* B)
 {
-    double result = 0.0;
-    const int nb_local = Y.get_nbands();
-    const int nbs_local = Y.get_nbasis();
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const TK neg_one = TK(-1.0);
+    const TK two = TK(2.0);
+    const TK quarter = TK(0.25);
+    const int npsi = nbasis * nbands;
+
+    for (int i = 0; i < npsi; ++i)
+    {
+        SC[i] = X[i];
+    }
+
+    detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, nbasis, G, nbasis, zero, A, nbands);
+    detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, G, nbasis, SC, nbasis, zero, B, nbands);
+    for (int i = 0; i < nbands * nbands; ++i)
+    {
+        A[i] = TK(0.5) * (A[i] + B[i]);
+    }
+
+    detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        neg_one, X, nbasis, A, nbands, one, G, nbasis);
+
+    detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, nbasis, G, nbasis, zero, B, nbands);
+
+    for (int i = 0; i < npsi; ++i)
+    {
+        work_W[i] = G[i];
+    }
+    detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        one, X, nbasis, B, nbands, one, work_W, nbasis);
+
+    detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, nbasis, work_W, nbasis, zero, A, nbands);
+    detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, work_W, nbasis, SC, nbasis, zero, B, nbands);
+    for (int i = 0; i < nbands * nbands; ++i)
+    {
+        B[i] = -quarter * (A[i] + B[i]);
+    }
+
+    for (int i = 0; i < npsi; ++i)
+    {
+        G[i] = work_W[i];
+    }
+    detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        two, X, nbasis, B, nbands, one, G, nbasis);
+}
 
 #ifdef __MPI
-    std::vector<TK> x_dummy(1, TK(0));
-    std::vector<TK> y_dummy(1, TK(0));
-    for (int ik = 0; ik < nk_; ++ik)
+template <typename TK>
+void canonical_stiefel_riemannian_gradient_one_k_scalapack(const TK* X,
+    TK* G,
+    const int nbasis,
+    const int nbands,
+    const int npsi,
+    const int eij_nloc,
+    const int* desc_wfc,
+    const int* desc_eij,
+    const char tc,
+    TK* work_W,
+    TK* SC,
+    TK* A,
+    TK* B)
+{
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const TK neg_one = TK(-1.0);
+    const TK two = TK(2.0);
+    const TK quarter = TK(0.25);
+
+    for (int i = 0; i < npsi; ++i)
     {
-        const TK* Xk = psi_k_ptr_or_dummy(X, ik, x_dummy);
-        const TK* Yk = psi_k_ptr_or_dummy(Y, ik, y_dummy);
-        for (int i = 0; i < nb_local * nbs_local; ++i)
-            result += real_of_conj_prod(Xk[i], Yk[i]);
+        SC[i] = X[i];
     }
-    Parallel_Reduce::reduce_all(result);
-#else
-    std::vector<TK> x_dummy(1, TK(0));
-    std::vector<TK> y_dummy(1, TK(0));
-    for (int ik = 0; ik < nk_; ++ik)
+
+    detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, 1, 1, desc_wfc,
+        G, 1, 1, desc_wfc,
+        zero, A, 1, 1, desc_eij);
+    detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, G, 1, 1, desc_wfc,
+        SC, 1, 1, desc_wfc,
+        zero, B, 1, 1, desc_eij);
+    for (int i = 0; i < eij_nloc; ++i)
     {
-        const TK* Xk = psi_k_ptr_or_dummy(X, ik, x_dummy);
-        const TK* Yk = psi_k_ptr_or_dummy(Y, ik, y_dummy);
-        for (int i = 0; i < nbs_local * nb_local; ++i)
-            result += real_of_conj_prod(Xk[i], Yk[i]);
+        A[i] = TK(0.5) * (A[i] + B[i]);
     }
-#endif
-    return result;
+
+    detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        neg_one, X, 1, 1, desc_wfc,
+        A, 1, 1, desc_eij,
+        one, G, 1, 1, desc_wfc);
+
+    detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, 1, 1, desc_wfc,
+        G, 1, 1, desc_wfc,
+        zero, B, 1, 1, desc_eij);
+
+    for (int i = 0; i < npsi; ++i)
+    {
+        work_W[i] = G[i];
+    }
+    detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        one, X, 1, 1, desc_wfc,
+        B, 1, 1, desc_eij,
+        one, work_W, 1, 1, desc_wfc);
+
+    detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, SC, 1, 1, desc_wfc,
+        work_W, 1, 1, desc_wfc,
+        zero, A, 1, 1, desc_eij);
+    detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+        one, work_W, 1, 1, desc_wfc,
+        SC, 1, 1, desc_wfc,
+        zero, B, 1, 1, desc_eij);
+    for (int i = 0; i < eij_nloc; ++i)
+    {
+        B[i] = -quarter * (A[i] + B[i]);
+    }
+
+    for (int i = 0; i < npsi; ++i)
+    {
+        G[i] = work_W[i];
+    }
+    detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
+        two, X, 1, 1, desc_wfc,
+        B, 1, 1, desc_eij,
+        one, G, 1, 1, desc_wfc);
 }
+#endif
+
+} // namespace
 
 template <typename TK, typename TR>
 double EnergyGradient<TK, TR>::stiefel_canonical_inner_product(
@@ -1101,21 +1227,9 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     const psi::Psi<TK>& wfc,
     psi::Psi<TK>& grad_wfc)
 {
-    // Compute the Riemannian (tangent-space) gradient in X-space on the
-    // standard Stiefel manifold { X : X^H X = I }:
-    //     proj_X(G) = G - X * sym(X^H G)
-    // where sym(M) = 0.5*(M + M^H).
-    // Derivation: we seek G_R = G - X*K such that X^H G_R is skew-Hermitian.
-    //   X^H G_R = X^H G - X^H X * K = X^H G - K  (since X^H X = I)
-    // Skew-Hermitian requirement: K + K^H = C^H S G + G^H S C
-    //   => K = sym(X^H G)
-    // So: G_R = G - X * sym(X^H G).
-    // The resulting G_R vanishes at any orthonormal critical point of E,
-    // so the orbital inner loop converges immediately there.
-    const TK one = TK(1.0);
-    const TK zero = TK(0.0);
-    const TK neg_one = TK(-1.0);
-    char tc = detail::trans_char(TK());
+    // See `canonical_stiefel_riemannian_gradient_one_k_*`: explicit T, W, Λ, ξ
+    // matching `stiefel_canonical_inner_product` for pairing and norms.
+    const char tc = detail::trans_char(TK());
 #ifdef __MPI
     const int nbasis = ParaV_->desc[2];
     const int nbands = ParaV_->desc_wfc[3];
@@ -1126,45 +1240,40 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     const std::int64_t sc_alloc
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     const std::int64_t eij_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> work_W(static_cast<size_t>(sc_alloc), TK(0));
+    std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
+    std::vector<TK> A(static_cast<size_t>(eij_alloc), TK(0));
+    std::vector<TK> B(static_cast<size_t>(eij_alloc), TK(0));
     std::vector<TK> psi_dummy(1, TK(0));
     std::vector<TK> grad_dummy(1, TK(0));
+    const int npsi = nb_local * nbs_local;
 
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* psi_k = psi_k_ptr_or_dummy(wfc, ik, psi_dummy);
         TK* g_k = psi_k_ptr_or_dummy(grad_wfc, ik, grad_dummy);
-
-        // In X-space, SC is just X.
-        std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
-        const int npsi = nb_local * nbs_local;
-        for (int i = 0; i < npsi; ++i) SC[i] = psi_k[i];
-
-        // A = X^H G  (nbands x nbands)
-        std::vector<TK> A(static_cast<size_t>(eij_alloc), TK(0));
-        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, SC.data(), 1, 1, ParaV_->desc_wfc,
-            g_k, 1, 1, ParaV_->desc_wfc,
-            zero, A.data(), 1, 1, para_Eij_.desc);
-
-        // B = G^H X, then symmetric part A <- 0.5 (A + B) = sym(X^H G)
-        // This is the correct Riemannian symmetrisation: sym(M) = 0.5 (M + M^H).
-        std::vector<TK> B(static_cast<size_t>(eij_alloc), TK(0));
-        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, g_k, 1, 1, ParaV_->desc_wfc,
-            SC.data(), 1, 1, ParaV_->desc_wfc,
-            zero, B.data(), 1, 1, para_Eij_.desc);
-        for (int i = 0; i < eij_nloc; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
-
-        // G <- G - X * sym(X^H G)
-        detail::pgemm_wrapper('N', 'N', nbasis, nbands, nbands,
-            neg_one, psi_k, 1, 1, ParaV_->desc_wfc,
-            A.data(), 1, 1, para_Eij_.desc,
-            one, g_k, 1, 1, ParaV_->desc_wfc);
+        canonical_stiefel_riemannian_gradient_one_k_scalapack<TK>(psi_k,
+            g_k,
+            nbasis,
+            nbands,
+            npsi,
+            eij_nloc,
+            ParaV_->desc_wfc,
+            para_Eij_.desc,
+            tc,
+            work_W.data(),
+            SC.data(),
+            A.data(),
+            B.data());
     }
 #else
-    // Non-MPI: nbs_local == nbasis. Use plain BLAS.
     const int nbasis = wfc.get_nbasis();
     const int nbands = wfc.get_nbands();
+    const int npsi = nbasis * nbands;
+    std::vector<TK> work_W(static_cast<size_t>(npsi), TK(0));
+    std::vector<TK> SC(static_cast<size_t>(npsi), TK(0));
+    std::vector<TK> A(static_cast<size_t>(nbands * nbands), TK(0));
+    std::vector<TK> B(static_cast<size_t>(nbands * nbands), TK(0));
     std::vector<TK> psi_dummy(1, TK(0));
     std::vector<TK> grad_dummy(1, TK(0));
 
@@ -1172,25 +1281,15 @@ void EnergyGradient<TK, TR>::project_orbital_gradient(
     {
         const TK* psi_k = psi_k_ptr_or_dummy(wfc, ik, psi_dummy);
         TK* g_k = psi_k_ptr_or_dummy(grad_wfc, ik, grad_dummy);
-
-        // In X-space, SC is just X.
-        std::vector<TK> SC(nbasis * nbands, TK(0));
-        for (int i = 0; i < nbasis * nbands; ++i) SC[i] = psi_k[i];
-
-        // A = X^H G  (nbands x nbands)
-        std::vector<TK> A(nbands * nbands, TK(0));
-        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, SC.data(), nbasis, g_k, nbasis, zero, A.data(), nbands);
-
-        // B = G^H X, then symmetric part A <- 0.5 (A + B) = sym(X^H G)
-        std::vector<TK> B(nbands * nbands, TK(0));
-        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
-            one, g_k, nbasis, SC.data(), nbasis, zero, B.data(), nbands);
-        for (int i = 0; i < nbands * nbands; ++i) A[i] = TK(0.5) * (A[i] + B[i]);
-
-        // G <- G - X * sym(X^H G)
-        detail::gemm_wrapper('N', 'N', nbasis, nbands, nbands,
-            neg_one, psi_k, nbasis, A.data(), nbands, one, g_k, nbasis);
+        canonical_stiefel_riemannian_gradient_one_k_dense<TK>(psi_k,
+            g_k,
+            nbasis,
+            nbands,
+            tc,
+            work_W.data(),
+            SC.data(),
+            A.data(),
+            B.data());
     }
 #endif
 }

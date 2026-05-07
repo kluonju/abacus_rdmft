@@ -140,16 +140,13 @@ class EnergyGradient
                           double* diag, int ik) const;
 
   public:
-    /// Project orbital gradient onto the tangent space of the Stiefel manifold
-    /// with overlap matrix S (generalised Stiefel: C^H S C = I).
-    ///   G_R = G - C * sym(C^H S G)
-    /// Derivation (canonical/trace metric): seek G_R = G - C*K such that
-    /// C^H S G_R is skew-Hermitian.  Since C^H S C = I,
-    ///   C^H S G_R = C^H S G - K,
-    /// and the skew-Hermitian condition gives K = sym(C^H S G).
-    /// When S = I this reduces to G_R = G - C * sym(C^H G) (standard Stiefel).
-    /// At any S-orthonormal critical point (e.g. KS eigenstates), G_R == 0,
-    /// allowing the orbital inner loop to detect convergence immediately.
+    /// Replace the ambient Euclidean gradient by the Stiefel **canonical-metric**
+    /// Riemannian gradient in X-space (X^H X = I).
+    ///
+    /// With ambient grad G_bar, first T = G_bar - X sym(X^H G_bar) (induced tangent).
+    /// Then W = T + X (X^H T), Lambda = -1/4 (X^H W + W^H X), xi = W + 2 X Lambda
+    /// gives the unique tangent xi with canonical pairing matching Re Tr(G_bar^H V).
+    /// Consistent with `stiefel_canonical_inner_product` for norms and line-search.
     void project_orbital_gradient(const psi::Psi<TK>& wfc,
                                    psi::Psi<TK>& grad_wfc);
 
@@ -166,14 +163,12 @@ class EnergyGradient
     /// Rebuilt lazily the first time it is requested per ion step.
     const TK* get_SK(int ik);
 
-    /// Ambient Frobenius pairing ∑_k Re Tr(X_k^H Y_k) on X-space coefficients
-    /// (not the Stiefel canonical metric). Performs an MPI Allreduce internally.
-    double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
-
     /// Stiefel **canonical** metric (Absil et al.; homogeneous-space / quotient picture)
     /// on ∏_k St(n_bands, n_basis) in X-space, X_k^H X_k = I:
     ///   ⟨U,V⟩_can = ∑_k [ Re Tr(U_k^H V_k) − ½ Re Tr(U_k^H X_k X_k^H V_k) ].
     /// For tangents at X, this matches Re Tr(U^H (I − ½ X X^H) V) summed over k.
+    /// **Use this for all orbital gradient norms, directional derivatives, and CG/Powell
+    /// pairings** after `project_orbital_gradient` (do not use a plain Frobenius sum).
     /// MPI Allreduce per k for the Gram cross-term, then a global reduce on the
     /// coefficient Frobenius part.
     double stiefel_canonical_inner_product(const psi::Psi<TK>& X_stiefel,

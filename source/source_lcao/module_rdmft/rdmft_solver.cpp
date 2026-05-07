@@ -101,6 +101,33 @@ inline LineSearchPolicy effective_rdmft_ls_policy(RdmftLineSearchPreset preset, 
     }
 }
 
+/// Orbital alternating inner loop only: `Auto` pairs the Wolfe variant with the optimiser
+/// (CG → strong Wolfe, L-BFGS → weak Wolfe; SD and Adam stay on Armijo).
+inline LineSearchPolicy effective_orbital_ls_policy(RdmftLineSearchPreset preset, OptimizerType orb_opt)
+{
+    switch (preset)
+    {
+    case RdmftLineSearchPreset::Auto:
+        if (orb_opt == OptimizerType::ConjugateGradient)
+        {
+            return LineSearchPolicy::StrongWolfe;
+        }
+        if (orb_opt == OptimizerType::LBFGS)
+        {
+            return LineSearchPolicy::WeakWolfe;
+        }
+        return LineSearchPolicy::Armijo;
+    case RdmftLineSearchPreset::Armijo:
+        return LineSearchPolicy::Armijo;
+    case RdmftLineSearchPreset::StrongWolfe:
+        return LineSearchPolicy::StrongWolfe;
+    case RdmftLineSearchPreset::WeakWolfe:
+        return LineSearchPolicy::WeakWolfe;
+    default:
+        return LineSearchPolicy::Armijo;
+    }
+}
+
 /// Stop augmented-Lagrangian occupation inner loop when the total occupation change is small.
 bool occ_inner_should_stop(double sum_abs_dn,
                            double dn_tol)
@@ -1716,7 +1743,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             flat_to_psi(orb_dir_flat, orb_dir);
         }
 
-        // ‖G_R‖_can^2 for Stiefel canonical metric at current X = wfc.
+        // ‖G_can‖_can^2 at current X = wfc.
         const double orb_gnorm2
             = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, grad_wfc);
 
@@ -1728,7 +1755,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         energy_grad_->project_orbital_gradient(wfc, orb_dir);
 
         // Directional derivative of the augmented energy along the packed
-        // direction:  dd_total = <grad_p, occ_dir> + <G_R, orb_dir>_S.
+        // direction:  dd_total = <grad_p, occ_dir> + <G_can, orb_dir>_can.
         double occ_dd = 0.0;
         for (int i = 0; i < n_occ_params; ++i)
             occ_dd += occ_dir[i] * grad_params[i];
@@ -3747,7 +3774,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const bool use_lbfgs = (opt_type == OptimizerType::LBFGS);
     const bool use_adam  = (opt_type == OptimizerType::Adam);
     const bool use_sd    = (opt_type == OptimizerType::SteepestDescent);
-    const LineSearchPolicy orb_ls_policy = effective_rdmft_ls_policy(config_.orb_ls_preset, opt_type);
+    const LineSearchPolicy orb_ls_policy = effective_orbital_ls_policy(config_.orb_ls_preset, opt_type);
 
     energy_grad_->invalidate_hone_cache();
 
@@ -3799,12 +3826,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         double E = energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat),
                                           wfc, grad_occ, grad_wfc);
 
-        // Project onto the tangent space of the standard Stiefel manifold in
-        // X-space:
-        //     G_R = G - X sym(X^H G)
+        // Canonical-metric Riemannian gradient G_can in X-space (see
+        // `EnergyGradient::project_orbital_gradient`).
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        // ‖G_R‖_can^2 for CG/Powell (same pairing as line-search slopes).
+        // ‖G_can‖_can^2 for CG/Powell (same pairing as line-search slopes).
         const double gnorm2
             = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, grad_wfc);
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
@@ -3836,7 +3862,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         prev_orb_gnorm = result.grad_norm;
         prev_orb_E = E;
 
-        // Orbital sub-problem: converged when ||G_R|| is small and (if
+        // Orbital sub-problem: converged when ||G_can||_can is small and (if
         // rdmft_orb_energy_tol > 0) successive inner energies change by less
         // than that threshold — both must hold when energy tolerance is enabled.
         const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
@@ -3979,6 +4005,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         // to optimize_occupations() under the augmented-Lagrangian constraint.
         // Initial line-search step size:
         //   - SD/CG/L-BFGS: rdmft_orb_ls_stepsize (initial α₀; weak Wolfe may expand up to 100× α₀).
+        //     With orb_ls_type=auto: CG uses strong Wolfe, L-BFGS weak Wolfe.
         //   - Adam: 1.0 (Adam incorporates its own learning rate into the direction).
         const double ls_alpha_init = use_adam ? 1.0 : config_.orb_ls_stepsize;
         double alpha = ls_alpha_init;
@@ -4018,7 +4045,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             }
             GlobalV::ofs_running << "      orb line search (fixed-step SD Armijo): inner=" << (inner + 1)
                                  << std::scientific << "  alpha=" << alpha << "  E0=" << E << "  E_new=" << E_new
-                                 << "  dd=<G_R,dir>=" << dd << "  armijo_ok=" << (ls_success ? 1 : 0)
+                                 << "  dd=<G_can,dir>_can=" << dd << "  armijo_ok=" << (ls_success ? 1 : 0)
                                  << std::defaultfloat << std::endl;
         }
         else if (orb_use_wolfe)
@@ -4101,7 +4128,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                        << ") failed: inner=" << (inner + 1) << "  optim=" << orb_opt
                        << "  n_eval=" << orb_ls_nfeval;
                 orb_ls << std::scientific << "  E0=" << E << "  E_last_trial=" << orb_ls_E_last
-                       << "  dd=<G_R,dir>=" << dd << "  alpha_init=" << ls_alpha_init
+                       << "  dd=<G_can,dir>_can=" << dd << "  alpha_init=" << ls_alpha_init
                        << "  last_alpha=" << orb_ls_alpha_last;
                 if (orb_ls_policy == LineSearchPolicy::Armijo)
                 {
@@ -4389,11 +4416,11 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
     // ---- Orbital gradient check (directional derivative along Riemannian G) ----
     GlobalV::ofs_running << "\n-- Orbital gradient check --" << std::endl;
     {
-        // Match optimize_orbitals: project the Euclidean gradient in-place to G_R,
-        // then compare the Armijo slope -||G_R||^2 to a finite difference along the
-        // same retract used in the line search (Y = X - step*G_R, then polar).
+        // Match optimize_orbitals: replace ambient grad by canonical G_can in-place,
+        // then compare the Armijo slope -||G_can||_can^2 to a finite difference along the
+        // same retract (Y = X - step*G_can, then polar).
         //
-        // A symmetric central difference in ±t can disagree badly with -||G_R||^2 for
+        // A symmetric central difference in ±t can disagree badly with -||G_can||_can^2 for
         // this polar/Cholesky retraction (nonlinear asymmetry in t); use a forward
         // difference (E(t)-E0)/t, which matches the Armijo first-order model at t=0+.
         energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), grad_wfc);
@@ -4419,7 +4446,7 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
         GlobalV::ofs_running << std::fixed << std::setprecision(8)
             << "  orb dir deriv: analytic=" << analytic_dd
             << "  fd_fwd=" << fd
-            << "  ||G_R||_can^2=" << gnorm2
+            << "  ||G_can||_can^2=" << gnorm2
             << "  rel_err=" << rel_err
             << (pass ? "  PASS" : "  FAIL") << std::endl;
 

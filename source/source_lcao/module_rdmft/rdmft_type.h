@@ -102,7 +102,9 @@ enum class LineSearchInitStep
 constexpr double RDMFT_DEFAULT_LS_ALPHA_INIT = 1.0;
 
 /// Line-search family for occupation/orbital inner iterations (INPUT `rdmft_occ_ls_type`,
-/// `rdmft_orb_ls_type`). `Auto` selects Armijo backtracking; use `sw` / `wolfe` for Wolfe.
+/// `rdmft_orb_ls_type`). For **occupations**, `Auto` is Armijo. For **orbitals** (alternating
+/// `optimize_orbitals` only), `Auto` uses strong Wolfe with CG, weak Wolfe with L-BFGS, and
+/// Armijo with SD/Adam. Use `sw` / `wolfe` / `armijo` to force a preset regardless of optimiser.
 enum class RdmftLineSearchPreset
 {
     Auto,
@@ -183,7 +185,8 @@ struct RDMFTConfig
 
     /// Occupation optimiser (line search defaults to Armijo unless `rdmft_occ_ls_type` overrides).
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
-    /// Orbital optimiser (line search defaults to Armijo unless `rdmft_orb_ls_type` overrides).
+    /// Orbital optimiser. With `rdmft_orb_ls_type` = auto: CG uses strong Wolfe, L-BFGS weak Wolfe,
+    /// SD/Adam Armijo; explicit `sw` / `wolfe` / `armijo` overrides that pairing.
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
@@ -193,7 +196,7 @@ struct RDMFTConfig
     OptimizerType joint_optimizer = OptimizerType::LBFGS;
     /// Occupation inner: `auto` / `armijo` → Armijo; `sw` / `wolfe` → Wolfe families.
     RdmftLineSearchPreset occ_ls_preset = RdmftLineSearchPreset::Auto;
-    /// Orbital inner: same convention as `occ_ls_preset`.
+    /// Orbital inner: auto pairs Wolfe type with `orb_optimizer` (CG/sw, LBFGS/ww, else Armijo).
     RdmftLineSearchPreset orb_ls_preset = RdmftLineSearchPreset::Auto;
 
     SolverStrategy strategy = SolverStrategy::Alternating;

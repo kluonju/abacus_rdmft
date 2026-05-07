@@ -42,8 +42,8 @@ class StiefelManifold
     int nbasis() const { return nbasis_; }
     int norbs() const { return norbs_; }
 
-    /// Project Euclidean gradient G onto the tangent space at C.
-    /// Riemannian gradient = G - C * sym(C^H * G) for canonical metric on St(p,n).
+    /// Project Euclidean gradient G onto the tangent space at C (embedded / induced metric).
+    /// Tangent projection: proj_C(G) = G - C * sym(C^H * G) when S = I in C-coordinates.
     /// With overlap S: grad = S^{-1} G - C * sym(C^H G), but typically we work
     /// in the S-weighted space so: grad = G - S*C * sym(C^H * G).
     /// Here we use the simpler projection for the embedded metric:
