@@ -958,13 +958,39 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_occ_ls_type");
+        item.annotation = "RDMFT occupation inner line search: auto, armijo, sw, wolfe";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Selects the line-search algorithm for the occupation sub-problem. "
+                           "auto and armijo: Armijo backtracking (ALM on parameters) or monotone projected search "
+                           "(PG/AS). "
+                           "sw: strong Wolfe (ALM); PG/AS use strong Wolfe on the projected arc (standard or "
+                           "non-monotone per preset). "
+                           "wolfe: weak Wolfe. "
+                           "Aliases: strong_wolfe, weak_wolfe, weak, ww.";
+        item.default_value = "auto";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_occ_ls_type);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                (void)rdmft::parse_line_search_preset_or_quit(para.input.rdmft_occ_ls_type,
+                                                            "rdmft_occ_ls_type",
+                                                            "ReadInput");
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_orb_optimizer");
         item.annotation = "Optimiser for orbitals in RDMFT: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Gradient-based optimiser for the orbital (Stiefel manifold) sub-problem. "
                            "sd: steepest descent, cg: conjugate gradient, lbfgs: lbfgs, adam: Adam. "
-                           "Alternating orbital inner always uses Armijo line search (no Strong Wolfe).";
+                           "Default line search is Armijo backtracking unless overridden by rdmft_orb_ls_type.";
         item.default_value = "cg";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
@@ -975,6 +1001,29 @@ void ReadInput::item_others()
                 (void)rdmft::parse_optimizer_input_or_quit(para.input.rdmft_orb_optimizer,
                                                            "rdmft_orb_optimizer",
                                                            "ReadInput");
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_ls_type");
+        item.annotation = "RDMFT orbital inner line search: auto, armijo, sw, wolfe";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "String";
+        item.description = "Selects the line-search algorithm for the alternating orbital sub-problem. "
+                           "auto and armijo: Armijo backtracking on the Stiefel manifold. "
+                           "sw / wolfe select strong or weak Wolfe. "
+                           "Same aliases as rdmft_occ_ls_type.";
+        item.default_value = "auto";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_string(input.rdmft_orb_ls_type);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                (void)rdmft::parse_line_search_preset_or_quit(para.input.rdmft_orb_ls_type,
+                                                            "rdmft_orb_ls_type",
+                                                            "ReadInput");
             }
         };
         this->add_item(item);
@@ -1034,11 +1083,22 @@ void ReadInput::item_others()
         item.annotation = "Maximum occupation iterations per RDMFT outer step";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Integer";
-        item.description = "Maximum iterations for the occupation sub-problem within one outer step.";
+        item.description = "Maximum iterations for the occupation sub-problem within one outer step of the "
+                           "alternating strategy. Set 0 to skip occupation optimization (fixed initial n each "
+                           "outer cycle; only orbitals are updated). Must be >= 0.";
         item.default_value = "50";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_int(input.rdmft_occ_maxiter);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (para.input.rdmft_occ_maxiter < 0)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_occ_maxiter must be >= 0");
+                }
+            }
+        };
         this->add_item(item);
     }
     {
@@ -1159,6 +1219,85 @@ void ReadInput::item_others()
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_orb_energy_tol);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_ls_fixed_step");
+        item.annotation = "RDMFT orbital SD: single fixed Armijo trial at rdmft_orb_ls_stepsize";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Bool";
+        item.description = "When true and rdmft_orb_optimizer is sd, each orbital inner iteration uses exactly "
+                           "one retraction with step length rdmft_orb_ls_stepsize and accepts it only if the Armijo "
+                           "condition holds (no geometric backtracking). For debugging or very conservative "
+                           "updates. Ignored for cg, lbfgs, adam.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_orb_ls_fixed_step);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_ls_stepsize");
+        item.annotation = "RDMFT orbital: line-search trial α₀ (and fixed-step SD sole trial)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Initial trial step α₀ for alternating orbital line search (sd/cg/lbfgs; Adam uses 1). "
+                           "When rdmft_orb_ls_fixed_step is true and rdmft_orb_optimizer is sd, this α is the only "
+                           "line-search trial (Armijo check). Must be finite and > 0.";
+        item.default_value = "1.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_orb_ls_stepsize);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const double a = para.input.rdmft_orb_ls_stepsize;
+                if (!(a > 0.0) || !std::isfinite(a))
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_orb_ls_stepsize must be finite and > 0");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_ls_fixed_step");
+        item.annotation = "RDMFT occupation SD: single monotone trial at rdmft_occ_ls_stepsize";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Bool";
+        item.description = "When true and rdmft_occ_optimizer is sd, monotone occupation line searches use exactly "
+                           "one trial at rdmft_occ_ls_stepsize (ALM Armijo on parameters; PG/AS projected monotone "
+                           "paths) with the same acceptance rule as the usual backtracking first trial—no ρ shrink. "
+                           "Ignored for cg, lbfgs, adam, and when the occupation line search is Wolfe-type "
+                           "(e.g. rdmft_occ_ls_type sw/wolfe).";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_occ_ls_fixed_step);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_occ_ls_stepsize");
+        item.annotation = "RDMFT occupation: fixed init α₀ and occ fixed-step trial";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Occupation line search: α₀ when rdmft_occ_ls_init_step is fixed (ALM/PG/AS paths that use "
+                           "this policy). Also the trial step for rdmft_occ_ls_fixed_step single-trial sd mode. "
+                           "Must be finite and > 0.";
+        item.default_value = "1.0";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_occ_ls_stepsize);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const double a = para.input.rdmft_occ_ls_stepsize;
+                if (!(a > 0.0) || !std::isfinite(a))
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_occ_ls_stepsize must be finite and > 0");
+                }
+            }
+        };
         this->add_item(item);
     }
     {
@@ -1336,21 +1475,6 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_alpha_step");
-        item.annotation = "Initial line-search step length for RDMFT";
-        item.category = "Reduced Density Matrix Functional Theory";
-        item.type = "Real";
-        item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. For "
-                           "projected_gradient occupations it supplies the fallback scale in the Bertsekas map "
-                           "when the line-search initial α₀ is invalid; otherwise PG Bertsekas τ follows the "
-                           "occupation line search (see rdmft_occ_grad_tol). Orbitals use this for non–QN optimisers.";
-        item.default_value = "1.0";
-        item.unit = "";
-        item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_alpha_step);
-        this->add_item(item);
-    }
-    {
         Input_Item item("rdmft_pg_occ_cg_ls_alpha_cap");
         item.annotation = "PG occupation CG: cap initial line-search trial alpha0";
         item.category = "Reduced Density Matrix Functional Theory";
@@ -1404,7 +1528,7 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Initial trial alpha for occupation line search: "
-                           "fixed (uses rdmft_alpha_step), bb (Barzilai-Borwein estimate), "
+                           "fixed (α₀ = rdmft_occ_ls_stepsize), bb (Barzilai-Borwein estimate; fallback rdmft_occ_ls_stepsize), "
                            "quad (quadratic estimate from previous accepted step).";
         item.default_value = "bb";
         item.unit = "";

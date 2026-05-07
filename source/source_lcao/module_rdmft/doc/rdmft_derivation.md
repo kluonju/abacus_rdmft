@@ -451,9 +451,9 @@ constraint set is empty and no exact projection exists.
   accordingly.
 
 **Step size and line search (ABACUS).**  The first trial step $\alpha_0$ for
-backtracking is chosen by INPUT `rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein
+backtracking is chosen by INPUT `rdmft_occ_ls_init_step`: fixed (`rdmft_occ_ls_stepsize`), Barzilai–Borwein
 (uses `rdmft_alm_bb_mode` and clamps `rdmft_alm_bb_alpha_min` /
-`rdmft_alm_bb_alpha_max`, with fallback to `rdmft_alpha_step`; unlike the ALM
+`rdmft_alm_bb_alpha_max`, with fallback to the fixed default step `1`; unlike the ALM
 path this BB seed is **not** gated on `rdmft_alm_bb_enabled`), or a quadratic
 model from the previous inner iteration’s first energy trial (see
 `rdmft_usage.md`).  Monotone **Armijo**
@@ -474,7 +474,7 @@ with the same Armijo inequality in terms of $\mathbf{n}'(\alpha)-\mathbf{n}$.
 
 **Line search failure recovery.**  If no Armijo step is found, the solver applies
 one **projected steepest** move $\mathbf{n} \leftarrow P_{\mathcal{C}}(\mathbf{n} - \tau_{\mathrm{ls}}\,\mathbf{g})$
-with $\tau_{\mathrm{ls}} =$ `rdmft_alpha_step`, resets the occupation optimizer
+with $\tau_{\mathrm{ls}} = 1$, resets the occupation optimizer
 curvature state (CG / L-BFGS history), and continues.
 
 **Stopping criteria (ABACUS inner loop).**  Let $\mathbf{g}_{\mathrm{proj}} =
@@ -482,11 +482,11 @@ curvature state (CG / L-BFGS history), and continues.
 (Bertsekas projected-gradient vector).  **$\tau$ is taken from the occupation
 line search** so the stationarity measure uses the same scale as the step:
 **pre-step**, $\tau = \alpha_0$ (the first Armijo trial from
-`rdmft_occ_ls_init_step`: fixed $1$, Barzilai–Borwein, or quad, with fallback to
-`rdmft_alpha_step` if the estimate is non-positive or non-finite); **post-step**
+`rdmft_occ_ls_init_step`: fixed (`rdmft_occ_ls_stepsize`), Barzilai–Borwein, or quad, with fallback to
+$1$ if the estimate is non-positive or non-finite); **post-step**
 after a successful line search, $\tau = \alpha_{\mathrm{acc}}$ (accepted
 Armijo step along $\mathbf{d}$); after **SD fallback** (failed line search),
-$\tau =$ `rdmft_alpha_step` (same step length as the recovery move).  The inner
+$\tau = 1$ (same step length as the recovery move).  The inner
 loop stops when $\|\mathbf{g}_{\mathrm{proj}}\|_\infty <$ `rdmft_occ_grad_tol`,
 evaluated **after** an accepted or fallback step (post-step $\mathbf{n}$ and
 gradient).  On the first inner iteration, if the **pre-step**
@@ -500,7 +500,7 @@ Numerical tips and implementation notes:
 - Use analytic gradients $\partial E/\partial n$; finite differences are costly.
 - **INPUT keywords (PG, ABACUS):** `rdmft_occ_optimizer`, `rdmft_occ_ls_init_step`
   (sets Bertsekas pre-step $\tau=\alpha_0$ together with BB/quad clamps),
-  `rdmft_alpha_step` (fallback for invalid $\alpha_0$ and SD-fallback step length),
+  fixed $\alpha=1$ (fallback for invalid $\alpha_0$ and SD-fallback step length),
   `rdmft_occ_grad_tol`, `rdmft_occ_maxiter`, `rdmft_line_search_c1`, and for the
   `bb` branch of `rdmft_occ_ls_init_step` also `rdmft_alm_bb_mode`,
   `rdmft_alm_bb_alpha_min`, `rdmft_alm_bb_alpha_max`.  Defaults and semantics
@@ -522,8 +522,8 @@ $P_{\mathcal{C}}$; neglect spin labels):
 initialize n feasible; configure occ_optimizer, tol = rdmft_occ_grad_tol
 for inner = 0 .. occ_maxiter-1:
    g = grad_n(E, n)
-   alpha0 = initial_step_from(rdmft_occ_ls_init_step, BB/quad, rdmft_alpha_step, clamps)
-   tau_pre = alpha0 if alpha0 > 0 else rdmft_alpha_step
+   alpha0 = initial_step_from(rdmft_occ_ls_init_step, BB/quad, rdmft_occ_ls_stepsize, clamps)
+   tau_pre = alpha0 if alpha0 > 0 else rdmft_occ_ls_stepsize
    g_proj_pre = (n - project(n - tau_pre * g)) / tau_pre
    if inner == 0 and ||g_proj_pre||_inf < tol: break     // early exit
    d = direction_from_optimizer(g, history)               // SD / CG / lbfgs / adam
@@ -540,11 +540,11 @@ for inner = 0 .. occ_maxiter-1:
       if E(n_try) <= E(n) + c1 * dot(g, delta): success = true; n = n_try; alpha_acc = alpha; break
       alpha *= rho
    if not success:
-      n = project(n_save - rdmft_alpha_step * g)         // SD fallback
-      alpha_acc = rdmft_alpha_step
+      n = project(n_save - 1 * g)         // SD fallback
+      alpha_acc = 1
       reset_optimizer_curvature_state()
    recompute g at new n
-   tau_post = alpha_acc                                   // accepted α, or rdmft_alpha_step after fallback
+   tau_post = alpha_acc                                   // accepted α, or 1 after fallback
    g_proj_post = (n - project(n - tau_post * g)) / tau_post
    if ||g_proj_post||_inf < tol: break
 end

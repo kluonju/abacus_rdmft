@@ -675,6 +675,10 @@ struct Input_para
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
     std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
     std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
+    /// auto | armijo | sw | wolfe — occupation inner line search (default auto: follow occ_optimizer)
+    std::string rdmft_occ_ls_type = "auto";
+    /// auto | armijo | sw | wolfe — orbital inner line search (default auto: follow orb_optimizer)
+    std::string rdmft_orb_ls_type = "auto";
     int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
     int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
     int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
@@ -685,6 +689,13 @@ struct Input_para
     double rdmft_orb_grad_tol = 1e-5;            // orbital inner: ||G_R||
     /// Orbital inner: also converge if |E_inner - E_inner_prev| < this (Ry); <=0 disables
     double rdmft_orb_energy_tol = 1e-8;
+    /// Orbital SD: single Armijo trial at rdmft_orb_ls_stepsize (no backtracking)
+    bool rdmft_orb_ls_fixed_step = false;
+    /// Trial step α when rdmft_orb_ls_fixed_step and rdmft_orb_optimizer is sd
+    double rdmft_orb_ls_stepsize = 1.0;
+    /// Occupation SD: single monotone trial at rdmft_occ_ls_stepsize (ALM Armijo / PG / AS monotone paths)
+    bool rdmft_occ_ls_fixed_step = false;
+    double rdmft_occ_ls_stepsize = 1.0;
     double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
     /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
     double rdmft_occ_energy_tol = 1e-8;
@@ -697,7 +708,6 @@ struct Input_para
     double rdmft_alm_lambda_init = 1.0;            // initial ALM Lagrange multiplier lambda
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
-    double rdmft_alpha_step = 1.0;                 // initial occupation/orbital line-search step length
     /// PG + occ CG: cap occupation line-search initial trial α₀; <=0 disables
     double rdmft_pg_occ_cg_ls_alpha_cap = 1e-3;
     /// PG: SD recovery line search initial α after primary LS failure; <=0 disables

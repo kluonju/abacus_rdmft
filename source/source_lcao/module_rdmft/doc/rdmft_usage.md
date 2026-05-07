@@ -164,8 +164,8 @@ feasible projection \(P\):
 
 If **no** trial in that backtracking loop is accepted, the solver applies a
 **single projected steepest step**
-\(n \leftarrow P\bigl(n - \tau\,\nabla_n E\bigr)\) with \(\tau =\)
-`rdmft_alpha_step`, then **resets** the occupation optimiser state (CG / L-BFGS
+\(n \leftarrow P\bigl(n - \tau\,\nabla_n E\bigr)\) with \(\tau = 1\) (fixed
+solver default), then **resets** the occupation optimiser state (CG / L-BFGS
 / Adam history).  This mirrors the recovery used in the `active_set` path when
 its line search fails.
 
@@ -173,10 +173,10 @@ its line search fails.
 \(\mathbf{g}_{\mathrm{proj}} = \tfrac{1}{\tau}\bigl(\mathbf{n} - P(\mathbf{n} -
 \tau \nabla_{\mathbf{n}}E)\bigr)\) with **\(\tau\) tied to the occupation line
 search**: before stepping, \(\tau\) equals the first Armijo trial \(\alpha_0\)
-from `rdmft_occ_ls_init_step` (with fallback to `rdmft_alpha_step` if \(\alpha_0\)
+from `rdmft_occ_ls_init_step` (with fallback to \(1\) if \(\alpha_0\)
 is invalid); after a successful line search, \(\tau\) is the **accepted** Armijo
-step \(\alpha\); after an SD fallback (failed line search), \(\tau =\)
-`rdmft_alpha_step`, matching the recovery step.  The PG inner loop stops only
+step \(\alpha\); after an SD fallback (failed line search), \(\tau = 1\),
+matching the recovery step.  The PG inner loop stops only
 when \(\|\mathbf{g}_{\mathrm{proj}}\|_\infty <\) `rdmft_occ_grad_tol` (evaluated
 **post-step**; the log reports the unscaled map \(\|\mathbf{n} - P(\cdot)\|_\infty\)
 and the \(\tau\) used).  The first inner may exit early if the **pre-step**
@@ -194,7 +194,7 @@ when the inner flags alone indicate convergence.
 \(n\)-space without ALM penalties.  For difficult functionals (e.g. Müller at
 stretched geometries), **ALM (`augmented_lagrangian`) is usually more robust**.
 If the log shows repeated `PG line search failed` / `applied SD fallback`, try
-smaller `rdmft_alpha_step`, looser `rdmft_line_search_c1`, more inner iterations
+looser `rdmft_line_search_c1`, more inner iterations
 `rdmft_occ_maxiter`, or switch constraint method.
 
 ### Optimiser selection
@@ -236,7 +236,7 @@ All four optimisers are available for both `rdmft_occ_optimizer` and
 | `rdmft_orb_grad_tol` | real | `1e-6` | Alternating orbital inner loop: stop when Riemannian gradient norm `||G_R||` is below this. |
 | `rdmft_orb_energy_tol` | real | `1e-8` | Alternating orbital inner loop: when `> 0`, stopping requires **both** `||G_R|| <` `rdmft_orb_grad_tol` **and** small energy moves: `|E_k - E_{k-1}|` before the step and `|E_{\mathrm{new}} - E|` after an accepted line search must stay below this (Ry). Set `<= 0` for gradient-only stopping. |
 | `rdmft_occ_tol` | real | `1e-7` | **ALM / active_set:** tolerance on occupation inner updates (e.g. sum \(|\Delta n|\) and KKT-style checks for AS). **Not** the PG stopping rule. |
-| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, with \(\tau\) from the occupation line search (initial \(\alpha_0\), accepted \(\alpha\), or `rdmft_alpha_step` after SD fallback—see projected-gradient details).  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
+| `rdmft_occ_grad_tol` | real | `1e-6` | **PG:** stop when \(\|\frac{1}{\tau}(n-P(n-\tau\nabla_n E))\|_\infty <\) this, with \(\tau\) from the occupation line search (initial \(\alpha_0\), accepted \(\alpha\), or fixed fallback \(1\) after SD fallback—see projected-gradient details).  Also used for other occupation-gradient checks (e.g. ALM diagnostics) as in the code. |
 | `rdmft_occ_energy_tol` | real | `1e-8` | **Not used** for `projected_gradient` (PG inner stop is `rdmft_occ_grad_tol` vs \(\|g_{\mathrm{proj}}\|_\infty\) only). Kept for backward-compatible INPUT. |
 
 ### Initial occupation setup
@@ -259,10 +259,11 @@ one of the modes below.
 
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
-| `rdmft_alpha_step` | real | `1.0` | Default / fallback trial step for RDMFT line searches. Orbitals (Armijo) use it for non–quasi-Newton optimisers. For **PG** occupations it is the fallback if the line-search initial \(\alpha_0\) is non-positive / non-finite, the step length in the **SD fallback** after a failed line search, and (matching that move) the post-step Bertsekas \(\tau\) when fallback runs; the usual post-step \(\tau\) is the **accepted** Armijo \(\alpha\). For ALM it is also the fallback when `rdmft_occ_ls_init_step` does not supply \(\alpha_0\). |
-| `rdmft_occ_ls_init_step` | string | `bb` | Occupation line-search **first trial** step: `fixed` (always 1.0), `bb` (Barzilai–Borwein estimate; uses `rdmft_alm_bb_*` clamps), or `quad` (quadratic interpolation from the previous inner iteration’s first energy trial). Used for `projected_gradient` and `active_set`. |
+| `rdmft_occ_ls_type` | string | `auto` | `auto` / `armijo`: Armijo backtracking (ALM parameters; monotone projected search for PG/AS). `sw` / `wolfe`: strong / weak Wolfe where implemented. |
+| `rdmft_orb_ls_type` | string | `auto` | Same convention for the alternating orbital sub-problem. |
+| `rdmft_occ_ls_init_step` | string | `bb` | Occupation line-search **first trial** step: `fixed` (`α₀` = `rdmft_occ_ls_stepsize`), `bb` (Barzilai–Borwein; fallback `rdmft_occ_ls_stepsize`; PG/AS BB uses `rdmft_alm_bb_*` clamps), or `quad`. ALM: if `fixed`, `α₀` = `rdmft_occ_ls_stepsize`; if `bb`, uses ALM BB when enabled. |
 | `rdmft_line_search_c1` | real | `1e-4` | Armijo sufficient-decrease \(c_1\) in \((0,1)\): smaller is stricter. Used for alternating **orbital** Armijo, ALM / PG / AS **occupation** line searches, and joint Armijo; also the Armijo side of **Strong Wolfe** when \(c_2\) is used. |
-| `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature \(c_2\): used when **Strong Wolfe** runs (`rdmft_occ_optimizer = lbfgs` with ALM, or `rdmft_joint_optimizer = lbfgs` in joint mode). Require \(\lvert g^\top d\rvert \le c_2 \lvert g_0^\top d\rvert\). |
+| `rdmft_line_search_c2` | real | `0.9` | Strong Wolfe curvature \(c_2\): used when **Strong Wolfe** runs (e.g. `rdmft_occ_ls_type` / `rdmft_orb_ls_type` set to `sw`). Require \(\lvert g^\top d\rvert \le c_2 \lvert g_0^\top d\rvert\). |
 | `rdmft_line_search_max_zoom` | int | `20` | Maximum **zoom** iterations in Strong Wolfe (Nocedal & Wright). |
 | `rdmft_lbfgs_memory` | int | `10` | Number of past gradient/step pairs stored by lbfgs. |
 | `rdmft_adam_lr` | real | `0.001` | Learning rate for the Adam optimiser. |
@@ -270,7 +271,7 @@ one of the modes below.
 | `rdmft_alm_mu_init` | real | `1.0` | Initial ALM penalty parameter `mu` (only for `rdmft_constraint = augmented_lagrangian`). |
 | `rdmft_alm_mu_factor` | real | `2.0` | Multiplicative ALM penalty update factor: `mu <- min(mu * factor, mu_max)`. |
 
-`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true) and bound the BB branch of `rdmft_occ_ls_init_step = bb`. **Strong Wolfe** (bracket + zoom) is used for lbfgs in ALM occupations and for the **joint** strategy when `rdmft_joint_optimizer = lbfgs`; otherwise **Armijo** applies with `rdmft_line_search_c1`.  **ALM** occupation Armijo may use optional **polynomial** suggestions when `rdmft_line_search_polynomial` is true; **PG** and **active_set** occupation line searches use **geometric** backtracking only (same \(c_1\), no polynomial branch). Alternating **orbital** optimisation uses Armijo only (no polynomial there). `rdmft_occ_ls_init_step` is not read for orbital optimisation.
+`rdmft_alm_bb_enabled`, `rdmft_alm_bb_mode`, `rdmft_alm_bb_alpha_min`, and `rdmft_alm_bb_alpha_max` control Barzilai–Borwein step estimates in occupation **parameter** space for the augmented-Lagrangian path (when `rdmft_alm_bb_enabled` is true) and bound the BB branch of `rdmft_occ_ls_init_step = bb`. By default (`rdmft_occ_ls_type` / `rdmft_orb_ls_type` = `auto`), **Armijo backtracking** is used for occupations, orbitals, and the **joint** packed step. Use `sw` or `wolfe` on those keywords to enable Wolfe line searches where implemented. **ALM** occupation Armijo may use optional **polynomial** suggestions when `rdmft_line_search_polynomial` is true; **PG** and **active_set** occupation line searches use **geometric** backtracking only (same \(c_1\), no polynomial branch). `rdmft_occ_ls_init_step` is not read for orbital optimisation. Orbital initial \(\alpha_0\) is `rdmft_orb_ls_stepsize`; occupation **`fixed`** init and BB fallback use `rdmft_occ_ls_stepsize` (defaults 1.0). When `rdmft_occ_ls_init_step` is not `fixed` and ALM BB is off, ALM uses internal default \(\alpha_0=1\).
 
 ### Debugging
 
@@ -339,12 +340,8 @@ rdmft_solver_strategy   joint
 rdmft_occ_param         logistic
 rdmft_constraint        augmented_lagrangian
 rdmft_joint_optimizer   lbfgs
-rdmft_alpha_step         0.01
 rdmft_outer_maxiter        300
 ```
-
-The explicit `rdmft_alpha_step 0.01` is smaller than the default `1.0` and
-can stabilise joint HF steps; omit it to use the default.
 
 Here occupations and orbitals are optimised simultaneously on the product
 manifold (new `joint` keyword; `product_manifold` is still accepted as a
@@ -352,7 +349,7 @@ deprecated alias).  The packed variable `(p, C)` is handled by a single
 lbfgs optimiser (`rdmft_joint_optimizer lbfgs`): every outer iteration the
 solver evaluates the packed gradient `(dE/dp, G_R)`, asks lbfgs for a
 descent direction, re-projects the orbital block onto the Stiefel tangent
-space, and runs one Armijo line search along the packed direction (linear
+space, and runs one **Armijo** line search along the packed direction (linear
 update for the occupation parameters, Stiefel retraction for the orbitals).
 
 ### Example 4: Gamma-only solid with projected gradient
@@ -433,8 +430,8 @@ fallback (clip + dual rescaling); see
   especially combined with cosine-squared parameterisation.
 
 - **Projected gradient** ignores `rdmft_occ_param` and optimises raw \(n_{ik}\).
-  If PG line searches fail often, reduce `rdmft_alpha_step`, relax
-  `rdmft_line_search_c1`, or prefer ALM.
+  If PG line searches fail often, relax `rdmft_line_search_c1`, tighten BB
+  clamps, or prefer ALM.
 
 - **CG or lbfgs** are the recommended optimisers for production.  Steepest
   descent is useful for debugging.  Adam can help with difficult convergence
@@ -451,8 +448,8 @@ fallback (clip + dual rescaling); see
 
 The running log may show `occ line search (PG Armijo): ... fail` and
 `applied SD fallback and reset optimizer` when no trial satisfies projected
-Armijo within the backtracking cap.  Typical mitigations: smaller
-`rdmft_alpha_step`, slightly **larger** `rdmft_line_search_c1` (e.g. `1e-3`–`1e-2`),
+Armijo within the backtracking cap.  Typical mitigations: slightly **larger**
+`rdmft_line_search_c1` (e.g. `1e-3`–`1e-2`),
 more `rdmft_occ_maxiter`, or `rdmft_occ_optimizer sd`.  For stubborn cases switch
 to `rdmft_constraint augmented_lagrangian`.  If failures persist with plausible
 inputs, run `rdmft_grad_check 1` to verify \(\partial E/\partial n\) against

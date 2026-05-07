@@ -173,7 +173,7 @@ struct PGRunner
 
             // Armijo backtracking with projection.
             const std::vector<double> occ_old = occ;
-            double alpha = config.line_search_alpha_init;
+            double alpha = RDMFT_DEFAULT_LS_ALPHA_INIT;
             bool success = false;
             std::vector<double> occ_trial;
             const double proj_tol = 1e-6;
@@ -217,7 +217,7 @@ struct PGRunner
                 {
                     // Mirror solver fallback: CG-only projected SD step and optimizer reset.
                     for (int i = 0; i < prob.nb; ++i)
-                        occ[i] -= config.line_search_alpha_init * grad[i];
+                        occ[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad[i];
                     constraint.project(occ);
                 }
                 opt.init(prob.nb);
@@ -295,7 +295,7 @@ struct ASRunner
             }
 
             const std::vector<double> occ_old = occ;
-            double alpha = config.line_search_alpha_init;
+            double alpha = RDMFT_DEFAULT_LS_ALPHA_INIT;
             bool success = false;
             std::vector<double> occ_trial;
             const double proj_tol = 1e-6;
@@ -337,7 +337,7 @@ struct ASRunner
             {
                 occ = occ_old;
                 for (int i = 0; i < prob.nb; ++i)
-                    occ[i] -= config.line_search_alpha_init * grad_mod[i];
+                    occ[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad_mod[i];
                 for (auto& n : occ) n = std::max(0.0, std::min(1.0, n));
                 constraint.project(occ);
                 opt.init(prob.nb);
@@ -451,7 +451,6 @@ TEST_F(PGOptimizerTest, LBFGS_converges_4band)
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::LBFGS;
     cfg.lbfgs_memory = 5;
-    cfg.line_search_alpha_init = 1.0;
     cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
@@ -517,7 +516,6 @@ TEST_F(PGOptimizerTest, energy_is_monotone_nonincreasing)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    cfg.line_search_alpha_init = 1.0;
     cfg.rdmft_occ_tol = 1e-10;
 
     PGRunner runner{prob, cfg};
@@ -536,7 +534,6 @@ TEST_F(PGOptimizerTest, CG_line_search_failure_uses_sd_fallback)
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::ConjugateGradient;
-    cfg.line_search_alpha_init = 0.2;
     cfg.line_search_max_iter = 0; // force line-search failure path
     cfg.rdmft_occ_tol = 1e-12;
 
@@ -551,7 +548,7 @@ TEST_F(PGOptimizerTest, CG_line_search_failure_uses_sd_fallback)
     auto grad = prob.gradient(occ_before);
     auto occ_expected = occ_before;
     for (int i = 0; i < prob.nb; ++i)
-        occ_expected[i] -= cfg.line_search_alpha_init * grad[i];
+        occ_expected[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad[i];
     constraint.project(occ_expected);
 
     for (int i = 0; i < prob.nb; ++i)
@@ -618,7 +615,6 @@ TEST_F(ASOptimizerTest, LBFGS_converges_4band)
     RDMFTConfig cfg;
     cfg.occ_optimizer = OptimizerType::LBFGS;
     cfg.lbfgs_memory = 5;
-    cfg.line_search_alpha_init = 1.0;
     cfg.rdmft_occ_tol = 1e-10;
 
     ASRunner runner{prob, cfg};

@@ -93,9 +93,22 @@ enum class BBStepMode
 /// Initial trial-step policy for occupation Armijo line search.
 enum class LineSearchInitStep
 {
-    FixedOne,          // alpha0 = line_search_alpha_init (INPUT rdmft_alpha_step)
-    BarzilaiBorwein,   // alpha0 from BB estimate (fallback to line_search_alpha_init)
+    Fixed,          // alpha0 = occ_ls_stepsize (INPUT rdmft_occ_ls_stepsize)
+    BarzilaiBorwein,   // alpha0 from BB estimate (fallback to occ_ls_stepsize)
     Quadratic          // alpha0 from previous-step quadratic model (fallback when unavailable)
+};
+
+/// Default initial Armijo trial step and BB/quadratic fallback scale (no INPUT keyword).
+constexpr double RDMFT_DEFAULT_LS_ALPHA_INIT = 1.0;
+
+/// Line-search family for occupation/orbital inner iterations (INPUT `rdmft_occ_ls_type`,
+/// `rdmft_orb_ls_type`). `Auto` selects Armijo backtracking; use `sw` / `wolfe` for Wolfe.
+enum class RdmftLineSearchPreset
+{
+    Auto,
+    Armijo,
+    StrongWolfe,
+    WeakWolfe
 };
 
 /// Selects which occupation-number weighting is applied by occNum_func /
@@ -168,16 +181,20 @@ struct RDMFTConfig
     OccParamType occ_param = OccParamType::CosineSq;
     ConstraintMethod constraint_method = ConstraintMethod::AugmentedLagrangian;
 
-    /// ALM occupation inner: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
+    /// Occupation optimiser (line search defaults to Armijo unless `rdmft_occ_ls_type` overrides).
     OptimizerType occ_optimizer = OptimizerType::ConjugateGradient;
-    /// Alternating orbital inner: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
+    /// Orbital optimiser (line search defaults to Armijo unless `rdmft_orb_ls_type` overrides).
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this
     /// type to the packed gradient (dE/dp, Riemannian dE/dC).
-    /// Joint line search: Strong Wolfe for CG, weak Wolfe for LBFGS, Armijo otherwise.
+    /// Joint strategy uses Armijo backtracking on the packed (occ, orb) vector.
     OptimizerType joint_optimizer = OptimizerType::LBFGS;
+    /// Occupation inner: `auto` / `armijo` → Armijo; `sw` / `wolfe` → Wolfe families.
+    RdmftLineSearchPreset occ_ls_preset = RdmftLineSearchPreset::Auto;
+    /// Orbital inner: same convention as `occ_ls_preset`.
+    RdmftLineSearchPreset orb_ls_preset = RdmftLineSearchPreset::Auto;
 
     SolverStrategy strategy = SolverStrategy::Alternating;
 
@@ -186,7 +203,22 @@ struct RDMFTConfig
     int outer_maxiter = 200;
     /// Inner iterations for optimize_orbitals (fixed occupations).
     int orb_maxiter = 50;
-    /// Inner iterations for optimize_occupations (fixed orbitals).
+    /// Orbital SD only: one line-search trial at `orb_ls_stepsize` (INPUT
+    /// `rdmft_orb_ls_stepsize`) with Armijo acceptance; no rho backtracking. Ignored
+    /// for cg / lbfgs / adam.
+    bool orb_ls_fixed_step = false;
+    /// Orbital line search: initial trial α₀ for sd/cg/lbfgs (Adam uses 1 internally). Also the sole trial when
+    /// `orb_ls_fixed_step` (INPUT `rdmft_orb_ls_fixed_step`) is true with sd.
+    double orb_ls_stepsize = 1.0;
+    /// Occupation SD only (ALM Armijo, PG monotone, AS monotone): one trial at
+    /// `occ_ls_stepsize` with the same acceptance as the usual monotone path; no
+    /// backtracking. Ignored for non-SD optimisers or Wolfe line searches.
+    bool occ_ls_fixed_step = false;
+    /// First trial α₀ when `occ_line_search_init_step` is Fixed (`rdmft_occ_ls_init_step` fixed); also used for
+    /// `occ_ls_fixed_step` single-trial mode. Default 1.0.
+    double occ_ls_stepsize = 1.0;
+    /// Inner iterations for optimize_occupations (fixed orbitals). 0 = skip occupation
+    /// optimization each outer cycle (alternating strategy only).
     int occ_maxiter = 50;
     /// Alternating / joint outer: when >0, require |dE| < this between outer iters
     /// **and** occupation+orbital inner `converged` flags. When <=0, outer stops on inner flags only
@@ -205,7 +237,7 @@ struct RDMFTConfig
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-8;
     /// PG: ||g_proj||_inf < this at post-step (g_proj = (n - P(n - τ∇E))/τ; τ from occupation line search:
-    /// initial trial α₀ pre-step, accepted Armijo α post-step, or line_search_alpha_init when τ is invalid).
+    /// initial trial α₀ pre-step, accepted Armijo α post-step, or RDMFT_DEFAULT_LS_ALPHA_INIT when τ is invalid).
     /// Also used for ALM first-inner gradient norm, active set, joint, and other checks as in the solver.
     double occ_grad_tol = 1e-6;
     /// HF-only occupation entropy prefactor γ (binary entropy); 0 disables
@@ -216,7 +248,6 @@ struct RDMFTConfig
     double aug_lag_mu_max = 1e6;
     double aug_lag_lambda_init = 0.0;
 
-    double line_search_alpha_init = 1.0;
     /// PG with occupation optimiser CG: cap the occupation line-search initial trial
     ///   α₀ = min(seed, cap)  where seed comes from rdmft_occ_ls_init_step / BB / quad.
     /// Set <= 0 to disable capping (previous behaviour).
@@ -249,7 +280,7 @@ struct RDMFTConfig
     /// When enabled, the first trial α uses BB (spectral ratio ||x||/||g|| when
     /// no prior step exists, else BB1/BB2 per alm_bb_mode), clamped to
     /// [alm_bb_alpha_min, alm_bb_alpha_max], with fallback to
-    /// line_search_alpha_init when the estimate is unusable.
+    /// RDMFT_DEFAULT_LS_ALPHA_INIT when the estimate is unusable.
     bool alm_bb_enabled = true;
     BBStepMode alm_bb_mode = BBStepMode::Alternate;
     double alm_bb_alpha_min = 1e-8;

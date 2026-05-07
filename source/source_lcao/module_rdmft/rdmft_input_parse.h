@@ -74,6 +74,45 @@ inline OptimizerType parse_optimizer_input_or_quit(const std::string& s_in,
     ModuleBase::WARNING_QUIT(file_tag, msg);
 }
 
+/// Parse `rdmft_occ_ls_type` / `rdmft_orb_ls_type` keywords.
+inline RdmftLineSearchPreset parse_line_search_preset_or_quit(const std::string& s_in,
+                                                              const char* input_keyword,
+                                                              const char* file_tag)
+{
+    const char* const ws = " \t\n\r\f\v";
+    const auto first = s_in.find_first_not_of(ws);
+    if (first == std::string::npos)
+    {
+        return RdmftLineSearchPreset::Auto;
+    }
+    const auto last = s_in.find_last_not_of(ws);
+    std::string s = s_in.substr(first, last - first + 1);
+    for (char& c : s)
+    {
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (s == "auto" || s == "default")
+    {
+        return RdmftLineSearchPreset::Auto;
+    }
+    if (s == "armijo" || s == "backtrack" || s == "bt")
+    {
+        return RdmftLineSearchPreset::Armijo;
+    }
+    if (s == "sw" || s == "strong" || s == "strong_wolfe" || s == "wolfe_strong")
+    {
+        return RdmftLineSearchPreset::StrongWolfe;
+    }
+    if (s == "wolfe" || s == "weak" || s == "weak_wolfe" || s == "ww" || s == "wolfe_weak")
+    {
+        return RdmftLineSearchPreset::WeakWolfe;
+    }
+
+    const std::string msg = std::string(input_keyword) + " has invalid value \"" + s_in
+                            + "\". Allowed: auto, armijo, sw (strong Wolfe), wolfe (weak Wolfe).";
+    ModuleBase::WARNING_QUIT(file_tag, msg);
+}
+
 } // namespace rdmft
 
 #endif // RDMFT_INPUT_PARSE_H

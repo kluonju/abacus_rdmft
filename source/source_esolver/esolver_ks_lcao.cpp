@@ -578,8 +578,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
-        // Non-positive occ_maxiter would run zero PG/ALM/AS inner iterations; clamp to 1.
-        rdmft_config.occ_maxiter = std::max(1, inp.rdmft_occ_maxiter);
+        // occ_maxiter == 0 skips occupation optimization in alternating RDMFT (orbitals-only inner).
+        rdmft_config.occ_maxiter = std::max(0, inp.rdmft_occ_maxiter);
         if (inp.rdmft_occ_init_mode == "perturbed")
             rdmft_config.occ_init_mode = rdmft::OccInitMode::Perturbed;
         else if (inp.rdmft_occ_init_mode == "binary")
@@ -593,17 +593,20 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.energy_tol = inp.rdmft_energy_tol;
         rdmft_config.orb_grad_tol = inp.rdmft_orb_grad_tol;
         rdmft_config.orb_energy_tol = inp.rdmft_orb_energy_tol;
+        rdmft_config.orb_ls_fixed_step = inp.rdmft_orb_ls_fixed_step;
+        rdmft_config.orb_ls_stepsize = inp.rdmft_orb_ls_stepsize;
+        rdmft_config.occ_ls_fixed_step = inp.rdmft_occ_ls_fixed_step;
+        rdmft_config.occ_ls_stepsize = inp.rdmft_occ_ls_stepsize;
         rdmft_config.rdmft_occ_tol = inp.rdmft_occ_tol;
         rdmft_config.occ_energy_tol = inp.rdmft_occ_energy_tol;
         rdmft_config.occ_grad_tol = inp.rdmft_occ_grad_tol;
         rdmft_config.aug_lag_lambda_init = inp.rdmft_alm_lambda_init;
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
-        rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
         rdmft_config.pg_occ_cg_ls_alpha_cap = inp.rdmft_pg_occ_cg_ls_alpha_cap;
         rdmft_config.pg_occ_ls_recovery_alpha = inp.rdmft_pg_occ_ls_recovery_alpha;
         if (inp.rdmft_occ_ls_init_step == "fixed")
-            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::FixedOne;
+            rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::Fixed;
         else if (inp.rdmft_occ_ls_init_step == "quad")
             rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::Quadratic;
         else
@@ -660,6 +663,12 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.orb_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_orb_optimizer,
                                                                           "rdmft_orb_optimizer",
                                                                           "ESolver_KS_LCAO::after_scf");
+        rdmft_config.occ_ls_preset = rdmft::parse_line_search_preset_or_quit(inp.rdmft_occ_ls_type,
+                                                                             "rdmft_occ_ls_type",
+                                                                             "ESolver_KS_LCAO::after_scf");
+        rdmft_config.orb_ls_preset = rdmft::parse_line_search_preset_or_quit(inp.rdmft_orb_ls_type,
+                                                                             "rdmft_orb_ls_type",
+                                                                             "ESolver_KS_LCAO::after_scf");
         rdmft_config.joint_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_joint_optimizer,
                                                                             "rdmft_joint_optimizer",
                                                                             "ESolver_KS_LCAO::after_scf");
