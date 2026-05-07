@@ -889,6 +889,112 @@ double EnergyGradient<TK, TR>::s_inner_product(
 }
 
 template <typename TK, typename TR>
+double EnergyGradient<TK, TR>::stiefel_canonical_inner_product(
+    const psi::Psi<TK>& X_stiefel,
+    const psi::Psi<TK>& U,
+    const psi::Psi<TK>& V)
+{
+    double sum_frob = 0.0;
+    double sum_cross = 0.0;
+    const TK one = TK(1.0);
+    const TK zero = TK(0.0);
+    const char tc = detail::trans_char(TK());
+
+#ifdef __MPI
+    const int nbasis = ParaV_->desc[2];
+    const int nbands = ParaV_->desc_wfc[3];
+    const int nb_local = U.get_nbands();
+    const int nbs_local = U.get_nbasis();
+    const int nrow = para_Eij_.get_row_size();
+    const int ncol = para_Eij_.get_col_size();
+    const int eij_nloc = nrow * ncol;
+    const std::int64_t sc_alloc
+        = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
+    const std::int64_t eij_alloc = std::max<std::int64_t>(static_cast<std::int64_t>(eij_nloc), 1);
+    std::vector<TK> x_dummy(1, TK(0));
+    std::vector<TK> u_dummy(1, TK(0));
+    std::vector<TK> v_dummy(1, TK(0));
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* Xk = psi_k_ptr_or_dummy(X_stiefel, ik, x_dummy);
+        const TK* Uk = psi_k_ptr_or_dummy(U, ik, u_dummy);
+        const TK* Vk = psi_k_ptr_or_dummy(V, ik, v_dummy);
+        const int npsi = nb_local * nbs_local;
+        for (int i = 0; i < npsi; ++i)
+        {
+            sum_frob += real_of_conj_prod(Uk[i], Vk[i]);
+        }
+
+        std::vector<TK> SC(static_cast<size_t>(sc_alloc), TK(0));
+        for (int i = 0; i < npsi; ++i)
+        {
+            SC[i] = Xk[i];
+        }
+        std::vector<TK> XU(static_cast<size_t>(eij_alloc), TK(0));
+        std::vector<TK> XV(static_cast<size_t>(eij_alloc), TK(0));
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, SC.data(), 1, 1, ParaV_->desc_wfc,
+            Uk, 1, 1, ParaV_->desc_wfc,
+            zero, XU.data(), 1, 1, para_Eij_.desc);
+        detail::pgemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, SC.data(), 1, 1, ParaV_->desc_wfc,
+            Vk, 1, 1, ParaV_->desc_wfc,
+            zero, XV.data(), 1, 1, para_Eij_.desc);
+
+        double local_cross_k = 0.0;
+        for (int j = 0; j < ncol; ++j)
+        {
+            for (int i = 0; i < nrow; ++i)
+            {
+                local_cross_k += real_of_conj_prod(XU[i + j * nrow], XV[i + j * nrow]);
+            }
+        }
+        Parallel_Reduce::reduce_all(local_cross_k);
+        sum_cross += local_cross_k;
+    }
+    Parallel_Reduce::reduce_all(sum_frob);
+#else
+    const int nbasis = U.get_nbasis();
+    const int nbands = U.get_nbands();
+    std::vector<TK> x_dummy(1, TK(0));
+    std::vector<TK> u_dummy(1, TK(0));
+    std::vector<TK> v_dummy(1, TK(0));
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const TK* Xk = psi_k_ptr_or_dummy(X_stiefel, ik, x_dummy);
+        const TK* Uk = psi_k_ptr_or_dummy(U, ik, u_dummy);
+        const TK* Vk = psi_k_ptr_or_dummy(V, ik, v_dummy);
+        const int ntot = nbasis * nbands;
+        for (int i = 0; i < ntot; ++i)
+        {
+            sum_frob += real_of_conj_prod(Uk[i], Vk[i]);
+        }
+        std::vector<TK> SC(static_cast<size_t>(ntot), TK(0));
+        for (int i = 0; i < ntot; ++i)
+        {
+            SC[i] = Xk[i];
+        }
+        std::vector<TK> XU(static_cast<size_t>(nbands * nbands), TK(0));
+        std::vector<TK> XV(static_cast<size_t>(nbands * nbands), TK(0));
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, SC.data(), nbasis, Uk, nbasis, zero, XU.data(), nbands);
+        detail::gemm_wrapper(tc, 'N', nbands, nbands, nbasis,
+            one, SC.data(), nbasis, Vk, nbasis, zero, XV.data(), nbands);
+        for (int j = 0; j < nbands; ++j)
+        {
+            for (int i = 0; i < nbands; ++i)
+            {
+                sum_cross += real_of_conj_prod(XU[i + j * nbands], XV[i + j * nbands]);
+            }
+        }
+    }
+#endif
+    return sum_frob - 0.5 * sum_cross;
+}
+
+template <typename TK, typename TR>
 void EnergyGradient<TK, TR>::stiefel_gram_residual_frobenius_per_k(
     const psi::Psi<TK>& wfc,
     std::vector<double>& frob_per_ik)
@@ -1579,10 +1685,10 @@ double EnergyGradient<TK, TR>::compute(
             }
         }
 
-        // Orbital gradient w.r.t. LCAO coefficients (before X transform):
-        //   TK = std::complex<...>: Wirtinger ∂E/∂C* as wk * [n * (H_one + V_H) * C + g(n) * H_exx * C].
-        //   TK = double (real gamma-only LCAO): for n * C^T H C with symmetric H,
-        //   ∂E/∂C_μ = 2 wk n (H C)_μ (same H·C factors); apply the factor below.
+        // Orbital gradient w.r.t. LCAO coefficients (before X transform), as the
+        // Riesz representative for the ambient pairing Re ∑ conj(δC) · G (real TK)
+        // / Re ∑ conj(δC_μ) G_μ (complex TK). For E_k ∝ n ⟨C|H|C⟩, ∂E/∂C* brings
+        // a factor 2 relative to n H C alone; gamma-only real LCAO matches ∂E/∂C = 2 n H C.
         // Omit terms when n=0 or g(n)=0 so empty / inactive orbitals do not contribute.
         for (int ib_local = 0; ib_local < nb_local; ++ib_local)
         {
@@ -1623,7 +1729,7 @@ double EnergyGradient<TK, TR>::compute(
                         acc += TK(gn) * hx_ptr[mu];
                     }
                 }
-                grad_ptr[mu] = wk * acc;
+                grad_ptr[mu] = TK(2.0) * wk * acc;
             }
         }
     }

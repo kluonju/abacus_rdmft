@@ -72,7 +72,8 @@ class EnergyGradient
     /// occ_flat: occupation numbers [nk * nbands], flattened
     /// wfc: natural orbital coefficients
     /// grad_occ: [out] dE/dn for each (ik, ib)
-    /// grad_wfc: [out] Wirtinger dE/dC* (complex) or ordinary dE/dC (real TK, ×2 vs band formula)
+    /// grad_wfc: [out] Riesz gradient for Re⟨·,·⟩ pairing (complex: conjugate-Wirtinger
+    /// style; real gamma-only: includes the usual factor 2 from ∂⟨C|H|C⟩/∂C)
     /// Returns total energy
     double compute(const std::vector<double>& occ_flat,
                    const psi::Psi<TK>& wfc,
@@ -165,10 +166,19 @@ class EnergyGradient
     /// Rebuilt lazily the first time it is requested per ion step.
     const TK* get_SK(int ik);
 
-    /// Compute the Euclidean inner product Re Tr(X^H Y) summed over k-points.
-    /// In the X-variable formulation this is the canonical metric used by the
-    /// solver. Performs an MPI Allreduce internally.
+    /// Ambient Frobenius pairing ∑_k Re Tr(X_k^H Y_k) on X-space coefficients
+    /// (not the Stiefel canonical metric). Performs an MPI Allreduce internally.
     double s_inner_product(const psi::Psi<TK>& X, const psi::Psi<TK>& Y);
+
+    /// Stiefel **canonical** metric (Absil et al.; homogeneous-space / quotient picture)
+    /// on ∏_k St(n_bands, n_basis) in X-space, X_k^H X_k = I:
+    ///   ⟨U,V⟩_can = ∑_k [ Re Tr(U_k^H V_k) − ½ Re Tr(U_k^H X_k X_k^H V_k) ].
+    /// For tangents at X, this matches Re Tr(U^H (I − ½ X X^H) V) summed over k.
+    /// MPI Allreduce per k for the Gram cross-term, then a global reduce on the
+    /// coefficient Frobenius part.
+    double stiefel_canonical_inner_product(const psi::Psi<TK>& X_stiefel,
+                                           const psi::Psi<TK>& U,
+                                           const psi::Psi<TK>& V);
 
     /// Per k-point Stiefel Gram residual ||X_k^H X_k - I||_F.
     /// frob_per_ik is resized to nk_.

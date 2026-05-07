@@ -862,9 +862,6 @@ void print_rdmft_optimization_summary_joint(const int outer_iters,
 } // namespace
 
 // Helper to get |x|^2 for both real and complex types
-inline double abs2(double x) { return x * x; }
-inline double abs2(std::complex<double> x) { return std::norm(x); }
-
 // ------------------------------------------------------------------------
 // Flatten / unflatten helpers for the Stiefel-manifold orbital optimiser.
 // To reuse the Euclidean lbfgs / Adam optimiser working on a flat
@@ -1719,27 +1716,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
             flat_to_psi(orb_dir_flat, orb_dir);
         }
 
-        // Orbital gradient norm (Riemannian) for diagnostics and for the
-        // steepest-descent fallback below.
-        // Use Euclidean (plain) norm of the projected gradient G_R
-        double orb_gnorm2 = 0.0;
-        {
-            const int nk_local = grad_wfc.get_nk();
-            const int nb_local = grad_wfc.get_nbands();
-            const int nbs_local = grad_wfc.get_nbasis();
-            for (int ik = 0; ik < nk_local; ++ik)
-            {
-                const int nelem = nb_local * nbs_local;
-                if (nelem == 0)
-                {
-                    continue;
-                }
-                const TK* gk = &grad_wfc(ik, 0, 0);
-                for (int i = 0; i < nelem; ++i)
-                    orb_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
-            }
-            Parallel_Reduce::reduce_all(orb_gnorm2);
-        }
+        // ‖G_R‖_can^2 for Stiefel canonical metric at current X = wfc.
+        const double orb_gnorm2
+            = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, grad_wfc);
 
         // Project the orbital search direction back onto the tangent space
         // at C. The optimiser's Euclidean update (especially for lbfgs /
@@ -1753,7 +1732,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         double occ_dd = 0.0;
         for (int i = 0; i < n_occ_params; ++i)
             occ_dd += occ_dir[i] * grad_params[i];
-        double orb_dd = energy_grad_->s_inner_product(grad_wfc, orb_dir);
+        double orb_dd = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, orb_dir);
         double dd_total = occ_dd + orb_dd;
 
         // Descent safeguard: if the optimiser-produced direction is not
@@ -1894,7 +1873,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 double occ_dd_t = 0.0;
                 for (int i = 0; i < n_occ_params; ++i)
                     occ_dd_t += occ_dir[i] * (*grad_params_out)[i];
-                const double orb_dd_t = energy_grad_->s_inner_product(*grad_wfc_out, orb_dir);
+                const double orb_dd_t
+                    = energy_grad_->stiefel_canonical_inner_product(wfc, *grad_wfc_out, orb_dir);
                 *dd_out = occ_dd_t + orb_dd_t;
                 return E_val;
             }
@@ -3824,27 +3804,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         //     G_R = G - X sym(X^H G)
         energy_grad_->project_orbital_gradient(wfc, grad_wfc);
 
-        // Compute ||G_R||^2 in the appropriate metric (S-weighted or
-        // Euclidean when in X-space) for descent / CG consistency.
-        // Use Euclidean (plain) norm of the projected gradient G_R
-        double gnorm2 = 0.0;
-        {
-            const int nk_local = grad_wfc.get_nk();
-            const int nb_local = grad_wfc.get_nbands();
-            const int nbs_local = grad_wfc.get_nbasis();
-            for (int ik = 0; ik < nk_local; ++ik)
-            {
-                const int nelem = nb_local * nbs_local;
-                if (nelem == 0)
-                {
-                    continue;
-                }
-                const TK* gk = &grad_wfc(ik, 0, 0);
-                for (int i = 0; i < nelem; ++i)
-                    gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
-            }
-            Parallel_Reduce::reduce_all(gnorm2);
-        }
+        // ‖G_R‖_can^2 for CG/Powell (same pairing as line-search slopes).
+        const double gnorm2
+            = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, grad_wfc);
         result.grad_norm = std::sqrt(std::max(0.0, gnorm2));
 
         const bool orb_e_enabled = (config_.orb_energy_tol > 0.0);
@@ -3926,8 +3888,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             // Unflatten the direction back into a psi::Psi and project it
             // onto the current tangent space (vector transport by
             // projection).  This is standard for Riemannian lbfgs and is
-            // numerically stable here because the flattened inner product
-            // matches the Euclidean ambient metric.
+            // numerically stable here because the flattened vector uses the
+            // ambient coefficient metric (LBFGS/Adam); descent is checked with
+            // the Stiefel canonical pairing on the manifold.
             flat_to_psi(dir_flat, dir);
             energy_grad_->project_orbital_gradient(wfc, dir);
 
@@ -3935,7 +3898,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             // can happen in the first few iterations of lbfgs before the
             // Hessian approximation has been built up, or when an Adam
             // momentum term points uphill along the projection).
-            double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
+            double dd_check = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, dir);
             if (dd_check >= 0.0)
             {
                 for (int ik = 0; ik < nk; ++ik)
@@ -3956,7 +3919,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             // too large, the gradients have lost orthogonality and CG memory is
             // unreliable.
             energy_grad_->project_orbital_gradient(wfc, prev_grad);
-            double prev_grad_dot = energy_grad_->s_inner_product(grad_wfc, prev_grad);
+            double prev_grad_dot
+                = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, prev_grad);
             const double powell_thr = 0.1;
             if (std::abs(prev_grad_dot) <= powell_thr * gnorm2)
             {
@@ -3974,7 +3938,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                 energy_grad_->project_orbital_gradient(wfc, dir);
 
                 // Check descent condition  <grad, dir> < 0.
-                double dd_check = energy_grad_->s_inner_product(grad_wfc, dir);
+                double dd_check = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, dir);
                 if (dd_check < 0.0)
                 {
                     restart = false;
@@ -3991,7 +3955,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         }
 
         // Directional derivative  dd = <grad, dir>  (must be negative)
-        double dd = energy_grad_->s_inner_product(grad_wfc, dir);
+        double dd = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, dir);
 
         // ---- Line search along the retracted direction ----
         // For step size alpha, we want  wfc_new = R_wfc(alpha * dir).
@@ -4074,7 +4038,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                                                              grad_occ_trial,
                                                              grad_wfc_trial);
                 energy_grad_->project_orbital_gradient(wfc, grad_wfc_trial);
-                const double dd_trial = energy_grad_->s_inner_product(grad_wfc_trial, dir);
+                const double dd_trial
+                    = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc_trial, dir);
                 return {E_trial, dd_trial};
             };
 
@@ -4251,25 +4216,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         energy_grad_->compute(const_cast<std::vector<double>&>(occ_flat), wfc, grad_occ_new, grad_wfc_new);
         energy_grad_->project_orbital_gradient(wfc, grad_wfc_new);
 
-        double post_gnorm2 = 0.0;
-        {
-            const int nk_pg = grad_wfc_new.get_nk();
-            const int nb_pg = grad_wfc_new.get_nbands();
-            const int nbs_pg = grad_wfc_new.get_nbasis();
-            for (int ik = 0; ik < nk_pg; ++ik)
-            {
-                const int nelem = nb_pg * nbs_pg;
-                if (nelem == 0)
-                {
-                    continue;
-                }
-                const TK* gk = &grad_wfc_new(ik, 0, 0);
-                for (int i = 0; i < nelem; ++i)
-                    post_gnorm2 += std::real(std::conj(gk[i]) * gk[i]);
-            }
-            Parallel_Reduce::reduce_all(post_gnorm2);
-        }
-        result.grad_norm = std::sqrt(std::max(0.0, post_gnorm2));
+        result.grad_norm = orb_grad_norm(wfc, grad_wfc_new);
 
         if (use_lbfgs)
         {
@@ -4451,7 +4398,8 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
         // difference (E(t)-E0)/t, which matches the Armijo first-order model at t=0+.
         energy_grad_->project_orbital_gradient(const_cast<psi::Psi<TK>&>(wfc), grad_wfc);
         psi::Psi<TK> G_dir(grad_wfc);
-        const double gnorm2 = energy_grad_->s_inner_product(grad_wfc, grad_wfc);
+        const double gnorm2
+            = energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, grad_wfc);
         const double analytic_dd = -gnorm2;
 
         auto f_at = [&](double step) -> double {
@@ -4471,7 +4419,7 @@ bool RDMFTSolver<TK, TR>::check_gradient_consistency(
         GlobalV::ofs_running << std::fixed << std::setprecision(8)
             << "  orb dir deriv: analytic=" << analytic_dd
             << "  fd_fwd=" << fd
-            << "  ||G_R||^2=" << gnorm2
+            << "  ||G_R||_can^2=" << gnorm2
             << "  rel_err=" << rel_err
             << (pass ? "  PASS" : "  FAIL") << std::endl;
 
@@ -4492,14 +4440,11 @@ double RDMFTSolver<TK, TR>::occ_grad_norm(const std::vector<double>& grad) const
 }
 
 template <typename TK, typename TR>
-double RDMFTSolver<TK, TR>::orb_grad_norm(const psi::Psi<TK>& rgrad) const
+double RDMFTSolver<TK, TR>::orb_grad_norm(const psi::Psi<TK>& wfc_X, const psi::Psi<TK>& rgrad) const
 {
-    double norm = 0.0;
-    for (int ik = 0; ik < rgrad.get_nk(); ++ik)
-        for (int ib = 0; ib < rgrad.get_nbands(); ++ib)
-            for (int mu = 0; mu < rgrad.get_nbasis(); ++mu)
-                norm += abs2(rgrad(ik, ib, mu));
-    return std::sqrt(norm);
+    assert(energy_grad_ != nullptr);
+    const double g2 = energy_grad_->stiefel_canonical_inner_product(wfc_X, rgrad, rgrad);
+    return std::sqrt(std::max(0.0, g2));
 }
 
 // Explicit template instantiations

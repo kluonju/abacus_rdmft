@@ -89,8 +89,10 @@ class RDMFTSolver
     /// Compute norm of the occupation gradient
     double occ_grad_norm(const std::vector<double>& grad) const;
 
-    /// Compute norm of the orbital Riemannian gradient
-    double orb_grad_norm(const psi::Psi<TK>& rgrad) const;
+    /// ‖G‖_can = sqrt(⟨G,G⟩_can) at Stiefel point `wfc_X` (see
+    /// `EnergyGradient::stiefel_canonical_inner_product`). Used for
+    /// rdmft_orb_grad_tol and logging.
+    double orb_grad_norm(const psi::Psi<TK>& wfc_X, const psi::Psi<TK>& rgrad) const;
 
     RDMFTConfig config_;
     EnergyGradient<TK, TR>* energy_grad_ = nullptr;
