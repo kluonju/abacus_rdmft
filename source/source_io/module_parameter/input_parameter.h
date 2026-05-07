@@ -698,6 +698,8 @@ struct Input_para
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     double rdmft_alpha_step = 1.0;                 // initial occupation/orbital line-search step length
+    /// PG + occ CG: cap occupation line-search initial trial α₀; <=0 disables
+    double rdmft_pg_occ_cg_ls_alpha_cap = 1e-3;
     std::string rdmft_occ_ls_init_step = "bb";     // occupation line-search alpha0 policy: fixed, bb, quad
     /// ALM Armijo: use quadratic/cubic polynomial step (else pure geometric rho shrink)
     bool rdmft_line_search_polynomial = true;

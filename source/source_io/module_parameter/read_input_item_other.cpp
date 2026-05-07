@@ -1182,9 +1182,10 @@ void ReadInput::item_others()
         item.type = "Real";
         item.description = "Projected-gradient occupation inner loop converges when ||g_proj||_inf = ||n - P(n - "
                            "τ∇E)||_inf/τ is below this. For PG, τ is tied to the occupation line search: the "
-                           "initial trial step α₀ (rdmft_occ_ls_init_step / BB / quad) at the pre-step map, and "
-                           "the accepted Armijo step after a successful line search (or rdmft_alpha_step after "
-                           "SD fallback) at the post-step map—see logs. Also used for ALM first-inner ||dL/dp||, "
+                           "initial trial step α₀ (rdmft_occ_ls_init_step / BB / quad, capped for occ CG by "
+                           "rdmft_pg_occ_cg_ls_alpha_cap when > 0) at the pre-step map, and the accepted line-search "
+                           "step after a successful search (or the same α₀ seed if the line search fails without a "
+                           "step) at the post-step map—see logs. Also used for ALM first-inner ||dL/dp||, "
                            "active set, joint, and other gradient checks as in the solver.";
         item.default_value = "1e-6";
         item.unit = "";
@@ -1340,13 +1341,37 @@ void ReadInput::item_others()
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Initial trial step length for the Armijo backtracking line search in RDMFT. For "
-                           "projected_gradient occupations it also supplies the SD-fallback step and the fallback "
-                           "scale in the Bertsekas map when the line-search initial α₀ is invalid; otherwise PG "
-                           "Bertsekas τ follows the occupation line search (see rdmft_occ_grad_tol).";
+                           "projected_gradient occupations it supplies the fallback scale in the Bertsekas map "
+                           "when the line-search initial α₀ is invalid; otherwise PG Bertsekas τ follows the "
+                           "occupation line search (see rdmft_occ_grad_tol). Orbitals use this for non–QN optimisers.";
         item.default_value = "1.0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_alpha_step);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_pg_occ_cg_ls_alpha_cap");
+        item.annotation = "PG occupation CG: cap initial line-search trial alpha0";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "When rdmft_constraint is projected_gradient and rdmft_occ_optimizer is cg, the "
+                           "occupation line-search first trial satisfies alpha0 = min(seed, this cap), where "
+                           "seed comes from rdmft_occ_ls_init_step (fixed/bb/quad). Set <= 0 to disable capping.";
+        item.default_value = "1e-3";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_pg_occ_cg_ls_alpha_cap);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const double c = para.input.rdmft_pg_occ_cg_ls_alpha_cap;
+                if (std::isfinite(c) == false)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_pg_occ_cg_ls_alpha_cap must be finite");
+                }
+            }
+        };
         this->add_item(item);
     }
     {

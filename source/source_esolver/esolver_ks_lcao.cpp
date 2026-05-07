@@ -600,6 +600,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.aug_lag_mu_init = inp.rdmft_alm_mu_init;
         rdmft_config.aug_lag_mu_factor = inp.rdmft_alm_mu_factor;
         rdmft_config.line_search_alpha_init = inp.rdmft_alpha_step;
+        rdmft_config.pg_occ_cg_ls_alpha_cap = inp.rdmft_pg_occ_cg_ls_alpha_cap;
         if (inp.rdmft_occ_ls_init_step == "fixed")
             rdmft_config.occ_line_search_init_step = rdmft::LineSearchInitStep::FixedOne;
         else if (inp.rdmft_occ_ls_init_step == "quad")

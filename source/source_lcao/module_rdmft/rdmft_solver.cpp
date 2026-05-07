@@ -663,6 +663,8 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         std::vector<std::string> keys;
         std::vector<std::string> vals;
         add_kv(keys, vals, "rdmft_alpha_step", as_sci(cfg.line_search_alpha_init));
+        add_kv(keys, vals, "rdmft_pg_occ_cg_ls_alpha_cap",
+               cfg.pg_occ_cg_ls_alpha_cap > 0.0 ? as_sci(cfg.pg_occ_cg_ls_alpha_cap) : std::string("off"));
         add_kv(keys, vals, "rdmft_occ_ls_init_step", occ_ls_init_to_string(cfg.occ_line_search_init_step));
         add_kv(keys, vals, "alm_bb_enabled", cfg.alm_bb_enabled ? "true" : "false");
         add_kv(keys, vals, "alm_bb_mode", bb_mode_to_string(cfg.alm_bb_mode));
@@ -2452,7 +2454,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             // Project() clips to [0,1] and rescales to conserve N_e.
             // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ;
             // τ = occupation line-search scale: α0 pre-step, accepted alpha
-            // post-step, rdmft_alpha_step on SD fallback).
+            // post-step, or line_search_alpha_init when τ from α is invalid).
             EuclideanOptimizer pg_opt(config_.occ_optimizer, config_);
             pg_opt.init(static_cast<int>(occ_flat.size()));
             GlobalV::ofs_running << "      PG: occ_optimizer=" << optimizer_to_string(config_.occ_optimizer)
@@ -2496,8 +2498,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 have_E_prev = true;
 
                 // Bertsekas τ matches line-search scale: same alpha0 as first monotone trial.
-                const double alpha_pg0 = choose_occ_ls_alpha0(
+                double alpha_pg0 = choose_occ_ls_alpha0(
                     config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
+                if (config_.occ_optimizer == OptimizerType::ConjugateGradient && config_.pg_occ_cg_ls_alpha_cap > 0.0)
+                {
+                    alpha_pg0 = std::min(alpha_pg0, config_.pg_occ_cg_ls_alpha_cap);
+                }
                 const double tau_bert_pre
                     = pg_bertsekas_tau_from_line_search(alpha_pg0, config_.line_search_alpha_init);
 
@@ -2719,14 +2725,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 else
                 {
-                    // Same recovery as active_set: one projected steepest step, then
-                    // reset curvature state (CG/L-BFGS history is unreliable here).
+                    // No SD recovery: keep the pre-step occupations and restart the
+                    // Euclidean optimiser state (CG curvature is unreliable after a failed Wolfe/Armijo).
                     occ_flat = occ_before_step;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                    {
-                        occ_flat[i] -= config_.line_search_alpha_init * grad_occ[i];
-                    }
-                    occ_constraint_->project(occ_flat);
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
                     pg_ls_qhist = {};
@@ -2736,7 +2737,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         pg_nm_Q = 1.0;
                     }
                     GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << ", applied SD fallback and reset optimizer" << std::endl;
+                                         << "; no step taken (SD fallback disabled), optimiser reset"
+                                         << std::endl;
                 }
 
                 // Update the optimizer with the actual step taken.
@@ -2762,7 +2764,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 grad_l2_post = std::sqrt(grad_l2_post);
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, config_.line_search_alpha_init)
-                    : pg_bertsekas_tau_from_line_search(config_.line_search_alpha_init, 1.0);
+                    : pg_bertsekas_tau_from_line_search(alpha_pg0, config_.line_search_alpha_init);
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
