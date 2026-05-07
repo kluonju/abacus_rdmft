@@ -629,6 +629,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.joint_orb_scale = inp.rdmft_joint_orb_scale;
         rdmft_config.print_stiefel_gram = inp.rdmft_print_stiefel_gram;
         rdmft_config.print_evals = inp.rdmft_print_evals;
+        rdmft_config.print_orb_grad_decomp = inp.rdmft_print_orb_grad_decomp;
         rdmft_config.occ_entropy_gamma = inp.rdmft_occ_entropy_gamma;
         if (rdmft_config.xc_type != rdmft::XCFunctionalType::HF)
         {
@@ -700,6 +701,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft::RDMFTSolver<TK, TR> rdmft_new_solver;
         rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons, nelec_meta);
         this->rdmft_eg.set_occ_entropy_gamma(rdmft_config.occ_entropy_gamma);
+        this->rdmft_eg.set_print_orb_grad_decomp(rdmft_config.print_orb_grad_decomp);
 
         // Run the optimization (`rdmft_grad_check` runs inside solve() after X-space setup)
         double etot_rdmft = rdmft_new_solver.solve(occ_flat, *this->psi);

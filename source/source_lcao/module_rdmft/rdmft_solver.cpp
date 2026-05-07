@@ -784,6 +784,7 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
         add_kv(keys, vals, "occ_cg_nonmonotone_eta", as_sci(cfg.occ_cg_nonmonotone_eta));
         add_kv(keys, vals, "rdmft_grad_check", cfg.grad_check ? "true" : "false");
         add_kv(keys, vals, "rdmft_print_evals", cfg.print_evals ? "true" : "false");
+        add_kv(keys, vals, "rdmft_print_orb_grad_decomp", cfg.print_orb_grad_decomp ? "true" : "false");
         emit_rdmft_config_kv_table("Global tolerances and line search", keys, vals);
     }
 
@@ -1333,6 +1334,12 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     psi::Psi<TK>& wfc)
 {
     GlobalV::ofs_running << "\n===== RDMFT Alternating Optimization =====" << std::endl;
+    if (config_.occ_maxiter <= 0)
+    {
+        GlobalV::ofs_running << "  rdmft_occ_maxiter 0: occupation inner loop skipped; n(ik,ib) held fixed at:"
+                             << std::endl;
+        print_occ_table_running(occ_flat, nk_, nbands_);
+    }
     const auto t_alternating_start = std::chrono::steady_clock::now();
 
     double E_prev = 1e30;

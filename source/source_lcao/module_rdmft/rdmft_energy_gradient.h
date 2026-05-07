@@ -62,6 +62,9 @@ class EnergyGradient
     /// HF-only occupation entropy prefactor γ (set from INPUT / RDMFTConfig each solve).
     void set_occ_entropy_gamma(double gamma) { occ_entropy_gamma_ = gamma; }
 
+    /// Log orbital-gradient decomposition when true (INPUT `rdmft_print_orb_grad_decomp`).
+    void set_print_orb_grad_decomp(bool v) { print_orb_grad_decomp_ = v; }
+
     /// Update ion-step quantities (HR for kinetic/local/nonlocal, EXX ions)
     void update_ion(const UnitCell& ucell,
                     const ModulePW::PW_Basis& rho_basis,
@@ -223,6 +226,8 @@ class EnergyGradient
     XCFunctional xc_func_{XCFunctionalType::HF};
     /// HF occupation entropy prefactor; 0 disables (see set_occ_entropy_gamma).
     double occ_entropy_gamma_{0.0};
+    /// When true, `compute` logs ‖G_one‖, ‖G_H‖, ‖G_EXX‖ breakdown (see set_print_orb_grad_decomp).
+    bool print_orb_grad_decomp_{false};
 
     int nk_ = 0;
     int nbands_ = 0;

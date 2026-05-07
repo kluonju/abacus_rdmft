@@ -72,6 +72,7 @@ extern "C" {
 #include <iostream>
 #include <iomanip>
 #include <memory>
+#include <sstream>
 #include <type_traits>
 
 namespace rdmft
@@ -850,6 +851,82 @@ inline TK* psi_k_ptr_or_dummy(psi::Psi<TK>& psi, int ik, std::vector<TK>& dummy)
         dummy[0] = TK(0);
     }
     return dummy.data();
+}
+
+/// ∑_k ‖P_k‖_F^2 = ∑ |P|² in the LCAO coefficient layout (ambient Euclidean on coeffs).
+template <typename TK>
+double ambient_frobenius_norm2_psi(const psi::Psi<TK>& P)
+{
+    double s = 0.0;
+    const int nk = P.get_nk();
+    const int nb = P.get_nbands();
+    const int nbs = P.get_nbasis();
+#ifdef __MPI
+    std::vector<TK> dummy(1);
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        const TK* pk = psi_k_ptr_or_dummy(P, ik, dummy);
+        for (int i = 0; i < nb * nbs; ++i)
+        {
+            s += real_of_conj_prod(pk[i], pk[i]);
+        }
+    }
+    Parallel_Reduce::reduce_all(s);
+#else
+    std::vector<TK> dummy(1);
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        const TK* pk = psi_k_ptr_or_dummy(P, ik, dummy);
+        for (int i = 0; i < nb * nbs; ++i)
+        {
+            s += real_of_conj_prod(pk[i], pk[i]);
+        }
+    }
+#endif
+    return s;
+}
+
+template <typename TK>
+double orb_grad_decomp_residual_frob2(const psi::Psi<TK>& full,
+    const psi::Psi<TK>& g1,
+    const psi::Psi<TK>& gh,
+    const psi::Psi<TK>& gx)
+{
+    double s = 0.0;
+    const int nk = full.get_nk();
+    const int nb = full.get_nbands();
+    const int nbs = full.get_nbasis();
+#ifdef __MPI
+    std::vector<TK> d0(1), d1(1), d2(1), d3(1);
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        const TK* pf = psi_k_ptr_or_dummy(full, ik, d0);
+        const TK* p1 = psi_k_ptr_or_dummy(g1, ik, d1);
+        const TK* ph = psi_k_ptr_or_dummy(gh, ik, d2);
+        const TK* px = psi_k_ptr_or_dummy(gx, ik, d3);
+        for (int i = 0; i < nb * nbs; ++i)
+        {
+            const TK d = pf[i] - (p1[i] + ph[i] + px[i]);
+            s += real_of_conj_prod(d, d);
+        }
+    }
+    Parallel_Reduce::reduce_all(s);
+#else
+    std::vector<TK> d0(1), d1(1), d2(1), d3(1);
+    for (int ik = 0; ik < nk; ++ik)
+    {
+        const TK* pf = psi_k_ptr_or_dummy(full, ik, d0);
+        const TK* p1 = psi_k_ptr_or_dummy(g1, ik, d1);
+        const TK* ph = psi_k_ptr_or_dummy(gh, ik, d2);
+        const TK* px = psi_k_ptr_or_dummy(gx, ik, d3);
+        for (int i = 0; i < nb * nbs; ++i)
+        {
+            const TK d = pf[i] - (p1[i] + ph[i] + px[i]);
+            s += real_of_conj_prod(d, d);
+        }
+    }
+#endif
+    return s;
 }
 
 } // namespace
@@ -1690,6 +1767,22 @@ double EnergyGradient<TK, TR>::compute(
     std::vector<TK> Hpsi_x(static_cast<size_t>(hpsi_alloc), TK(0));
     std::vector<TK> psi_dummy(1, TK(0));
 
+    std::unique_ptr<psi::Psi<TK>> pg_one;
+    std::unique_ptr<psi::Psi<TK>> pg_h;
+    std::unique_ptr<psi::Psi<TK>> pg_x;
+    if (print_orb_grad_decomp_)
+    {
+        pg_one = std::make_unique<psi::Psi<TK>>();
+        pg_one->resize(nk_, nb_local, nbs_local);
+        pg_one->zero_out();
+        pg_h = std::make_unique<psi::Psi<TK>>();
+        pg_h->resize(nk_, nb_local, nbs_local);
+        pg_h->zero_out();
+        pg_x = std::make_unique<psi::Psi<TK>>();
+        pg_x->resize(nk_, nb_local, nbs_local);
+        pg_x->zero_out();
+    }
+
     for (int ik = 0; ik < nk_; ++ik)
     {
         const TK* psi_k = psi_k_ptr_or_dummy(wfc_eval, ik, psi_dummy);
@@ -1810,25 +1903,48 @@ double EnergyGradient<TK, TR>::compute(
             const TK* hh_ptr = &Hpsi_h[ib_local * nbs_local];
             const TK* hx_ptr = &Hpsi_x[ib_local * nbs_local];
 
+            TK* po = nullptr;
+            TK* ph = nullptr;
+            TK* px = nullptr;
+            if (print_orb_grad_decomp_)
+            {
+                po = &(*pg_one)(ik, ib_local, 0);
+                ph = &(*pg_h)(ik, ib_local, 0);
+                px = &(*pg_x)(ik, ib_local, 0);
+            }
+
             for (int mu = 0; mu < nbs_local; ++mu)
             {
                 TK acc = TK(0);
+                TK vone = TK(0);
+                TK vh = TK(0);
+                TK vx = TK(0);
                 if (use_one_hart)
                 {
-                    acc += TK(n) * (hone_ptr[mu] + hh_ptr[mu]);
+                    vone = TK(n) * hone_ptr[mu];
+                    vh = TK(n) * hh_ptr[mu];
+                    acc += vone + vh;
                 }
                 if (use_exx)
                 {
                     if (is_mixed_exx)
                     {
-                        acc += hx_ptr[mu];
+                        vx = hx_ptr[mu];
+                        acc += vx;
                     }
                     else
                     {
-                        acc += TK(gn) * hx_ptr[mu];
+                        vx = TK(gn) * hx_ptr[mu];
+                        acc += vx;
                     }
                 }
                 grad_ptr[mu] = TK(2.0) * wk * acc;
+                if (print_orb_grad_decomp_)
+                {
+                    po[mu] = TK(2.0) * wk * vone;
+                    ph[mu] = TK(2.0) * wk * vh;
+                    px[mu] = TK(2.0) * wk * vx;
+                }
             }
         }
     }
@@ -1855,8 +1971,57 @@ double EnergyGradient<TK, TR>::compute(
     E_ewald_ = pelec_->f_en.ewald_energy;
     E_total_ = E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_;
 
-    // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
-    grad_C_to_X(grad_wfc);
+    if (print_orb_grad_decomp_)
+    {
+        const double res2 = orb_grad_decomp_residual_frob2(grad_wfc, *pg_one, *pg_h, *pg_x);
+        const double nfull_c = ambient_frobenius_norm2_psi(grad_wfc);
+        const double rel = std::sqrt(res2 / std::max(nfull_c, 1e-300));
+        const double n1c = ambient_frobenius_norm2_psi(*pg_one);
+        const double nhc = ambient_frobenius_norm2_psi(*pg_h);
+        const double nxc = ambient_frobenius_norm2_psi(*pg_x);
+        auto sqrtp = [](double x) { return std::sqrt(std::max(0.0, x)); };
+
+        grad_C_to_X(*pg_one);
+        grad_C_to_X(*pg_h);
+        grad_C_to_X(*pg_x);
+
+        const double n1x = ambient_frobenius_norm2_psi(*pg_one);
+        const double nhx = ambient_frobenius_norm2_psi(*pg_h);
+        const double nxx = ambient_frobenius_norm2_psi(*pg_x);
+
+        auto proj_can_norm = [&](const psi::Psi<TK>& Gx) -> double {
+            psi::Psi<TK> t(Gx);
+            project_orbital_gradient(wfc, t);
+            const double g2 = stiefel_canonical_inner_product(wfc, t, t);
+            return sqrtp(g2);
+        };
+        const double p_one = proj_can_norm(*pg_one);
+        const double p_hart = proj_can_norm(*pg_h);
+        const double p_exx = proj_can_norm(*pg_x);
+
+        // Full ambient gradient in X-space (same as returned grad_wfc after C→X).
+        grad_C_to_X(grad_wfc);
+        const double nfull_x = ambient_frobenius_norm2_psi(grad_wfc);
+        psi::Psi<TK> gfull_tmp(grad_wfc);
+        project_orbital_gradient(wfc, gfull_tmp);
+        const double pfull = sqrtp(stiefel_canonical_inner_product(wfc, gfull_tmp, gfull_tmp));
+
+        std::ostringstream os;
+        os << "  RDMFT orb grad decomp (∂E/∂C → U^{-H} for X; EXX = RDMFT exchange / mixed Fock channel):\n";
+        os << "    ‖G_one‖_F (C)=" << sqrtp(n1c) << "  ‖G_H‖_F (C)=" << sqrtp(nhc)
+           << "  ‖G_EXX‖_F (C)=" << sqrtp(nxc) << "  ‖G_full‖_F (C)=" << sqrtp(nfull_c)
+           << "  recon √(‖G_full-Σ‖²)/‖G_full‖=" << rel << "\n";
+        os << "    ‖G_one‖_F (X)=" << sqrtp(n1x) << "  ‖G_H‖_F (X)=" << sqrtp(nhx)
+           << "  ‖G_EXX‖_F (X)=" << sqrtp(nxx) << "  ‖G_full‖_F (X)=" << sqrtp(nfull_x) << "\n";
+        os << "    ‖P(G_one)‖_can=" << p_one << "  ‖P(G_H)‖_can=" << p_hart << "  ‖P(G_EXX)‖_can=" << p_exx
+           << "  ‖P(G_full)‖_can=" << pfull << "  (P = canonical Stiefel projection)\n";
+        GlobalV::ofs_running << os.str() << std::flush;
+    }
+    else
+    {
+        // Transform the orbital gradient from C-space to X-space: G_X = U^{-H} G_C.
+        grad_C_to_X(grad_wfc);
+    }
 
     ModuleBase::timer::end("RDMFT_EG", "compute");
     return E_total_;

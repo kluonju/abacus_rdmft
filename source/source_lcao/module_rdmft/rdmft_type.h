@@ -343,6 +343,10 @@ struct RDMFTConfig
     /// After solve: print ELK rdmeval-style ε_ik (probe n=0.5, O(nk*nbands) compute calls).
     bool print_evals = false;
 
+    /// Each `EnergyGradient::compute`: log one-body / Hartree / EXX orbital gradient norms
+    /// (ambient Frobenius in C- and X-space, canonical after per-term projection).
+    bool print_orb_grad_decomp = false;
+
     /// If true, `RDMFTSolver::solve` runs finite-difference gradient checks after
     /// `precompute_cholesky_S()` and `wfc_C_to_X` (must not run earlier: orbitals are
     /// still in C-space before that).

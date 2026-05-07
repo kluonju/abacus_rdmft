@@ -1781,6 +1781,20 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_print_orb_grad_decomp");
+        item.annotation = "Log RDMFT orbital gradient one-body / Hartree / EXX norms each compute";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Boolean";
+        item.description = "If true, every EnergyGradient::compute logs Frobenius ‖·‖_F of the "
+                           "partial ambient gradients G_one, G_H, G_EXX (C- and X-space) and "
+                           "‖P(·)‖_can after canonical projection, plus reconstruction error vs G_full.";
+        item.default_value = "false";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_print_orb_grad_decomp);
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_joint_orb_scale");
         item.annotation = "Joint-strategy scaling factor between orbital and occupation blocks";
         item.category = "Reduced Density Matrix Functional Theory";
