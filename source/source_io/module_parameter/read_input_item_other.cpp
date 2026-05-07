@@ -1375,12 +1375,36 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_pg_occ_ls_recovery_alpha");
+        item.annotation = "PG occupation: SD recovery line search after primary LS failure";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "When rdmft_constraint is projected_gradient, if the occupation line search fails "
+                           "(e.g. non-monotone Strong Wolfe for cg), retry with direction −∇E and this initial "
+                           "trial α (monotone projected backtracking). Set <= 0 to disable.";
+        item.default_value = "1e-8";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_pg_occ_ls_recovery_alpha);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                const double a = para.input.rdmft_pg_occ_ls_recovery_alpha;
+                if (std::isfinite(a) == false)
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_pg_occ_ls_recovery_alpha must be finite");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_occ_ls_init_step");
         item.annotation = "Occupation Armijo initial-step policy: fixed, bb, quad";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "Initial trial alpha for occupation line search: "
-                           "fixed (always 1.0), bb (Barzilai-Borwein estimate), "
+                           "fixed (uses rdmft_alpha_step), bb (Barzilai-Borwein estimate), "
                            "quad (quadratic estimate from previous accepted step).";
         item.default_value = "bb";
         item.unit = "";

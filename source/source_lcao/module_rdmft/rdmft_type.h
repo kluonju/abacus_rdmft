@@ -93,7 +93,7 @@ enum class BBStepMode
 /// Initial trial-step policy for occupation Armijo line search.
 enum class LineSearchInitStep
 {
-    FixedOne,          // always alpha0 = 1.0
+    FixedOne,          // alpha0 = line_search_alpha_init (INPUT rdmft_alpha_step)
     BarzilaiBorwein,   // alpha0 from BB estimate (fallback to line_search_alpha_init)
     Quadratic          // alpha0 from previous-step quadratic model (fallback when unavailable)
 };
@@ -221,6 +221,9 @@ struct RDMFTConfig
     ///   α₀ = min(seed, cap)  where seed comes from rdmft_occ_ls_init_step / BB / quad.
     /// Set <= 0 to disable capping (previous behaviour).
     double pg_occ_cg_ls_alpha_cap = 1e-3;
+    /// PG: after failed non-monotone Wolfe (occ CG), try SD from this initial α (monotone
+    /// projected backtracking). Set <= 0 to skip this recovery.
+    double pg_occ_ls_recovery_alpha = 1e-8;
     double line_search_c1 = 1e-4;
     double line_search_rho = 0.5;
     int line_search_max_iter = 20;
