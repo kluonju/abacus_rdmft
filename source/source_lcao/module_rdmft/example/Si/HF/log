@@ -1,0 +1,86 @@
+Info: Local MPI proc number: 1                                                                                     
+                              ABACUS v3.11.0-beta.1
+
+               Atomic-orbital Based Ab-initio Computation at UStc                    
+
+                     Website: http://abacus.ustc.edu.cn/                             
+               Documentation: https://abacus.deepmodeling.com/                       
+                  Repository: https://github.com/abacusmodeling/abacus-develop       
+                              https://github.com/deepmodeling/abacus-develop         
+                      Commit: c690ac5f5 (Fri May 8 22:10:02 2026 +0800)
+
+ ,OpenMP thread number: 16,Total thread number: 16,Local thread limit: 128
+Fri May  8 22:47:01 2026
+ MAKE THE DIR         : OUT.ABACUS/
+ RUNNING WITH DEVICE  : CPU / AMD EPYC 9554 64-Core Processor (x2)
+ WARNING: some of potential function is set to zero cause of less than 1e-30.
+ UNIFORM GRID DIM     : 48 * 48 * 48
+ UNIFORM GRID DIM(BIG): 12 * 12 * 12
+ DONE(0.144969   SEC) : SYMMETRY
+ DONE(0.144982   SEC) : SETUP UNITCELL
+ DONE(0.212485   SEC) : INIT K-POINTS
+ ----------------------------------------------------------------
+ Self-consistent calculations for electrons
+ ----------------------------------------------------------------
+ SPIN    KPOINTS         PROCESSES   THREADS/PROC  THREADS/TOTAL 
+ 1       8               1           16            16            
+ ----------------------------------------------------------------
+ Use Systematically Improvable Atomic bases
+ ----------------------------------------------------------------
+ TOTAL NBASE 26
+ ELEMENT ORBITALS        NBASE       NATOM       
+ Si      2s2p1d-7au      13          2           
+ ----------------------------------------------------------------
+ Initial plane wave basis and FFT box
+ ----------------------------------------------------------------
+ DONE(0.223775   SEC) : INIT PLANEWAVE
+ START CHARGE         : atomic
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk1_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk2_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk3_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk4_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk5_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk6_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk7_nao.txt
+ Read NAO wave functions from ../KS_HF/OUT.ABACUS/wfk8_nao.txt
+ DONE(0.294098   SEC) : CHARGE
+ DONE(0.295522   SEC) : POTENTIALS
+
+ ================================================================
+ SELF-CONSISTENT: 
+ ================================================================
+ DONE(0.345521   SEC) : INIT SCF
+ !!SCF IS NOT CONVERGED!!
+  RDMFT outer iter 1  E_total=-15.1884164064  (Ry)
+  RDMFT outer iter 2  E_total=-15.5586716542  (Ry)  dE=-3.7025524781e-01
+
+ TIME STATISTICS
+-----------------------------------------------------------------
+   CLASS_NAME          NAME        TIME/s  CALLS   AVG/s  PER/%  
+-----------------------------------------------------------------
+                 total             34.60  15       2.31   100.00 
+ Driver          atomic_world      34.60  1        34.60  100.00 
+ Relax_Driver    relax_driver      34.29  1        34.29  99.10  
+ ESolver_KS      runner            34.29  1        34.29  99.10  
+ ESolver_KS_LCAO after_scf         34.24  1        34.24  98.96  
+ Exx_LRI         init              5.59   1        5.59   16.17  
+ Matrix_Orbs21   init              0.39   2        0.20   1.13   
+ Matrix_Orbs21   init_radial_table 3.64   2        1.82   10.52  
+ Center2_Orb     cal_ST_Phi12_R    4.04   3439     0.00   11.69  
+ LRI_CV          set_orbitals      4.26   1        4.26   12.31  
+ Matrix_Orbs11   init_radial_table 1.35   1        1.35   3.91   
+ Gint            cal_gint_vl       2.20   57       0.04   6.34   
+ ESolver_KS_LCAO rdmft_solve       28.43  1        28.43  82.17  
+ RDMFT           solve             28.43  1        28.43  82.17  
+ RDMFT_EG        compute           28.26  56       0.50   81.68  
+ Gint            cal_gint_rho      1.26   56       0.02   3.65   
+ RI_2D_Comm      split_m2D_ktoR    0.60   56       0.01   1.73   
+ Exx_LRI         cal_exx_elec      23.08  56       0.41   66.70  
+ RI_2D_Comm      add_Hexx          0.50   448      0.00   1.46   
+-----------------------------------------------------------------
+
+
+ START  Time  : Fri May  8 22:47:01 2026
+ FINISH Time  : Fri May  8 22:47:36 2026
+ TOTAL  Time  : 35
+ SEE INFORMATION IN : OUT.ABACUS/

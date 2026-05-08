@@ -1,0 +1,233 @@
+                                                                                     
+                              ABACUS v3.11.0-beta.1
+
+               Atomic-orbital Based Ab-initio Computation at UStc                    
+
+                     Website: http://abacus.ustc.edu.cn/                             
+               Documentation: https://abacus.deepmodeling.com/                       
+                  Repository: https://github.com/abacusmodeling/abacus-develop       
+                              https://github.com/deepmodeling/abacus-develop         
+                      Commit: 9c83f7a38 (Fri May 8 17:49:14 2026 +0800)
+
+ Fri May  8 20:00:43 2026
+Info: Local MPI proc number: 2,OpenMP thread number: 8,Total thread number: 16,Local thread limit: 128
+ MAKE THE DIR         : OUT.ABACUS/
+ RUNNING WITH DEVICE  : CPU / AMD EPYC 9554 64-Core Processor (x2)
+ WARNING: some of potential function is set to zero cause of less than 1e-30.
+ NAME OF ELEMENT      : Si
+ DFT FUNC. (PSEUDO)   : PBE
+ DFT FUNC. (SET TO)   : HF
+ MAKE SURE THIS DFT FUNCTIONAL IS WHAT YOU NEED
+ UNIFORM GRID DIM     : 48 * 48 * 48
+ UNIFORM GRID DIM(BIG): 12 * 12 * 12
+ DONE(0.101246   SEC) : SYMMETRY
+ DONE(0.101259   SEC) : SETUP UNITCELL
+ DONE(0.170493   SEC) : INIT K-POINTS
+ ----------------------------------------------------------------
+ Self-consistent calculations for electrons
+ ----------------------------------------------------------------
+ SPIN    KPOINTS         PROCESSES   THREADS/PROC  THREADS/TOTAL 
+ 1       8               2           8             16            
+ ----------------------------------------------------------------
+ Use Systematically Improvable Atomic bases
+ ----------------------------------------------------------------
+ TOTAL NBASE 26
+ ELEMENT ORBITALS        NBASE       NATOM       
+ Si      2s2p1d-7au      13          2           
+ ----------------------------------------------------------------
+ Initial plane wave basis and FFT box
+ ----------------------------------------------------------------
+ DONE(0.176778   SEC) : INIT PLANEWAVE
+ START CHARGE         : atomic
+ DONE(0.337612   SEC) : CHARGE
+ DONE(41.2456    SEC) : POTENTIALS
+
+ ================================================================
+ SELF-CONSISTENT: 
+ ================================================================
+ DONE(42.7778    SEC) : INIT SCF
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.14066923e+02   0.00000000e+00   1.5652e-01   0.51
+ GV2     -2.13919593e+02   1.47329967e-01   1.3904e-01   2.26
+ GV3     -2.13948545e+02  -2.89521313e-02   1.3183e-02   1.11
+ GV4     -2.13948132e+02   4.12612503e-04   5.3939e-03   0.23
+ GV5     -2.13948219e+02  -8.67328089e-05   1.4580e-04   0.35
+ GV6     -2.13948219e+02   9.31656743e-08   1.0706e-04   1.23
+ GV7     -2.13948219e+02  -1.99973204e-08   5.1568e-06   0.78
+ GV8     -2.13948219e+02   4.97872639e-10   1.1672e-06   3.46
+ GV9     -2.13948219e+02  -7.82240089e-10   1.3735e-07   0.28
+ GV10    -2.13948219e+02   2.78808678e-10   2.4546e-09   1.70
+ Updating EXX and rerun SCF	1.303e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.05685856e+02   0.00000000e+00   9.0491e-02   0.85
+ GV2     -2.06459810e+02  -7.73953573e-01   1.5569e-02   1.17
+ GV3     -2.06455924e+02   3.88518647e-03   1.3778e-02   0.47
+ GV4     -2.06456180e+02  -2.55093483e-04   7.8058e-04   0.35
+ GV5     -2.06456186e+02  -6.91377428e-06   2.9862e-04   0.27
+ GV6     -2.06456184e+02   2.14763789e-06   2.4064e-04   0.34
+ GV7     -2.06456185e+02  -4.32219165e-07   1.1951e-07   0.64
+ GV8     -2.06456185e+02   3.02590555e-11   9.4426e-07   1.20
+ GV9     -2.06456185e+02  -1.09241958e-11   9.9455e-09   0.42
+ deltaE (eV) from outer loop: 7.49203419e+00 
+ Updating EXX and rerun SCF	1.309e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06576602e+02   0.00000000e+00   1.2363e-02   0.27
+ GV2     -2.06573008e+02   3.59394336e-03   1.0842e-02   0.32
+ GV3     -2.06573648e+02  -6.40107347e-04   1.1418e-03   0.77
+ GV4     -2.06573654e+02  -6.30611613e-06   4.1820e-05   2.15
+ GV5     -2.06573654e+02   4.67050455e-09   1.4524e-05   0.51
+ GV6     -2.06573654e+02  -1.66318464e-09   4.9786e-08   0.32
+ deltaE (eV) from outer loop: 1.17469393e-01 
+ Updating EXX and rerun SCF	1.468e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06595391e+02   0.00000000e+00   6.0431e-03   5.00
+ GV2     -2.06594485e+02   9.05401115e-04   5.2855e-03   0.82
+ GV3     -2.06594655e+02  -1.70201683e-04   5.0450e-04   0.37
+ GV4     -2.06594657e+02  -1.06503876e-06   1.2038e-05   0.37
+ GV5     -2.06594657e+02   4.07917204e-10   4.0121e-06   1.88
+ GV6     -2.06594657e+02  -1.19199410e-10   5.0872e-09   1.36
+ deltaE (eV) from outer loop: 2.10023818e-02 
+ Updating EXX and rerun SCF	1.307e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06598945e+02   0.00000000e+00   2.8561e-03   0.23
+ GV2     -2.06598738e+02   2.06733739e-04   2.4949e-03   0.26
+ GV3     -2.06598778e+02  -3.95779555e-05   2.2262e-04   0.76
+ GV4     -2.06598778e+02  -1.93084508e-07   2.9091e-06   1.50
+ GV5     -2.06598778e+02   3.04765727e-11   9.6085e-07   0.32
+ GV6     -2.06598778e+02  -1.83681168e-12   2.3077e-09   0.60
+ deltaE (eV) from outer loop: 4.12139283e-03 
+ Updating EXX and rerun SCF	1.828e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599652e+02   0.00000000e+00   1.3282e-03   0.35
+ GV2     -2.06599607e+02   4.53881211e-05   1.1595e-03   0.36
+ GV3     -2.06599615e+02  -8.77741445e-06   9.8653e-05   0.32
+ GV4     -2.06599615e+02  -3.59861860e-08   6.8076e-07   2.92
+ GV5     -2.06599615e+02   3.09357756e-12   3.3175e-07   2.39
+ GV6     -2.06599615e+02  -3.14191471e-13   1.7698e-09   0.98
+ deltaE (eV) from outer loop: 8.37496106e-04 
+ Updating EXX and rerun SCF	1.519e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599796e+02   0.00000000e+00   6.1327e-04   3.88
+ GV2     -2.06599786e+02   9.76377372e-06   5.3512e-04   0.34
+ GV3     -2.06599788e+02  -1.89764586e-06   4.4056e-05   2.81
+ GV4     -2.06599788e+02  -7.01691063e-09   1.7685e-07   1.11
+ GV5     -2.06599788e+02   1.90931740e-12   2.0885e-07   0.39
+ GV6     -2.06599788e+02  -3.16608329e-12   9.2907e-10   1.04
+ deltaE (eV) from outer loop: 1.72846953e-04 
+ Updating EXX and rerun SCF	2.520e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599826e+02   0.00000000e+00   2.8220e-04   1.51
+ GV2     -2.06599824e+02   2.07968642e-06   2.4611e-04   0.35
+ GV3     -2.06599824e+02  -4.05085227e-07   1.9781e-05   0.48
+ GV4     -2.06599824e+02  -1.41487670e-09   6.3126e-08   0.71
+ deltaE (eV) from outer loop: 3.59399166e-05 
+ Updating EXX and rerun SCF	1.527e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599832e+02   0.00000000e+00   1.2959e-04   1.86
+ GV2     -2.06599832e+02   4.40328785e-07   1.1300e-04   0.45
+ GV3     -2.06599832e+02  -8.56857904e-08   8.9251e-06   1.33
+ GV4     -2.06599832e+02  -2.98820258e-10   2.6624e-08   1.62
+ deltaE (eV) from outer loop: 7.50073799e-06 
+ Updating EXX and rerun SCF	1.373e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599833e+02   0.00000000e+00   5.9446e-05   0.44
+ GV2     -2.06599833e+02   9.29302965e-08   5.1825e-05   0.47
+ GV3     -2.06599833e+02  -1.79815162e-08   4.0414e-06   1.34
+ GV4     -2.06599833e+02  -6.76236720e-11   1.2034e-08   0.91
+ deltaE (eV) from outer loop: 1.56813244e-06 
+ Updating EXX and rerun SCF	1.211e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   2.7249e-05   2.35
+ GV2     -2.06599834e+02   1.95736936e-08   2.3754e-05   5.04
+ GV3     -2.06599834e+02  -3.73085454e-09   1.8352e-06   0.33
+ GV4     -2.06599834e+02  -1.71596880e-11   5.5010e-09   0.36
+ deltaE (eV) from outer loop: 3.28126346e-07 
+ Updating EXX and rerun SCF	1.837e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   1.2485e-05   1.07
+ GV2     -2.06599834e+02   4.11912269e-09   1.0883e-05   0.47
+ GV3     -2.06599834e+02  -7.58724065e-10   8.3516e-07   0.42
+ GV4     -2.06599834e+02  -4.83371494e-12   2.5184e-09   0.43
+ deltaE (eV) from outer loop: 6.86772527e-08 
+ Updating EXX and rerun SCF	1.393e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   5.7188e-06   0.24
+ GV2     -2.06599834e+02   8.66129211e-10   4.9846e-06   0.93
+ GV3     -2.06599834e+02  -1.45760674e-10   3.8066e-07   0.86
+ GV4     -2.06599834e+02  -1.78847453e-12   1.1519e-09   0.47
+ deltaE (eV) from outer loop: 1.43704895e-08 
+ Updating EXX and rerun SCF	2.098e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   2.6189e-06   0.83
+ GV2     -2.06599834e+02   1.83753673e-10   2.2826e-06   0.61
+ GV3     -2.06599834e+02  -2.60053864e-11   1.7370e-07   0.54
+ GV4     -2.06599834e+02  -1.06341729e-12   5.2705e-10   0.46
+ deltaE (eV) from outer loop: 3.00490306e-09 
+ Updating EXX and rerun SCF	1.175e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   1.1992e-06   0.74
+ GV2     -2.06599834e+02   3.90080796e-11   1.0451e-06   1.81
+ GV3     -2.06599834e+02  -2.51353177e-12   7.9329e-08   2.75
+ deltaE (eV) from outer loop: 6.25337702e-10 
+ Updating EXX and rerun SCF	1.386e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   5.5706e-07   1.98
+ GV2     -2.06599834e+02   8.43483257e-12   4.8537e-07   0.62
+ GV3     -2.06599834e+02   1.93348598e-13   3.5885e-08   0.73
+ deltaE (eV) from outer loop: 1.30026932e-10 
+ Updating EXX and rerun SCF	1.385e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   2.5757e-07   0.61
+ GV2     -2.06599834e+02   1.88514883e-12   2.2440e-07   0.37
+ GV3     -2.06599834e+02   9.18405838e-13   1.6347e-08   0.45
+ deltaE (eV) from outer loop: 2.60537235e-11 
+ Updating EXX and rerun SCF	2.361e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   1.1884e-07   0.34
+ GV2     -2.06599834e+02   6.76720092e-13   1.0353e-07   0.73
+ GV3     -2.06599834e+02   6.76720092e-13   7.4739e-09   0.31
+ deltaE (eV) from outer loop: 5.94546938e-12 
+ Updating EXX and rerun SCF	1.561e+00 (s)
+ ITER       ETOT/eV          EDIFF/eV         DRHO     TIME/s
+ GV1     -2.06599834e+02   0.00000000e+00   5.4767e-08   0.59
+ deltaE (eV) from outer loop: 8.45900114e-13 
+
+ TIME STATISTICS
+--------------------------------------------------------------------
+    CLASS_NAME            NAME        TIME/s  CALLS   AVG/s  PER/%  
+--------------------------------------------------------------------
+                   total              162.77 15       10.85  100.00 
+ Driver            atomic_world       162.77 1        162.77 100.00 
+ ESolver_KS_LCAO   before_all_runners 41.21  1        41.21  25.32  
+ PW_Basis_Sup      recip2real         2.49   549      0.00   1.53   
+ NOrbital_Lm       extra_uniform      4.43   1875     0.00   2.72   
+ Exx_LRI           init               40.90  1        40.90  25.13  
+ Matrix_Orbs21     init_radial_table  17.45  2        8.72   10.72  
+ Center2_Orb       cal_ST_Phi12_R     32.49  3439     0.01   19.96  
+ LRI_CV            set_orbitals       37.38  1        37.38  22.96  
+ Matrix_Orbs11     init_radial_table  21.57  1        21.57  13.25  
+ Relax_Driver      relax_driver       121.50 1        121.50 74.64  
+ ESolver_KS        runner             121.50 1        121.50 74.64  
+ Potential         cal_veff           4.70   91       0.05   2.89   
+ PW_Basis_Sup      real2recip         2.66   656      0.00   1.63   
+ PotXC             cal_veff           3.55   91       0.04   2.18   
+ XC_Functional     v_xc               3.54   91       0.04   2.18   
+ Symmetry_rho      begin              2.38   91       0.03   1.46   
+ HSolverLCAO       solve              82.42  90       0.92   50.64  
+ HamiltLCAO        updateHk           7.56   720      0.01   4.64   
+ OperatorLCAO      init               7.56   5040     0.00   4.64   
+ Veff              contributeHR       6.98   90       0.08   4.29   
+ Gint              cal_gint_vl        6.98   90       0.08   4.29   
+ HSolverLCAO       hamiltSolvePsiK    67.39  720      0.09   41.40  
+ LCAO_domain       dm2rho             6.11   90       0.07   3.75   
+ Gint              cal_gint_rho       5.15   90       0.06   3.17   
+ ModuleIO          ctrl_iter_lcao     28.56  90       0.32   17.55  
+ Symmetry_rotation restore_dm         4.17   18       0.23   2.56   
+ Exx_LRI           cal_exx_elec       24.06  18       1.34   14.78  
+--------------------------------------------------------------------
+
+
+ START  Time  : Fri May  8 20:00:43 2026
+ FINISH Time  : Fri May  8 20:03:26 2026
+ TOTAL  Time  : 163
+ SEE INFORMATION IN : OUT.ABACUS/

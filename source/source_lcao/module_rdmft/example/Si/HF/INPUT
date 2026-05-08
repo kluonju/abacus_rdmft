@@ -1,0 +1,58 @@
+INPUT_PARAMETERS
+calculation      scf
+symmetry         1
+gamma_only       0
+nspin            1
+ntype            1
+
+# Skip KS SCF: orbitals and (ekb, wg) read from read_file_dir as wfk*_nao.txt (init_wfc=file, default istep=-1).
+scf_thr          1e-6
+scf_nmax         0
+cal_force        0
+cal_stress       0
+
+basis_type       lcao
+ks_solver        scalapack_gvx
+
+ecutwfc          100
+ecutrho          400
+
+smearing_method  gaussian
+smearing_sigma   0.00001
+
+mixing_type      broyden
+mixing_beta      0.1
+
+# PBE is only the nominal XC label for the skipped SCF stage; RDMFT energy uses rdmft_functional.
+dft_functional   pbe
+
+# Converged KS-HF LCAO wavefunctions from sibling calculation (run KS_HF once with out_wfc_lcao 1).
+init_wfc         file
+read_file_dir    ../KS_HF/OUT.ABACUS/
+# exx_real_number   1
+# exx_pca_threshold  1E-3
+# exx_c_threshold   1E-3
+# exx_v_threshold   1
+# exx_dm_threshold  1E-3
+# exx_ccp_rmesh_times  2
+# exx_separate_loop  1
+# exx_hybrid_step   2
+
+
+rdmft            true
+rdmft_functional  hf  
+
+# One-shot: evaluate RDMFT/HF energy components at fixed KS-HF (wfc, wg); no occupation or orbital updates.
+rdmft_occ_init_mode    ks
+rdmft_solver_strategy  alternating
+rdmft_constraint       projected_gradient
+
+rdmft_occ_optimizer    cg
+rdmft_orb_optimizer    cg
+rdmft_outer_maxiter    1
+rdmft_occ_maxiter      0
+rdmft_orb_maxiter      5
+rdmft_energy_tol       1e-7
+
+rdmft_orb_grad_tol  1e-5
+rdmft_occ_grad_tol  1e-5
