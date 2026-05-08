@@ -4115,36 +4115,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
             if (use_cg)
             {
-                if (orb_after_ls_retry)
-                {
-                    GlobalV::ofs_running << "      orb inner: " << line_search_policy_name(orb_ls_policy)
-                                         << " failed again after SD recovery; "
-                                            "stopping orbital inner loop."
-                                         << std::endl;
-                    result.iterations = inner + 1;
-                    result.final_energy = E;
-                    print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
-                                            occ_flat, nk_, nbands_, false);
-                    break;
-                }
-                orb_after_ls_retry = true;
-                // Any CG line-search failure: drop CG memory and retry next inner
-                // iteration along pure steepest descent (-G_R), including the
-                // first inner (restart==true) where we previously exited early.
                 GlobalV::ofs_running << "      orb inner: " << line_search_policy_name(orb_ls_policy)
-                                     << " line search failed for CG; "
-                                        "falling back to steepest descent next inner."
+                                     << " line search failed for CG; stopping orbital inner loop."
                                      << std::endl;
-                prev_gnorm2 = 0.0;
-                for (int ik = 0; ik < nk; ++ik)
-                    for (int ib = 0; ib < nb_local; ++ib)
-                        for (int mu = 0; mu < nbs_local; ++mu)
-                            prev_dir(ik, ib, mu) = TK(0);
                 result.iterations = inner + 1;
                 result.final_energy = E;
                 print_inner_loop_stdout("RDMFT orb inner", inner + 1, result.final_energy,
                                         occ_flat, nk_, nbands_, false);
-                continue;
+                break;
             }
 
             if (use_lbfgs || use_adam)
