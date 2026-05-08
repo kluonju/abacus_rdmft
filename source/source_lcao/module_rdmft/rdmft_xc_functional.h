@@ -59,8 +59,14 @@ class XCFunctional
     /// g(n): coupling function for the separable part (regularised near 0)
     double g(double n) const
     {
+        // HF: keep full KS/LCAO band occupation (up to 2 for spinless `nspin==1`).
+        // Other RDMFT functionals use natural occupations n in [0,1] and clamp here.
+        if (type_ == XCFunctionalType::HF)
+        {
+            return std::max(0.0, n);
+        }
         n = std::max(0.0, std::min(1.0, n));
-        if (alpha_ >= 1.0 - 1e-12) return n; // HF: no regularisation needed
+        if (alpha_ >= 1.0 - 1e-12) return n; // linear identity on [0,1]
         if (n >= reg_eps_) return std::pow(n, alpha_);
         // Linear extrapolation from eps down to 0
         const double g_eps  = std::pow(reg_eps_, alpha_);
@@ -71,8 +77,13 @@ class XCFunctional
     /// g'(n): derivative of g(n) w.r.t. n (regularised to a bounded value on [0,eps])
     double dg(double n) const
     {
+        if (type_ == XCFunctionalType::HF)
+        {
+            (void)n;
+            return 1.0;
+        }
         n = std::max(0.0, std::min(1.0, n));
-        if (alpha_ >= 1.0 - 1e-12) return 1.0; // HF
+        if (alpha_ >= 1.0 - 1e-12) return 1.0;
         const double nmin = std::max(n, reg_eps_);
         return alpha_ * std::pow(nmin, alpha_ - 1.0);
     }
@@ -80,6 +91,11 @@ class XCFunctional
     /// g''(n): second derivative (0 on the regularised interval)
     double d2g(double n) const
     {
+        if (type_ == XCFunctionalType::HF)
+        {
+            (void)n;
+            return 0.0;
+        }
         n = std::max(0.0, std::min(1.0, n));
         if (n < reg_eps_) return 0.0;
         return alpha_ * (alpha_ - 1.0) * std::pow(n, alpha_ - 2.0);

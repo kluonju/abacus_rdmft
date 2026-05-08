@@ -32,6 +32,9 @@ TEST_F(XCFunctionalTest, HF_g_is_identity)
     EXPECT_DOUBLE_EQ(xc.g(0.0), 0.0);
     EXPECT_DOUBLE_EQ(xc.g(0.5), 0.5);
     EXPECT_DOUBLE_EQ(xc.g(1.0), 1.0);
+    // Spinless LCAO (`nspin==1`) uses occupations up to 2 per band; HF coupling must not clamp to 1.
+    EXPECT_DOUBLE_EQ(xc.g(1.5), 1.5);
+    EXPECT_DOUBLE_EQ(xc.g(2.0), 2.0);
 }
 
 TEST_F(XCFunctionalTest, HF_dg_is_one)
@@ -39,6 +42,7 @@ TEST_F(XCFunctionalTest, HF_dg_is_one)
     XCFunctional xc(XCFunctionalType::HF);
     EXPECT_DOUBLE_EQ(xc.dg(0.5), 1.0);
     EXPECT_DOUBLE_EQ(xc.dg(0.9), 1.0);
+    EXPECT_DOUBLE_EQ(xc.dg(1.5), 1.0);
 }
 
 TEST_F(XCFunctionalTest, Muller_g_is_sqrt)
@@ -209,6 +213,16 @@ TEST_F(XCFunctionalTest, gradient_consistency_numerical)
             double dg_numerical = (xc.g(n + eps) - xc.g(n - eps)) / (2.0 * eps);
             EXPECT_NEAR(dg_analytic, dg_numerical, 1e-5)
                 << "type=" << static_cast<int>(type) << " n=" << n;
+        }
+        if (type == XCFunctionalType::HF)
+        {
+            for (double n = 1.1; n <= 1.9; n += 0.1)
+            {
+                double dg_analytic = xc.dg(n);
+                double dg_numerical = (xc.g(n + eps) - xc.g(n - eps)) / (2.0 * eps);
+                EXPECT_NEAR(dg_analytic, dg_numerical, 1e-5)
+                    << "type=" << static_cast<int>(type) << " n=" << n;
+            }
         }
     }
 }
