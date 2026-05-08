@@ -526,6 +526,9 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
             const rdmft::XCFunctionalType xc_type
                 = rdmft::parse_xc_type_or_quit(inp_rdmft.rdmft_functional, "ESolver_KS_LCAO::after_scf");
             const rdmft::XCFunctional xc_func(xc_type, inp_rdmft.rdmft_power_alpha);
+            // Ensure global XC context is already HF before EnergyGradient::init,
+            // because EXX backends snapshot XC-dependent settings at init time.
+            XC_Functional::set_xc_type("hf");
             this->rdmft_eg.init(&this->pv, &ucell, &this->gd, &this->kv, this->pelec, &this->orb_,
                                 &two_center_bundle_, xc_func);
             this->rdmft_eg_initialized = true;
@@ -551,6 +554,25 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         ModuleBase::timer::start("ESolver_KS_LCAO", "rdmft_solve");
 
         const Input_para& inp = PARAM.inp;
+        const rdmft::XCFunctionalType rdmft_xc_type
+            = rdmft::parse_xc_type_or_quit(inp.rdmft_functional, "ESolver_KS_LCAO::after_scf");
+        const std::string xc_func_restore = inp.dft_functional;
+        bool rdmft_xc_context_switched = false;
+        if (!inp.rdmft_functional.empty())
+        {
+            // Decouple the RDMFT objective/gradient path from KS `dft_functional`.
+            // RDMFT exchange kernels are evaluated in a HF XC context, while the
+            // occupation coupling (hf/muller/power/...) is handled by rdmft_xc_type.
+            XC_Functional::set_xc_type("hf");
+            rdmft_xc_context_switched = true;
+            if (inp.dft_functional != "hf")
+            {
+                GlobalV::ofs_running
+                    << "RDMFT: using internal HF XC context for RDMFT solve (independent of dft_functional="
+                    << inp.dft_functional << ")."
+                    << std::endl;
+            }
+        }
         const int nk = this->pelec->wg.nr;
         const int nbands = this->pelec->wg.nc;
         const int nks = this->kv.get_nks(); // kv.wk has nks entries; ik >= nks wraps (spin-down)
@@ -574,20 +596,7 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // Build RDMFTConfig from input parameters
         rdmft::RDMFTConfig rdmft_config;
-        rdmft_config.xc_type = rdmft::parse_xc_type_or_quit(inp.rdmft_functional, "ESolver_KS_LCAO::after_scf");
-        if (rdmft_config.xc_type == rdmft::XCFunctionalType::HF
-            && inp.scf_nmax <= 0
-            && inp.init_wfc == "file"
-            && inp.dft_functional != "hf")
-        {
-            GlobalV::ofs_running
-                << "RDMFT WARNING: rdmft_functional=hf with init_wfc=file and scf_nmax=0 but dft_functional="
-                << inp.dft_functional
-                << ". The KS-side setup still depends on dft_functional before RDMFT starts; "
-                   "this can yield a sizable initial orbital gradient and nontrivial orbital updates. "
-                   "Use dft_functional hf for HF-consistent one-shot checks."
-                << std::endl;
-        }
+        rdmft_config.xc_type = rdmft_xc_type;
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
@@ -731,6 +740,10 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // Update the total energy record
         this->pelec->f_en.etot = etot_rdmft;
+        if (rdmft_xc_context_switched)
+        {
+            XC_Functional::set_xc_type(xc_func_restore);
+        }
 
         ModuleBase::timer::end("ESolver_KS_LCAO", "rdmft_solve");
     }

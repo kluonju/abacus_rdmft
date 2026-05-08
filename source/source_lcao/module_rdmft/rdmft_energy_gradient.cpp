@@ -511,18 +511,20 @@ void EnergyGradient<TK, TR>::init(
 #ifdef __EXX
     if (PARAM.inp.rdmft)
     {
-        // RDMFT manages its own EXX infrastructure, independent of the
-        // global cal_exx flag which controls the KS-SCF hybrid loop.
-        // Ensure Coulomb parameters are set for HF-type exchange.
-        if (GlobalC::exx_info.info_global.coulomb_param.empty())
-        {
-            std::string sing_corr = PARAM.inp.exx_singularity_correction;
-            if (sing_corr == "default") { sing_corr = "spencer"; }
-            GlobalC::exx_info.info_global.coulomb_param[Conv_Coulomb_Pot_K::Coulomb_Type::Fock] = {{
-                {"alpha", "1"},
-                {"singularity_correction", sing_corr}
-            }};
-        }
+        // RDMFT manages its own EXX context and must not inherit KS-side
+        // `dft_functional` EXX switches.
+        GlobalC::exx_info.info_global.cal_exx = true;
+        GlobalC::exx_info.info_global.ccp_type = Conv_Coulomb_Pot_K::Ccp_Type::Hf;
+        GlobalC::exx_info.info_global.coulomb_param.clear();
+        std::string sing_corr = PARAM.inp.exx_singularity_correction;
+        if (sing_corr == "default") { sing_corr = "spencer"; }
+        GlobalC::exx_info.info_global.coulomb_param[Conv_Coulomb_Pot_K::Coulomb_Type::Fock] = {{
+            {"alpha", "1"},
+            {"singularity_correction", sing_corr}
+        }};
+        GlobalC::exx_info.info_global.separate_loop = PARAM.inp.exx_separate_loop;
+        GlobalC::exx_info.info_global.hybrid_step = PARAM.inp.exx_hybrid_step;
+        GlobalC::exx_info.info_global.mixing_beta_for_loop1 = PARAM.inp.exx_mixing_beta;
 
         // Propagate input RI parameters (input_conv skips this block when
         // cal_exx is off, but RDMFT needs a fully-initialised info_ri to run
@@ -532,7 +534,10 @@ void EnergyGradient<TK, TR>::init(
         GlobalC::exx_info.info_ri.C_threshold   = PARAM.inp.exx_c_threshold;
         GlobalC::exx_info.info_ri.V_threshold   = PARAM.inp.exx_v_threshold;
         GlobalC::exx_info.info_ri.dm_threshold  = PARAM.inp.exx_dm_threshold;
-        GlobalC::exx_info.info_ri.ccp_rmesh_times = std::stod(PARAM.inp.exx_ccp_rmesh_times);
+        // Keep RDMFT EXX mesh quality independent of KS `dft_functional`-
+        // dependent defaults (e.g. pbe default 1 vs hf default 5).
+        const double exx_ccp_rmesh_times_input = std::stod(PARAM.inp.exx_ccp_rmesh_times);
+        GlobalC::exx_info.info_ri.ccp_rmesh_times = std::max(5.0, exx_ccp_rmesh_times_input);
         GlobalC::exx_info.info_ri.exx_symmetry_realspace = PARAM.inp.exx_symmetry_realspace;
         GlobalC::exx_info.info_ri.Cs_inv_thr = PARAM.inp.exx_cs_inv_thr;
         GlobalC::exx_info.info_ri.shrink_abfs_pca_thr = PARAM.inp.shrink_abfs_pca_thr;
@@ -544,7 +549,10 @@ void EnergyGradient<TK, TR>::init(
         GlobalC::exx_info.info_opt_abfs.abfs_Lmax = PARAM.inp.exx_opt_orb_lmax;
         GlobalC::exx_info.info_opt_abfs.ecut_exx = PARAM.inp.exx_opt_orb_ecut;
         GlobalC::exx_info.info_opt_abfs.tolerence = PARAM.inp.exx_opt_orb_tolerence;
-        GlobalC::exx_info.info_global.hybrid_alpha = 1.0; // full Fock for RDMFT
+        // RDMFT EXX must always use full Fock (alpha = 1), independent of
+        // KS-side dft_functional setup.
+        GlobalC::exx_info.info_global.hybrid_alpha = 1.0;
+        XC_Functional::set_hybrid_alpha(1.0);
 
         exx_spacegroup_symmetry_ = (PARAM.inp.nspin < 4
                                     && ModuleSymmetry::Symmetry::symm_flag == 1);
