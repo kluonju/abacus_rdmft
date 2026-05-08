@@ -1481,7 +1481,7 @@ void ReadInput::item_others()
         item.description = "When rdmft_constraint is projected_gradient and rdmft_occ_optimizer is cg, the "
                            "occupation line-search first trial satisfies alpha0 = min(seed, this cap), where "
                            "seed comes from rdmft_occ_ls_init_step (fixed/bb/quad). Set <= 0 to disable capping.";
-        item.default_value = "1e-3";
+        item.default_value = "0";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
         read_sync_double(input.rdmft_pg_occ_cg_ls_alpha_cap);

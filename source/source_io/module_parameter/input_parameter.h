@@ -709,7 +709,7 @@ struct Input_para
     double rdmft_alm_mu_init = 1.0;                // initial ALM penalty mu
     double rdmft_alm_mu_factor = 5.0;              // multiplicative ALM mu update factor
     /// PG + occ CG: cap occupation line-search initial trial α₀; <=0 disables
-    double rdmft_pg_occ_cg_ls_alpha_cap = 1e-3;
+    double rdmft_pg_occ_cg_ls_alpha_cap = 0.0;
     /// PG: SD recovery line search initial α after primary LS failure; <=0 disables
     double rdmft_pg_occ_ls_recovery_alpha = 1e-8;
     std::string rdmft_occ_ls_init_step = "bb";     // occupation line-search alpha0 policy: fixed, bb, quad

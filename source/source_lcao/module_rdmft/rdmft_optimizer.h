@@ -275,9 +275,8 @@ inline double cubic_local_min_t(
 /// the first failed \f$(\alpha,f(\alpha))\f$, and (2) on later failures, a
 /// cubic through \f$(0,f_0,\phi'_0)\f$ and the last two \f$(\alpha,f(\alpha))\f$
 /// pairs. The polynomial suggestion is then clamped to \f$[0.1,0.5]\f$ times the
-/// last failed step length (Nocedal & Wright style), then capped by
-/// \f$0.99\,\alpha_{\text{fail}}\f$. Otherwise use pure geometric backtracking:
-/// multiply by `rho` only.
+/// last failed step length (Nocedal & Wright style). Otherwise use pure geometric
+/// backtracking: multiply by `rho` only.
 inline LineSearchResult armijo_line_search(
     std::function<double(double step)> f_at_step,
     double f0,
@@ -339,7 +338,6 @@ inline LineSearchResult armijo_line_search(
                     t_s = std::min(hi, std::max(lo, t_s));
                 else
                     t_s = std::min(lo, std::max(hi, t_s));
-                t_s = std::min(t_s, 0.99 * fail_alpha);
                 if (t_s <= 0.0 || t_s >= fail_alpha * (1.0 - 1.0e-10))
                     alpha_next = rho * fail_alpha;
                 else
@@ -471,7 +469,6 @@ inline LineSearchResult strong_wolfe_line_search(
         return z_result;
     };
 
-    const double alpha_max = alpha_init * 100.0;
     double alpha_prev = 0.0;
     double f_prev = f0;
     double g_prev = g0;
@@ -504,7 +501,7 @@ inline LineSearchResult strong_wolfe_line_search(
             return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
         }
 
-        double alpha_new = std::min(2.0 * alpha, alpha_max);
+        const double alpha_new = 2.0 * alpha;
         if (alpha_new <= alpha)
         {
             result.step = alpha;
@@ -627,7 +624,6 @@ inline LineSearchResult strong_wolfe_nm_line_search(
         return z_result;
     };
 
-    const double alpha_max = alpha_init * 100.0;
     double alpha_prev = 0.0;
     double f_prev = f0;
     double g_prev = g0;
@@ -660,7 +656,7 @@ inline LineSearchResult strong_wolfe_nm_line_search(
             return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
         }
 
-        double alpha_new = std::min(2.0 * alpha, alpha_max);
+        const double alpha_new = 2.0 * alpha;
         if (alpha_new <= alpha)
         {
             result.step = alpha;
@@ -787,7 +783,6 @@ inline LineSearchResult weak_wolfe_line_search(
         return z_result;
     };
 
-    const double alpha_max = alpha_init * 100.0;
     double alpha_prev = 0.0;
     double f_prev = f0;
     double g_prev = g0;
@@ -818,7 +813,7 @@ inline LineSearchResult weak_wolfe_line_search(
             return zoom(alpha, f_i, g_i, alpha_prev, f_prev, g_prev);
         }
 
-        const double alpha_new = std::min(2.0 * alpha, alpha_max);
+        const double alpha_new = 2.0 * alpha;
         if (alpha_new <= alpha)
         {
             result.step = alpha;

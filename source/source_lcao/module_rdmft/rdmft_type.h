@@ -251,10 +251,10 @@ struct RDMFTConfig
     double aug_lag_mu_max = 1e6;
     double aug_lag_lambda_init = 0.0;
 
-    /// PG with occupation optimiser CG: cap the occupation line-search initial trial
+    /// PG with occupation optimiser CG: optional cap on the occupation line-search initial trial
     ///   α₀ = min(seed, cap)  where seed comes from rdmft_occ_ls_init_step / BB / quad.
-    /// Set <= 0 to disable capping (previous behaviour).
-    double pg_occ_cg_ls_alpha_cap = 1e-3;
+    /// Default 0: no cap.
+    double pg_occ_cg_ls_alpha_cap = 0.0;
     /// PG: after failed non-monotone Wolfe (occ CG), try SD from this initial α (monotone
     /// projected backtracking). Set <= 0 to skip this recovery.
     double pg_occ_ls_recovery_alpha = 1e-8;
