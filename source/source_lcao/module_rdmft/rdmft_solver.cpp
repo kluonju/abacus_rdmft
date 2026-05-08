@@ -1455,11 +1455,13 @@ double RDMFTSolver<TK, TR>::solve_alternating(
         last_orb_gnorm = orb_result.grad_norm;
         outer_iters_done = iter + 1;
 
-        // Outer stop: energy change below tol (if tol > 0) or both inner sub-problems converged.
+        // Outer stop:
+        //  - always allow stop when both inner sub-problems converged (including outer iter 1),
+        //  - otherwise allow stop on energy criterion only from iter >= 2 (dE is undefined at iter 1).
         const bool inner_both = occ_result.converged && orb_result.converged;
         const bool energy_ok
             = (config_.energy_tol > 0.0) && (dE < config_.energy_tol);
-        const bool outer_converged = (iter > 0) && (energy_ok || inner_both);
+        const bool outer_converged = inner_both || ((iter > 0) && energy_ok);
         if (outer_converged)
         {
             last_result_.converged = true;
@@ -3824,8 +3826,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         // rdmft_orb_energy_tol > 0) successive inner energies change by less
         // than that threshold — both must hold when energy tolerance is enabled.
         const bool grad_conv = (result.grad_norm < config_.orb_grad_tol);
-        const bool energy_conv = orb_e_enabled && (orb_inner_dE_abs < config_.orb_energy_tol);
-        const bool inner_energy_ok = !orb_e_enabled || energy_conv;
+        const bool has_prev_orb_inner = (inner > 0);
+        const bool energy_conv = orb_e_enabled && has_prev_orb_inner
+                                      && (orb_inner_dE_abs < config_.orb_energy_tol);
+        // No previous inner energy exists at inner=1, so the energy criterion
+        // is inapplicable there; use gradient-only stop for that first check.
+        const bool inner_energy_ok = !orb_e_enabled || !has_prev_orb_inner || energy_conv;
         if (grad_conv && inner_energy_ok)
         {
             result.converged = true;

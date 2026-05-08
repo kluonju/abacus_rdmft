@@ -575,6 +575,19 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         // Build RDMFTConfig from input parameters
         rdmft::RDMFTConfig rdmft_config;
         rdmft_config.xc_type = rdmft::parse_xc_type_or_quit(inp.rdmft_functional, "ESolver_KS_LCAO::after_scf");
+        if (rdmft_config.xc_type == rdmft::XCFunctionalType::HF
+            && inp.scf_nmax <= 0
+            && inp.init_wfc == "file"
+            && inp.dft_functional != "hf")
+        {
+            GlobalV::ofs_running
+                << "RDMFT WARNING: rdmft_functional=hf with init_wfc=file and scf_nmax=0 but dft_functional="
+                << inp.dft_functional
+                << ". The KS-side setup still depends on dft_functional before RDMFT starts; "
+                   "this can yield a sizable initial orbital gradient and nontrivial orbital updates. "
+                   "Use dft_functional hf for HF-consistent one-shot checks."
+                << std::endl;
+        }
         rdmft_config.alpha_power = inp.rdmft_power_alpha;
         rdmft_config.outer_maxiter = inp.rdmft_outer_maxiter;
         rdmft_config.orb_maxiter = inp.rdmft_orb_maxiter;
