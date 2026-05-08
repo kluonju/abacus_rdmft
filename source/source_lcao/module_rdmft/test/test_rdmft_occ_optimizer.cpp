@@ -213,13 +213,6 @@ struct PGRunner
             else
             {
                 occ = occ_old;
-                if (config.occ_optimizer == OptimizerType::ConjugateGradient)
-                {
-                    // Mirror solver fallback: CG-only projected SD step and optimizer reset.
-                    for (int i = 0; i < prob.nb; ++i)
-                        occ[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad[i];
-                    constraint.project(occ);
-                }
                 opt.init(prob.nb);
             }
 
@@ -336,10 +329,6 @@ struct ASRunner
             else
             {
                 occ = occ_old;
-                for (int i = 0; i < prob.nb; ++i)
-                    occ[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad_mod[i];
-                for (auto& n : occ) n = std::max(0.0, std::min(1.0, n));
-                constraint.project(occ);
                 opt.init(prob.nb);
                 prev_n_active = -1;
             }
@@ -529,7 +518,7 @@ TEST_F(PGOptimizerTest, energy_is_monotone_nonincreasing)
     }
 }
 
-TEST_F(PGOptimizerTest, CG_line_search_failure_uses_sd_fallback)
+TEST_F(PGOptimizerTest, CG_line_search_failure_takes_no_step)
 {
     auto prob = make_4band(2.0);
     RDMFTConfig cfg;
@@ -540,20 +529,11 @@ TEST_F(PGOptimizerTest, CG_line_search_failure_uses_sd_fallback)
     PGRunner runner{prob, cfg};
     auto occ = initial_occ_uniform(prob.nb, prob.Ne);
     const auto occ_before = occ;
-    const double E_before = prob.energy(occ_before);
 
     runner.run(occ, 1);
 
-    OccupationConstraint constraint(ConstraintMethod::ProjectedGradient, prob.Ne, prob.wk, prob.nb);
-    auto grad = prob.gradient(occ_before);
-    auto occ_expected = occ_before;
     for (int i = 0; i < prob.nb; ++i)
-        occ_expected[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad[i];
-    constraint.project(occ_expected);
-
-    for (int i = 0; i < prob.nb; ++i)
-        EXPECT_NEAR(occ[i], occ_expected[i], 1e-12);
-    EXPECT_LT(prob.energy(occ), E_before);
+        EXPECT_NEAR(occ[i], occ_before[i], 1e-12);
 }
 
 // ---------------------------------------------------------------------------

@@ -2447,21 +2447,29 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     GlobalV::ofs_running << (ls.success ? "  ok" : "  fail") << std::endl;
                 }
 
+                if (!ls.success)
+                {
+                    occ_param_->params_to_occ(params, occ_flat);
+                    GlobalV::ofs_running << "      ALM occ inner: "
+                                         << line_search_policy_name(occ_ls_policy)
+                                         << " line search failed at inner=" << (inner + 1)
+                                         << "; no step, stopping inner iterations" << std::endl;
+                    result.iterations = inner + 1;
+                    result.final_energy = L;
+                    print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy,
+                                            occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
+                                         << 0.0 << "  sum(w*n)="
+                                         << occ_constraint_->weighted_occupation_sum(occ_flat)
+                                         << "  N_e=" << n_electrons_ << std::endl;
+                    break;
+                }
+
                 std::vector<double> step_vec(params.size());
                 for (size_t i = 0; i < params.size(); ++i)
                 {
                     step_vec[i] = ls.step * dir[i];
                     params[i] += step_vec[i];
-                }
-
-                if (!ls.success)
-                {
-                    GlobalV::ofs_running << "      ALM occ inner: "
-                                         << line_search_policy_name(occ_ls_policy)
-                                         << " line search failed at inner=" << (inner + 1)
-                                         << "; accepting best-effort step (step=" << std::scientific
-                                         << ls.step << ") and stopping inner iterations"
-                                         << std::defaultfloat << std::endl;
                 }
 
                 occ_param_->params_to_occ(params, occ_flat);
@@ -2491,10 +2499,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     result.converged = true;
                     break;
                 }
-                if (!ls.success)
-                {
-                    break;
-                }
             }
 
             // Update Lagrange multiplier
@@ -2522,7 +2526,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             //      use projected Strong/Weak Wolfe; armijo uses monotone backtracking.
             //   4. If Wolfe fails: monotone projected backtracking along the same d
             //      from min(α₀, RDMFT_DEFAULT_LS_ALPHA_INIT); then optional SD recovery
-            //      (pg_occ_ls_recovery_alpha). Accept trial; update optimizer.
+            //      (pg_occ_ls_recovery_alpha). If still unsuccessful, stop the inner
+            //      loop without applying a further forced step.
             //
             // Project() clips to [0,1] and rescales to conserve N_e.
             // Inner convergence: ||g_proj||_inf < occ_grad_tol only (g_proj = Bertsekas map / τ;
@@ -2665,7 +2670,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const std::vector<double> occ_before_step(occ_flat);
                 bool ls_success = false;
                 bool pg_step_applied = false;
-                bool pg_used_sd_fallback = false;
                 std::vector<double> occ_trial;
                 int pg_ls_trial = 0;
                 double pg_step_acc = 0.0;
@@ -3039,42 +3043,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 else
                 {
-                    if (pg_ls_mode != OccProjLineSearchMode::Monotone)
-                    {
-                        // Deterministic fallback after PG line-search failure (Wolfe path):
-                        // take one projected SD step with RDMFT_DEFAULT_LS_ALPHA_INIT and
-                        // reset optimizer curvature history.
-                        const double alpha_sd_fallback
-                            = pg_bertsekas_tau_from_line_search(RDMFT_DEFAULT_LS_ALPHA_INIT, 1.0);
-                        occ_trial = occ_before_step;
-                        for (size_t i = 0; i < occ_trial.size(); ++i)
-                        {
-                            occ_trial[i] -= alpha_sd_fallback * grad_occ[i];
-                        }
-                        occ_constraint_->project(occ_trial);
-                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) <= proj_constraint_tol)
-                        {
-                            pg_step_acc = alpha_sd_fallback;
-                            pg_dd_proj_acc = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                            {
-                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_before_step[i]);
-                            }
-                            E_last_trial = energy_grad_->compute_energy(
-                                occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                            occ_flat = occ_trial;
-                            pg_step_applied = true;
-                            pg_used_sd_fallback = true;
-                        }
-                        else
-                        {
-                            occ_flat = occ_before_step;
-                        }
-                    }
-                    else
-                    {
-                        occ_flat = occ_before_step;
-                    }
+                    occ_flat = occ_before_step;
                     pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
                     pg_ls_qhist = {};
@@ -3083,21 +3052,10 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         pg_nm_C = std::numeric_limits<double>::quiet_NaN();
                         pg_nm_Q = 1.0;
                     }
-                    if (pg_step_applied)
-                    {
-                        GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                             << " (Wolfe + monotone fallback + recovery); applied SD fallback "
-                                                "step="
-                                             << std::scientific << pg_step_acc
-                                             << " and reset optimizer" << std::defaultfloat << std::endl;
-                    }
-                    else
-                    {
-                        GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                             << " (Wolfe + monotone fallback + recovery); no step, "
-                                                "optimiser reset; stopping inner iterations"
-                                             << std::endl;
-                    }
+                    GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
+                                         << " (Wolfe + monotone fallback + recovery); no step, "
+                                            "optimiser reset; stopping inner iterations"
+                                         << std::endl;
                 }
 
                 // Update the optimizer with the actual step taken.
@@ -3123,9 +3081,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 grad_l2_post = std::sqrt(grad_l2_post);
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, RDMFT_DEFAULT_LS_ALPHA_INIT)
-                    : (pg_used_sd_fallback
-                          ? pg_bertsekas_tau_from_line_search(pg_step_acc, RDMFT_DEFAULT_LS_ALPHA_INIT)
-                          : pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT));
+                    : pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
                 projected_gradient_map_l2_linf(occ_flat,
@@ -3661,13 +3617,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 else
                 {
-                    // Fallback: single steepest-descent step on free variables.
                     occ_flat = occ_before_step;
-                    for (size_t i = 0; i < occ_flat.size(); ++i)
-                        occ_flat[i] -= RDMFT_DEFAULT_LS_ALPHA_INIT * grad_mod[i];
-                    for (auto& n : occ_flat)
-                        n = std::max(0.0, std::min(1.0, n));
-                    occ_constraint_->project(occ_flat);
+                    E_after = E;
                     as_opt.init(static_cast<int>(occ_flat.size()));
                     as_bb_step.reset();
                     as_ls_qhist = {};
