@@ -682,9 +682,9 @@ struct Input_para
     std::string rdmft_occ_ls_type = "auto";
     /// auto | armijo | sw | wolfe — orbital inner line search (default auto: follow orb_optimizer)
     std::string rdmft_orb_ls_type = "auto";
-    int rdmft_outer_maxiter = 200;                 // RDMFT outer loop (alternating / joint cycles)
-    int rdmft_orb_maxiter = 50;                     // maximum iterations per orbital sub-problem (fixed n)
-    int rdmft_occ_maxiter = 50;                     // maximum iterations per occupation sub-problem (fixed C)
+    int rdmft_outer_maxiter = 100;                 // RDMFT outer loop (alternating / joint cycles)
+    int rdmft_orb_maxiter = 20;                     // maximum iterations per orbital sub-problem (fixed n)
+    int rdmft_occ_maxiter = 20;                     // maximum iterations per occupation sub-problem (fixed C)
     std::string rdmft_occ_init_mode = "ks";       // initial occupations: ks, perturbed, binary, uniform
     double rdmft_occ_init_perturb = 0.0;          // optional additive perturbation on top of the uniform initial occupations
     int rdmft_occ_init_nbands_top = 0;             // Fermi-window half-width K: K above + K below
