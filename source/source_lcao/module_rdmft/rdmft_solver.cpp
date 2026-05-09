@@ -2430,10 +2430,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 L_prev = L;
                 have_L_prev = true;
 
-                std::vector<double> penalty_grad;
-                occ_constraint_->augmented_lagrangian_gradient(occ_flat, penalty_grad);
-                for (size_t i = 0; i < grad_occ.size(); ++i)
-                    grad_occ[i] += penalty_grad[i];
+                add_augmented_lagrangian_occ_gradient(*occ_constraint_, occ_flat, grad_occ);
 
                 std::vector<double> grad_params;
                 occ_param_->transform_gradient_batch(grad_occ, params, grad_params);
@@ -2472,6 +2469,14 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double dd = 0.0;
                 for (size_t i = 0; i < dir.size(); ++i)
                     dd += dir[i] * grad_params[i];
+                if (dd >= 0.0)
+                {
+                    for (size_t i = 0; i < dir.size(); ++i)
+                        dir[i] = -grad_params[i];
+                    dd = 0.0;
+                    for (size_t i = 0; i < dir.size(); ++i)
+                        dd += dir[i] * grad_params[i];
+                }
 
                 auto f_at_step = [&](double step) -> double {
                     std::vector<double> p_trial(params);
@@ -2496,10 +2501,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     double Et = energy_grad_->compute(occ_trial,
                                     const_cast<psi::Psi<TK>&>(wfc), g_occ_trial, g_wfc_trial);
                     Et += occ_constraint_->augmented_lagrangian_penalty(occ_trial);
-                    std::vector<double> pen_g;
-                    occ_constraint_->augmented_lagrangian_gradient(occ_trial, pen_g);
-                    for (size_t i = 0; i < g_occ_trial.size(); ++i)
-                        g_occ_trial[i] += pen_g[i];
+                    add_augmented_lagrangian_occ_gradient(*occ_constraint_, occ_trial, g_occ_trial);
                     std::vector<double> g_params_trial;
                     occ_param_->transform_gradient_batch(g_occ_trial, p_trial, g_params_trial);
                     double dd_trial = 0.0;
@@ -2599,8 +2601,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> new_grad_occ;
                 energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                        new_grad_occ, grad_wfc_dummy);
+                std::vector<double> new_grad_params_unpen;
+                occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params_unpen);
+                std::vector<double> new_grad_occ_with_pen(new_grad_occ);
+                add_augmented_lagrangian_occ_gradient(*occ_constraint_, occ_flat, new_grad_occ_with_pen);
                 std::vector<double> new_grad_params;
-                occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
+                occ_param_->transform_gradient_batch(new_grad_occ_with_pen, params, new_grad_params);
                 std::vector<double> new_grad_params_opt;
                 occ_cg_grad_to_opt(new_grad_params, new_grad_params_opt);
                 std::vector<double> step_vec_opt;
@@ -2723,6 +2729,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 const double tau_bert_pre
                     = pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
+                constexpr double tau_pg_stop = 1.0;
 
                 double pg_map_l2_pre = 0.0;
                 double pg_map_inf_pre = 0.0;
@@ -2735,6 +2742,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 const double g_inf_pre = pg_map_inf_pre / tau_bert_pre;
                 const double g_l2_pre = pg_map_l2_pre / tau_bert_pre;
+                double pg_map_l2_stop_pre = 0.0;
+                double pg_map_inf_stop_pre = 0.0;
+                projected_gradient_map_l2_linf(occ_flat,
+                    grad_occ,
+                    *occ_constraint_,
+                    tau_pg_stop,
+                    pg_map_l2_stop_pre,
+                    pg_map_inf_stop_pre);
+                const double g_inf_stop_pre = pg_map_inf_stop_pre / tau_pg_stop;
 
                 double grad_l2_pre = 0.0;
                 for (auto g : grad_occ)
@@ -2755,16 +2771,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (inner == 0 && g_inf_pre < config_.occ_grad_tol)
+                if (inner == 0 && g_inf_stop_pre < config_.occ_grad_tol)
                 {
                     result.converged = true;
                     result.iterations = 1;
                     result.final_energy = E;
-                    result.grad_norm = g_inf_pre;
+                    result.grad_norm = g_inf_stop_pre;
                     print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
                     GlobalV::ofs_running << "      PG ||g_proj||_inf (pre-step) = " << std::scientific
                                          << g_inf_pre << "  (||n-P(n-τ∇E)||_inf=" << pg_map_inf_pre
                                          << "  τ=" << tau_bert_pre << ")  rdmft_occ_grad_tol=" << config_.occ_grad_tol
+                                         << "  stop_metric(τ=1)=" << g_inf_stop_pre
                                          << std::defaultfloat << std::endl;
                     GlobalV::ofs_running << "      occ inner PG: converged at first inner (||g_proj||_inf < "
                                             "rdmft_occ_grad_tol); skipping line search."
@@ -3223,7 +3240,17 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     pg_map_inf_post);
                 const double g_inf_post = pg_map_inf_post / tau_post;
                 const double g_l2_post = pg_map_l2_post / tau_post;
-                result.grad_norm = g_inf_post;
+                double pg_map_l2_stop_post = 0.0;
+                double pg_map_inf_stop_post = 0.0;
+                projected_gradient_map_l2_linf(occ_flat,
+                    new_grad_occ,
+                    *occ_constraint_,
+                    tau_pg_stop,
+                    pg_map_l2_stop_post,
+                    pg_map_inf_stop_post);
+                const double g_inf_stop_post = pg_map_inf_stop_post / tau_pg_stop;
+                const double g_l2_stop_post = pg_map_l2_stop_post / tau_pg_stop;
+                result.grad_norm = g_inf_stop_post;
                 if (pg_step_applied)
                 {
                     std::vector<double> new_grad_occ_opt;
@@ -3250,13 +3277,15 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 GlobalV::ofs_running
                     << "      PG ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (post-step) = " << std::scientific
                     << g_inf_post << "  (map ||n-P||_inf=" << pg_map_inf_post << "  τ=" << tau_post << ")"
+                    << "  stop_metric(τ=1)=" << g_inf_stop_post
                     << "  rdmft_occ_grad_tol=" << config_.occ_grad_tol << std::defaultfloat << std::endl;
                 GlobalV::ofs_running << "      PG diagnostic: |E_post-E|=" << std::scientific << dE_occ_step
                                      << std::defaultfloat << std::endl;
                 GlobalV::ofs_running << "      PG diagnostics: sum|dn|=" << std::scientific << sum_abs_dn
                                      << "  ||g_proj||_2=" << g_l2_post << "  (map ||n-P||_2=" << pg_map_l2_post
+                                     << ", stop_metric_2(τ=1)=" << g_l2_stop_post
                                      << ")  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
-                if (g_inf_post < config_.occ_grad_tol)
+                if (g_inf_stop_post < config_.occ_grad_tol && pg_step_applied)
                 {
                     result.converged = true;
                     break;

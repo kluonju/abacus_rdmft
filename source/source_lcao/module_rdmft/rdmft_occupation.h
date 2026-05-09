@@ -565,6 +565,21 @@ class SigmaShiftOccParam
     double lambda_;
 };
 
+/// Add augmented-Lagrangian penalty gradient in-place:
+///   grad_occ <- grad_occ + d/dn [lambda*c + 0.5*mu*c^2]
+/// where c = sum_k w_k sum_i n_ki - N_e.
+inline void add_augmented_lagrangian_occ_gradient(const OccupationConstraint& constraint,
+                                                  const std::vector<double>& occ,
+                                                  std::vector<double>& grad_occ)
+{
+    assert(occ.size() == grad_occ.size());
+    std::vector<double> grad_pen;
+    constraint.augmented_lagrangian_gradient(occ, grad_pen);
+    assert(grad_pen.size() == grad_occ.size());
+    for (size_t i = 0; i < grad_occ.size(); ++i)
+        grad_occ[i] += grad_pen[i];
+}
+
 } // namespace rdmft
 
 #endif // RDMFT_OCCUPATION_H

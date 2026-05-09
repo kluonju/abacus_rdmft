@@ -194,6 +194,39 @@ TEST_F(OccupationConstraintTest, projection_clips_and_rescales)
     }
 }
 
+TEST_F(OccupationConstraintTest, projected_gradient_stop_metric_uses_fixed_tau)
+{
+    std::vector<double> wk = {1.0};
+    int nbands = 4;
+    double nel = 2.0;
+    OccupationConstraint constraint(ConstraintMethod::ProjectedGradient, nel, wk, nbands);
+
+    // Near-idempotent but still fractional occupations (sum = nel).
+    std::vector<double> occ = {1.0, 0.999, 0.001, 0.0};
+    // Toy HF-like gradient (lower bands favored).
+    std::vector<double> grad = {-2.0, -1.0, 0.5, 1.0};
+
+    auto map_inf = [&](double tau) {
+        std::vector<double> trial(occ.size());
+        for (size_t i = 0; i < occ.size(); ++i)
+            trial[i] = occ[i] - tau * grad[i];
+        constraint.project(trial);
+        double linf = 0.0;
+        for (size_t i = 0; i < occ.size(); ++i)
+            linf = std::max(linf, std::abs(occ[i] - trial[i]));
+        return linf;
+    };
+
+    const double tau_large = 1e6;
+    const double old_scaled_metric = map_inf(tau_large) / tau_large; // old PG stopping metric
+    const double fixed_tau_metric = map_inf(1.0); // robust stop metric with τ=1
+
+    // Large τ can artificially shrink ||n-P(n-τg)||/τ and cause false convergence.
+    EXPECT_LT(old_scaled_metric, 1e-5);
+    // A fixed τ stop metric still reports meaningful non-stationarity here.
+    EXPECT_GT(fixed_tau_metric, 1e-4);
+}
+
 TEST_F(OccupationConstraintTest, active_set_identification)
 {
     std::vector<double> wk = {1.0};

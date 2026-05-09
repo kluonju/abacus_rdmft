@@ -765,3 +765,43 @@ TEST(OccupationConstraintASTest, reduced_gradient_in_constraint_null_space)
         if (info.is_free[i]) sum_g += wk[0] * grad_mod[i];
     EXPECT_NEAR(sum_g, 0.0, 1e-12);
 }
+
+TEST(OccupationAugLagGradientTest, adds_penalty_gradient_in_place)
+{
+    std::vector<double> wk = {1.0};
+    const int nb = 3;
+    const double Ne = 1.8;
+    OccupationConstraint c(ConstraintMethod::AugmentedLagrangian, Ne, wk, nb);
+    c.set_lambda(0.7);
+    c.set_mu(5.0);
+
+    const std::vector<double> occ = {0.9, 0.7, 0.1}; // sum=1.7 => c=-0.1
+    std::vector<double> grad_occ = {1.0, 2.0, 3.0};
+    add_augmented_lagrangian_occ_gradient(c, occ, grad_occ);
+
+    const double factor = c.lambda() + c.mu() * (1.7 - Ne); // 0.7 - 0.5 = 0.2
+    EXPECT_NEAR(grad_occ[0], 1.0 + factor, 1e-14);
+    EXPECT_NEAR(grad_occ[1], 2.0 + factor, 1e-14);
+    EXPECT_NEAR(grad_occ[2], 3.0 + factor, 1e-14);
+}
+
+TEST(OccupationAugLagGradientTest, respects_kpoint_weights)
+{
+    std::vector<double> wk = {0.25, 0.75};
+    const int nb = 2;
+    const double Ne = 1.0;
+    OccupationConstraint c(ConstraintMethod::AugmentedLagrangian, Ne, wk, nb);
+    c.set_lambda(-0.4);
+    c.set_mu(3.0);
+
+    // weighted sum = 0.25*(0.9+0.4) + 0.75*(0.3+0.2) = 0.325 + 0.375 = 0.7
+    // c = -0.3, factor = -0.4 + 3*(-0.3) = -1.3
+    const std::vector<double> occ = {0.9, 0.4, 0.3, 0.2};
+    std::vector<double> grad_occ = {0.0, 1.0, 2.0, 3.0};
+    add_augmented_lagrangian_occ_gradient(c, occ, grad_occ);
+
+    EXPECT_NEAR(grad_occ[0], 0.0 + (-1.3 * 0.25), 1e-14);
+    EXPECT_NEAR(grad_occ[1], 1.0 + (-1.3 * 0.25), 1e-14);
+    EXPECT_NEAR(grad_occ[2], 2.0 + (-1.3 * 0.75), 1e-14);
+    EXPECT_NEAR(grad_occ[3], 3.0 + (-1.3 * 0.75), 1e-14);
+}
