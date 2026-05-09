@@ -1029,10 +1029,10 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_orb_cg_precond");
-        item.annotation = "Enable orbital CG pairwise level-shift preconditioner (on/off)";
+        item.annotation = "Enable orbital CG/L-BFGS pairwise level-shift preconditioner (on/off)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Bool";
-        item.description = "Used when rdmft_orb_optimizer = cg. If true (default), the orbital CG direction "
+        item.description = "Used when rdmft_orb_optimizer = cg or lbfgs. If true (default), the orbital search direction "
                            "uses a pairwise level-shift preconditioner on orbital-rotation components: "
                            "Omega_ij ~ skew(C^H G)_ij / (|epsilon_i - epsilon_j| + delta). "
                            "Accepts standard boolean INPUT values (true/false, on/off, yes/no).";
@@ -1044,10 +1044,10 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_orb_cg_precond_delta");
-        item.annotation = "Orbital CG preconditioner level-shift delta";
+        item.annotation = "Orbital CG/L-BFGS preconditioner level-shift delta";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Used when rdmft_orb_optimizer = cg and rdmft_orb_cg_precond = true. "
+        item.description = "Used when rdmft_orb_optimizer = cg/lbfgs and rdmft_orb_cg_precond = true. "
                            "delta in 1/(|epsilon_i - epsilon_j| + delta). "
                            "Set > 0 for an explicit fixed delta. Set <= 0 (default) to use the internal "
                            "automatic scale from current epsilon statistics.";

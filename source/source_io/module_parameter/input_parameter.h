@@ -674,7 +674,7 @@ struct Input_para
     std::string rdmft_solver_strategy = "alternating"; // alternating or joint (accepts legacy alias "product_manifold")
     std::string rdmft_occ_optimizer = "cg";        // occupation optimizer: sd, cg, lbfgs, adam
     std::string rdmft_orb_optimizer = "cg";        // orbital optimizer: sd, cg, lbfgs, adam
-    bool rdmft_orb_cg_precond = true;              // orbital CG rotation preconditioner switch: on/off
+    bool rdmft_orb_cg_precond = true;              // orbital CG/L-BFGS rotation preconditioner switch: on/off
     /// Orbital CG level-shift delta in 1/(|e_i-e_j|+delta); <=0 uses internal auto scale.
     double rdmft_orb_cg_precond_delta = 0.0;
     std::string rdmft_joint_optimizer = "lbfgs";   // joint-strategy single unified optimiser: sd, cg, lbfgs, adam
