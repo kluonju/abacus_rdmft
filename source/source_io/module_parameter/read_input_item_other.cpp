@@ -1028,6 +1028,45 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
+        Input_Item item("rdmft_orb_cg_precond");
+        item.annotation = "Enable orbital CG pairwise level-shift preconditioner (on/off)";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Bool";
+        item.description = "Used when rdmft_orb_optimizer = cg. If true (default), the orbital CG direction "
+                           "uses a pairwise level-shift preconditioner on orbital-rotation components: "
+                           "Omega_ij ~ skew(C^H G)_ij / (|epsilon_i - epsilon_j| + delta). "
+                           "Accepts standard boolean INPUT values (true/false, on/off, yes/no).";
+        item.default_value = "true";
+        item.unit = "";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_bool(input.rdmft_orb_cg_precond);
+        this->add_item(item);
+    }
+    {
+        Input_Item item("rdmft_orb_cg_precond_delta");
+        item.annotation = "Orbital CG preconditioner level-shift delta";
+        item.category = "Reduced Density Matrix Functional Theory";
+        item.type = "Real";
+        item.description = "Used when rdmft_orb_optimizer = cg and rdmft_orb_cg_precond = true. "
+                           "delta in 1/(|epsilon_i - epsilon_j| + delta). "
+                           "Set > 0 for an explicit fixed delta. Set <= 0 (default) to use the internal "
+                           "automatic scale from current epsilon statistics.";
+        item.default_value = "0.0";
+        item.unit = "Ry";
+        item.availability = "rdmft == true && rdmft_functional != \"\"";
+        read_sync_double(input.rdmft_orb_cg_precond_delta);
+        item.check_value = [](const Input_Item& item, const Parameter& para) {
+            if (para.input.rdmft && !para.input.rdmft_functional.empty())
+            {
+                if (!std::isfinite(para.input.rdmft_orb_cg_precond_delta))
+                {
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_orb_cg_precond_delta must be finite");
+                }
+            }
+        };
+        this->add_item(item);
+    }
+    {
         Input_Item item("rdmft_joint_optimizer");
         item.annotation = "Single unified optimiser for the RDMFT joint strategy: sd, cg, lbfgs, adam";
         item.category = "Reduced Density Matrix Functional Theory";

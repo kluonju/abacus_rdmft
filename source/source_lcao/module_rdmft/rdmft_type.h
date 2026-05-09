@@ -188,6 +188,10 @@ struct RDMFTConfig
     /// Orbital optimiser. With `rdmft_orb_ls_type` = auto: CG uses strong Wolfe, L-BFGS weak Wolfe,
     /// SD/Adam Armijo; explicit `sw` / `wolfe` / `armijo` overrides that pairing.
     OptimizerType orb_optimizer = OptimizerType::ConjugateGradient;
+    /// Alternating orbital CG: enable pairwise level-shift preconditioner on rotations.
+    bool orb_cg_precond = true;
+    /// Alternating orbital CG: level-shift δ in 1/(|ε_i-ε_j|+δ). <=0 uses auto δ.
+    double orb_cg_precond_delta = 0.0;
     /// Single unified optimiser used by SolverStrategy::Joint. The joint
     /// strategy packs (occupation parameters, orbital coefficients) into one
     /// point on the product manifold and applies a single optimiser of this

@@ -698,6 +698,14 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
             add_kv(keys, vals, "rdmft_occ_ls_type", line_search_preset_to_string(cfg.occ_ls_preset));
             add_kv(keys, vals, "rdmft_orb_optimizer", optimizer_to_string(cfg.orb_optimizer));
             add_kv(keys, vals, "rdmft_orb_ls_type", line_search_preset_to_string(cfg.orb_ls_preset));
+            if (cfg.orb_optimizer == OptimizerType::ConjugateGradient)
+            {
+                add_kv(keys, vals, "rdmft_orb_cg_precond", cfg.orb_cg_precond ? "true" : "false");
+                add_kv(keys,
+                       vals,
+                       "rdmft_orb_cg_precond_delta",
+                       (cfg.orb_cg_precond_delta > 0.0) ? as_sci(cfg.orb_cg_precond_delta) : std::string("auto"));
+            }
             add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
             add_kv(keys, vals, "rdmft_occ_maxiter", std::to_string(cfg.occ_maxiter));
             add_kv(keys, vals, "rdmft_orb_maxiter", std::to_string(cfg.orb_maxiter));
@@ -3868,39 +3876,20 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const bool use_sd    = (opt_type == OptimizerType::SteepestDescent);
     const LineSearchPolicy orb_ls_policy = effective_orbital_ls_policy(config_.orb_ls_preset, opt_type);
 
+    const bool use_orb_cg_precond = use_cg && config_.orb_cg_precond;
     std::vector<double> orb_cg_eps;
-    double orb_cg_level_shift = 1.0e-8;
-    if (use_cg)
+    if (use_orb_cg_precond)
     {
-        const std::vector<double> elk_eps = compute_elk_style_band_energies(occ_flat, wfc, 0.5);
-        if (elk_eps.size() == static_cast<size_t>(nk * nb_local))
-        {
-            double mean_abs_eps = 0.0;
-            int n_finite = 0;
-            for (const double e : elk_eps)
-            {
-                if (std::isfinite(e))
-                {
-                    mean_abs_eps += std::abs(e);
-                    ++n_finite;
-                }
-            }
-            mean_abs_eps = (n_finite > 0) ? (mean_abs_eps / static_cast<double>(n_finite)) : 1.0;
-            mean_abs_eps = std::max(mean_abs_eps, 1.0e-8);
-            // Diagonal level-shift on orbital rotations:
-            //   P_ij = 1 / (|ε_i - ε_j| + δ),  i != j
-            // with ε_i from ELK-style rdmeval analogue.
-            orb_cg_level_shift = std::max(1.0e-8, 1.0e-3 * mean_abs_eps);
-            orb_cg_eps = elk_eps;
-            GlobalV::ofs_running << "      orb CG preconditioner (ELK-style rotation level-shift): mean|ε|="
-                                 << std::scientific << mean_abs_eps
-                                 << "  delta=" << orb_cg_level_shift
-                                 << std::defaultfloat << std::endl;
-            energy_grad_->invalidate_hone_cache();
-        }
+        orb_cg_eps.resize(static_cast<size_t>(nk * nb_local), 0.0);
+    }
+    double orb_cg_level_shift = std::max(1.0e-8, config_.orb_cg_precond_delta);
+    bool orb_cg_precond_logged = false;
+    if (use_cg && !config_.orb_cg_precond)
+    {
+        GlobalV::ofs_running << "      orb CG preconditioner: disabled by rdmft_orb_cg_precond = false" << std::endl;
     }
     const auto orb_cg_apply_precond = [&](const psi::Psi<TK>& in, psi::Psi<TK>& out) {
-        if (!use_cg || orb_cg_eps.size() != static_cast<size_t>(nk * nb_local))
+        if (!use_orb_cg_precond || orb_cg_eps.size() != static_cast<size_t>(nk * nb_local))
         {
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
@@ -4079,6 +4068,41 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             break;
         }
 
+        if (use_orb_cg_precond && grad_occ.size() == static_cast<size_t>(nk * nb_local) && kv_)
+        {
+            double mean_abs_eps = 0.0;
+            int n_finite = 0;
+            for (int ik = 0; ik < nk; ++ik)
+            {
+                const double wk = kv_->wk[ik];
+                for (int ib = 0; ib < nb_local; ++ib)
+                {
+                    const size_t idx = static_cast<size_t>(ik * nb_local + ib);
+                    const double g_wk = grad_occ[idx];
+                    const double eps = (std::abs(wk) > 1.0e-20) ? (g_wk / wk) : g_wk;
+                    orb_cg_eps[idx] = eps;
+                    if (std::isfinite(eps))
+                    {
+                        mean_abs_eps += std::abs(eps);
+                        ++n_finite;
+                    }
+                }
+            }
+            mean_abs_eps = (n_finite > 0) ? (mean_abs_eps / static_cast<double>(n_finite)) : 1.0;
+            mean_abs_eps = std::max(mean_abs_eps, 1.0e-8);
+            orb_cg_level_shift = (config_.orb_cg_precond_delta > 0.0)
+                                     ? std::max(1.0e-8, config_.orb_cg_precond_delta)
+                                     : std::max(1.0e-8, 1.0e-3 * mean_abs_eps);
+            if (!orb_cg_precond_logged)
+            {
+                GlobalV::ofs_running << "      orb CG preconditioner (rotation level-shift, current dE/dn): mean|ε|="
+                                     << std::scientific << mean_abs_eps << "  delta=" << orb_cg_level_shift
+                                     << (config_.orb_cg_precond_delta > 0.0 ? " [explicit]" : " [auto]")
+                                     << std::defaultfloat << std::endl;
+                orb_cg_precond_logged = true;
+            }
+        }
+
         // ---- Build search direction ----
         //   SD:       d = -G
         //   CG (preconditioned FR): d = -M^{-1}G + beta * T(d_prev),
@@ -4103,7 +4127,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                               : gnorm2;
         psi::Psi<TK> dir(wfc);
         // SD baseline:
-        //   - CG path: d = -M^{-1} g (ELK-style diagonal preconditioner)
+        //   - CG path: d = -M^{-1} g (pairwise level-shift preconditioner on rotations)
         //   - non-CG path: d = -g
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
