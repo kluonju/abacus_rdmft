@@ -974,6 +974,17 @@ inline void flat_to_psi(const std::vector<double>& flat,
         p[i] = std::complex<double>(flat[2 * i], flat[2 * i + 1]);
 }
 
+template <typename T>
+inline T tk_conjugate(const T& x)
+{
+    return x;
+}
+
+inline std::complex<double> tk_conjugate(const std::complex<double>& x)
+{
+    return std::conj(x);
+}
+
 template <typename TK, typename TR>
 void RDMFTSolver<TK, TR>::init(
     const RDMFTConfig& config,
@@ -1616,11 +1627,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
     // Work buffer for line-search rollback.
     psi::Psi<TK> wfc_save(wfc);
 
-    double E_prev = 1e30;
-    double E = 0.0;
+    // Keep physical and augmented energies separate:
+    // - E_aug drives line search / ALM merit function.
+    // - E_phys is what alternating reports/returns and what ABACUS stores.
+    double E_prev_phys = 1e30;
+    double E_phys = 0.0;
+    double E_aug = 0.0;
 
     std::vector<double> occ_at_outer_start;
-    double joint_last_E = 0.0;
+    double joint_last_E_phys = 0.0;
     double joint_last_dE = 0.0;
     double joint_last_abs_c = 0.0;
     double joint_gn_occ = 0.0;
@@ -1682,12 +1697,13 @@ double RDMFTSolver<TK, TR>::solve_joint(
         // Full energy + Euclidean gradients at the current point.
         std::vector<double> grad_occ;
         psi::Psi<TK> grad_wfc;
-        E = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc);
+        E_phys = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc);
+        E_aug = E_phys;
 
         // Add augmented Lagrangian penalty (skipped for sigma-shift).
         if (!use_sigma_shift && config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
         {
-            E += occ_constraint_->augmented_lagrangian_penalty(occ_flat);
+            E_aug += occ_constraint_->augmented_lagrangian_penalty(occ_flat);
             std::vector<double> penalty_grad;
             occ_constraint_->augmented_lagrangian_gradient(occ_flat, penalty_grad);
             for (size_t i = 0; i < grad_occ.size(); ++i)
@@ -1843,7 +1859,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         const double joint_ls_alpha0 = alpha_init;
         const double c1 = config_.line_search_c1;
         const double rho = config_.line_search_rho;
-        double E_new = E;
+        double E_new_aug = E_aug;
         bool ls_success = false;
         int joint_ls_trials = 0;
 
@@ -1920,8 +1936,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
         for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
         {
             joint_ls_trials = ls + 1;
-            E_new = eval_at_step(alpha, nullptr, nullptr, nullptr);
-            if (E_new <= E + c1 * alpha * dd_total)
+            E_new_aug = eval_at_step(alpha, nullptr, nullptr, nullptr);
+            if (E_new_aug <= E_aug + c1 * alpha * dd_total)
             {
                 ls_success = true;
                 break;
@@ -1933,8 +1949,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
         {
             GlobalV::ofs_running << "  RDMFT joint-iter " << (iter + 1)
                 << "  line search (joint Armijo): alpha_init=" << std::scientific << joint_ls_alpha0
-                << " step=" << alpha << " n_trial=" << joint_ls_trials << "  E0=" << E
-                << " E1=" << E_new << "  dd=" << dd_total << "  c1=" << std::defaultfloat << c1
+                << " step=" << alpha << " n_trial=" << joint_ls_trials << "  E0_aug=" << E_aug
+                << " E1_aug=" << E_new_aug << "  dd=" << dd_total << "  c1=" << std::defaultfloat << c1
                 << " rho=" << rho << "  step_orb=" << (step_orbitals ? 1 : 0) << std::endl;
         }
 
@@ -1967,9 +1983,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 << "  line search (joint Armijo) failed: alpha_init="
                 << std::scientific << joint_ls_alpha0 << " last_alpha=" << alpha
                 << " n_trial=" << joint_ls_trials;
-            GlobalV::ofs_running << "  E_last=" << E_new << std::defaultfloat
+            GlobalV::ofs_running << "  E_last_aug=" << E_new_aug << std::defaultfloat
                 << ", restarting optimiser state (next outer: steepest-descent step)" << std::endl;
-            E_prev = E;
+            E_prev_phys = E_phys;
             continue;
         }
 
@@ -2007,12 +2023,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
 
         // Update the unified optimiser's history with the new packed gradient.
+        double E_new_phys = 0.0;
+        bool have_E_new_phys = false;
         const bool joint_bb_track = config_.alm_bb_enabled && !joint_is_lbfgs && !joint_is_adam;
         if (joint_is_lbfgs || joint_is_adam || joint_bb_track)
         {
             std::vector<double> new_grad_occ;
             psi::Psi<TK> new_grad_wfc;
-            energy_grad_->compute(occ_flat, wfc, new_grad_occ, new_grad_wfc);
+            E_new_phys = energy_grad_->compute(occ_flat, wfc, new_grad_occ, new_grad_wfc);
+            have_E_new_phys = true;
 
             std::vector<double> new_grad_params;
             if (use_sigma_shift)
@@ -2053,6 +2072,10 @@ double RDMFTSolver<TK, TR>::solve_joint(
                 joint_bb.record_state(packed_iterate, new_packed_grad);
             }
         }
+        if (!have_E_new_phys)
+        {
+            E_new_phys = energy_grad_->compute_energy(occ_flat, wfc);
+        }
 
         // Augmented-Lagrangian multiplier refresh (not needed for sigma-shift).
         if (!use_sigma_shift && config_.constraint_method == ConstraintMethod::AugmentedLagrangian)
@@ -2065,7 +2088,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
             }
         }
 
-        const double dE = std::abs(E_new - E_prev);
+        const double dE = std::abs(E_new_phys - E_prev_phys);
         const double sum_abs_dn_joint = sum_abs_diff(occ_flat, occ_before_joint_step);
         double gnorm2_occ = 0.0;
         for (auto g : grad_params) gnorm2_occ += g * g;
@@ -2086,7 +2109,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
 
         GlobalV::ofs_running << std::fixed << std::setprecision(10)
             << "  RDMFT joint-iter " << iter + 1
-            << "  E = " << E_new
+            << "  E = " << E_new_phys
             << "  dE = " << std::scientific << dE
             << "  alpha = " << alpha
             << "  sum|dn|_step (L1) = " << sum_abs_dn_joint
@@ -2117,7 +2140,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
                   << "  RDMFT joint iter " << (iter + 1) << "  E_total=" << E_total << "  (Ry)";
         if (iter > 0)
         {
-            std::cout << std::scientific << "  dE=" << (E_new - E_prev) << std::fixed;
+            std::cout << std::scientific << "  dE=" << (E_new_phys - E_prev_phys) << std::fixed;
         }
         std::cout << std::defaultfloat << std::endl;
         {
@@ -2135,7 +2158,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
         }
 
         const double abs_c_joint = std::abs(occ_constraint_->constraint_violation(occ_flat));
-        joint_last_E = E_new;
+        joint_last_E_phys = E_new_phys;
         joint_last_dE = dE;
         joint_last_abs_c = abs_c_joint;
         joint_gn_occ = gnorm_occ;
@@ -2152,9 +2175,9 @@ double RDMFTSolver<TK, TR>::solve_joint(
         {
             last_result_.converged = true;
             last_result_.iterations = iter + 1;
-            last_result_.final_energy = E_new;
+            last_result_.final_energy = E_new_phys;
             last_result_.grad_norm = gnorm_total;
-            E = E_new;
+            E_phys = E_new_phys;
             if (energy_ok_joint && inner_both_joint)
             {
                 GlobalV::ofs_running << "  RDMFT joint: outer loop stopped (|dE| < rdmft_energy_tol and OCC&ORB "
@@ -2172,8 +2195,8 @@ double RDMFTSolver<TK, TR>::solve_joint(
             }
             break;
         }
-        E_prev = E_new;
-        E = E_new;
+        E_prev_phys = E_new_phys;
+        E_phys = E_new_phys;
     }
 
     if (use_sigma_shift)
@@ -2185,14 +2208,15 @@ double RDMFTSolver<TK, TR>::solve_joint(
     {
         occ_param_->params_to_occ(params, occ_flat);
     }
-    last_result_.final_energy = E;
+    E_phys = energy_grad_->compute_energy(occ_flat, wfc);
+    last_result_.final_energy = E_phys;
     if (!last_result_.converged)
     {
         last_result_.iterations = joint_outer_done;
         last_result_.grad_norm = joint_gn_tot;
     }
 
-    print_rdmft_outer_energy_stdout(last_result_.converged, E);
+    print_rdmft_outer_energy_stdout(last_result_.converged, E_phys);
     // Always print final occupations in tabular form.
     print_occ_table_running(occ_flat, nk_, nbands_);
     if (config_.print_evals)
@@ -2204,7 +2228,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
     print_rdmft_optimization_summary_joint(joint_outer_done, total_time_sec);
     if (!last_result_.converged)
     {
-        print_nonconverged_report_running_joint(joint_last_E,
+        print_nonconverged_report_running_joint(joint_last_E_phys,
                                                 joint_last_dE,
                                                 joint_last_abs_c,
                                                 joint_gn_occ,
@@ -2215,7 +2239,7 @@ double RDMFTSolver<TK, TR>::solve_joint(
                                                 nk_,
                                                 nbands_);
     }
-    return E;
+    return E_phys;
 }
 
 template <typename TK, typename TR>
@@ -2273,6 +2297,90 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
             }
         }
     }
+
+    // ELK-style diagonal preconditioner for occupation CG in alternating mode.
+    // Definition source: ε_ik = dE/dn_ik (unweighted) at probe n_ik = 0.5 with
+    // other occupations fixed (`rdmeval` analogue). Large |ε_ik| directions are
+    // stiff and get smaller effective steps; small |ε_ik| directions are relaxed.
+    std::vector<double> occ_cg_diag_sqrt;
+    if (config_.occ_optimizer == OptimizerType::ConjugateGradient)
+    {
+        const std::vector<double> elk_eps = compute_elk_style_band_energies(occ_flat, wfc, 0.5);
+        if (elk_eps.size() == occ_flat.size() && !elk_eps.empty())
+        {
+            double mean_abs_eps = 0.0;
+            int n_finite = 0;
+            for (const double e : elk_eps)
+            {
+                if (std::isfinite(e))
+                {
+                    mean_abs_eps += std::abs(e);
+                    ++n_finite;
+                }
+            }
+            mean_abs_eps = (n_finite > 0) ? (mean_abs_eps / static_cast<double>(n_finite)) : 1.0;
+            mean_abs_eps = std::max(mean_abs_eps, 1.0e-8);
+            const double eps_floor = std::max(1.0e-8, 1.0e-3 * mean_abs_eps);
+            constexpr double k_inv_min = 0.1;
+            constexpr double k_inv_max = 10.0;
+
+            occ_cg_diag_sqrt.resize(elk_eps.size(), 1.0);
+            double inv_min = std::numeric_limits<double>::infinity();
+            double inv_max = 0.0;
+            for (size_t i = 0; i < elk_eps.size(); ++i)
+            {
+                const double abs_eps = std::isfinite(elk_eps[i]) ? std::abs(elk_eps[i]) : mean_abs_eps;
+                double m_inv = mean_abs_eps / std::max(abs_eps, eps_floor);
+                m_inv = std::min(k_inv_max, std::max(k_inv_min, m_inv));
+                occ_cg_diag_sqrt[i] = std::sqrt(m_inv);
+                inv_min = std::min(inv_min, m_inv);
+                inv_max = std::max(inv_max, m_inv);
+            }
+            GlobalV::ofs_running << "      occ CG preconditioner (ELK-style ε_ik): mean|ε|="
+                                 << std::scientific << mean_abs_eps
+                                 << "  eps_floor=" << eps_floor
+                                 << "  inv_diag_range=[" << inv_min << ", " << inv_max << "]"
+                                 << std::defaultfloat << std::endl;
+            energy_grad_->invalidate_hone_cache();
+        }
+    }
+    const auto occ_cg_use_precond = [&](const size_t n) {
+        return config_.occ_optimizer == OptimizerType::ConjugateGradient
+               && occ_cg_diag_sqrt.size() == n;
+    };
+    const auto occ_cg_grad_to_opt = [&](const std::vector<double>& g_raw,
+                                        std::vector<double>& g_opt) {
+        if (!occ_cg_use_precond(g_raw.size()))
+        {
+            g_opt = g_raw;
+            return;
+        }
+        g_opt.resize(g_raw.size());
+        for (size_t i = 0; i < g_raw.size(); ++i)
+            g_opt[i] = occ_cg_diag_sqrt[i] * g_raw[i];
+    };
+    const auto occ_cg_dir_from_opt = [&](const std::vector<double>& d_opt,
+                                         std::vector<double>& d_raw) {
+        if (!occ_cg_use_precond(d_opt.size()))
+        {
+            d_raw = d_opt;
+            return;
+        }
+        d_raw.resize(d_opt.size());
+        for (size_t i = 0; i < d_opt.size(); ++i)
+            d_raw[i] = occ_cg_diag_sqrt[i] * d_opt[i];
+    };
+    const auto occ_cg_step_to_opt = [&](const std::vector<double>& step_raw,
+                                        std::vector<double>& step_opt) {
+        if (!occ_cg_use_precond(step_raw.size()))
+        {
+            step_opt = step_raw;
+            return;
+        }
+        step_opt.resize(step_raw.size());
+        for (size_t i = 0; i < step_raw.size(); ++i)
+            step_opt[i] = step_raw[i] / occ_cg_diag_sqrt[i];
+    };
 
     switch (config_.constraint_method)
     {
@@ -2345,8 +2453,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
+                std::vector<double> grad_params_opt;
+                occ_cg_grad_to_opt(grad_params, grad_params_opt);
+                std::vector<double> dir_opt;
+                opt.compute_direction(grad_params_opt, dir_opt);
                 std::vector<double> dir;
-                opt.compute_direction(grad_params, dir);
+                occ_cg_dir_from_opt(dir_opt, dir);
 
                 double dd = 0.0;
                 for (size_t i = 0; i < dir.size(); ++i)
@@ -2480,7 +2592,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                                        new_grad_occ, grad_wfc_dummy);
                 std::vector<double> new_grad_params;
                 occ_param_->transform_gradient_batch(new_grad_occ, params, new_grad_params);
-                opt.update(new_grad_params, step_vec);
+                std::vector<double> new_grad_params_opt;
+                occ_cg_grad_to_opt(new_grad_params, new_grad_params_opt);
+                std::vector<double> step_vec_opt;
+                occ_cg_step_to_opt(step_vec, step_vec_opt);
+                opt.update(new_grad_params_opt, step_vec_opt);
                 if (config_.alm_bb_enabled)
                 {
                     bb_step.record_state(params, new_grad_params);
@@ -2648,8 +2764,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
 
                 // Compute search direction from the configured optimizer.
+                std::vector<double> grad_occ_opt;
+                occ_cg_grad_to_opt(grad_occ, grad_occ_opt);
+                std::vector<double> dir_opt;
+                pg_opt.compute_direction(grad_occ_opt, dir_opt);
                 std::vector<double> dir;
-                pg_opt.compute_direction(grad_occ, dir);
+                occ_cg_dir_from_opt(dir_opt, dir);
 
                 // Descent safeguard: if d^T g >= 0, fall back to steepest descent.
                 double dd = 0.0;
@@ -3097,7 +3217,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 result.grad_norm = g_inf_post;
                 if (pg_step_applied)
                 {
-                    pg_opt.update(new_grad_occ, step_vec);
+                    std::vector<double> new_grad_occ_opt;
+                    occ_cg_grad_to_opt(new_grad_occ, new_grad_occ_opt);
+                    std::vector<double> step_vec_opt;
+                    occ_cg_step_to_opt(step_vec, step_vec_opt);
+                    pg_opt.update(new_grad_occ_opt, step_vec_opt);
                 }
                 if (ls_success)
                 {
@@ -3272,8 +3396,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                 // Compute search direction from the configured optimizer on the
                 // modified (reduced) gradient.
+                std::vector<double> grad_mod_opt;
+                occ_cg_grad_to_opt(grad_mod, grad_mod_opt);
+                std::vector<double> dir_opt;
+                as_opt.compute_direction(grad_mod_opt, dir_opt);
                 std::vector<double> dir;
-                as_opt.compute_direction(grad_mod, dir);
+                occ_cg_dir_from_opt(dir_opt, dir);
 
                 // Zero out the direction for active-constraint components so the
                 // step doesn't move variables that are pinned at their bounds.
@@ -3658,7 +3786,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 for (size_t idx = 0; idx < new_grad_mod.size(); ++idx)
                     if (!new_as_info.is_free[idx]) new_grad_mod[idx] = 0.0;
 
-                as_opt.update(new_grad_mod, step_vec);
+                std::vector<double> new_grad_mod_opt;
+                occ_cg_grad_to_opt(new_grad_mod, new_grad_mod_opt);
+                std::vector<double> step_vec_opt;
+                occ_cg_step_to_opt(step_vec, step_vec_opt);
+                as_opt.update(new_grad_mod_opt, step_vec_opt);
                 if (ls_success)
                 {
                     as_bb_step.record_state(occ_flat, new_grad_mod);
@@ -3736,6 +3868,111 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     const bool use_sd    = (opt_type == OptimizerType::SteepestDescent);
     const LineSearchPolicy orb_ls_policy = effective_orbital_ls_policy(config_.orb_ls_preset, opt_type);
 
+    std::vector<double> orb_cg_eps;
+    double orb_cg_level_shift = 1.0e-8;
+    if (use_cg)
+    {
+        const std::vector<double> elk_eps = compute_elk_style_band_energies(occ_flat, wfc, 0.5);
+        if (elk_eps.size() == static_cast<size_t>(nk * nb_local))
+        {
+            double mean_abs_eps = 0.0;
+            int n_finite = 0;
+            for (const double e : elk_eps)
+            {
+                if (std::isfinite(e))
+                {
+                    mean_abs_eps += std::abs(e);
+                    ++n_finite;
+                }
+            }
+            mean_abs_eps = (n_finite > 0) ? (mean_abs_eps / static_cast<double>(n_finite)) : 1.0;
+            mean_abs_eps = std::max(mean_abs_eps, 1.0e-8);
+            // Diagonal level-shift on orbital rotations:
+            //   P_ij = 1 / (|ε_i - ε_j| + δ),  i != j
+            // with ε_i from ELK-style rdmeval analogue.
+            orb_cg_level_shift = std::max(1.0e-8, 1.0e-3 * mean_abs_eps);
+            orb_cg_eps = elk_eps;
+            GlobalV::ofs_running << "      orb CG preconditioner (ELK-style rotation level-shift): mean|ε|="
+                                 << std::scientific << mean_abs_eps
+                                 << "  delta=" << orb_cg_level_shift
+                                 << std::defaultfloat << std::endl;
+            energy_grad_->invalidate_hone_cache();
+        }
+    }
+    const auto orb_cg_apply_precond = [&](const psi::Psi<TK>& in, psi::Psi<TK>& out) {
+        if (!use_cg || orb_cg_eps.size() != static_cast<size_t>(nk * nb_local))
+        {
+            for (int ik = 0; ik < nk; ++ik)
+                for (int ib = 0; ib < nb_local; ++ib)
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                        out(ik, ib, mu) = in(ik, ib, mu);
+            return;
+        }
+
+        for (int ik = 0; ik < nk; ++ik)
+        {
+            std::vector<TK> s(nb_local * nb_local, TK(0));
+            std::vector<TK> omega(nb_local * nb_local, TK(0));
+            std::vector<TK> c_times_s(nbs_local * nb_local, TK(0));
+            std::vector<TK> c_times_omega(nbs_local * nb_local, TK(0));
+
+            // S = C^H * G (nb x nb)
+            for (int i = 0; i < nb_local; ++i)
+                for (int j = 0; j < nb_local; ++j)
+                {
+                    TK sum = TK(0);
+                    for (int mu = 0; mu < nbs_local; ++mu)
+                    {
+                        sum += tk_conjugate(wfc(ik, i, mu)) * in(ik, j, mu);
+                    }
+                    s[static_cast<size_t>(i * nb_local + j)] = sum;
+                }
+
+            // Ω_ij = skew(S)_ij / (|ε_i - ε_j| + δ), i!=j; Ω_ii = 0.
+            for (int i = 0; i < nb_local; ++i)
+                for (int j = 0; j < nb_local; ++j)
+                {
+                    const size_t ij = static_cast<size_t>(i * nb_local + j);
+                    if (i == j)
+                    {
+                        omega[ij] = TK(0);
+                        continue;
+                    }
+                    TK sij = s[ij];
+                    TK sji = s[static_cast<size_t>(j * nb_local + i)];
+                    TK skew_ij = (sij - tk_conjugate(sji)) * TK(0.5);
+                    const double eps_i = orb_cg_eps[static_cast<size_t>(ik * nb_local + i)];
+                    const double eps_j = orb_cg_eps[static_cast<size_t>(ik * nb_local + j)];
+                    const double denom = std::abs(eps_i - eps_j) + orb_cg_level_shift;
+                    omega[ij] = skew_ij / TK(denom);
+                }
+
+            // C*S and C*Ω
+            for (int mu = 0; mu < nbs_local; ++mu)
+                for (int j = 0; j < nb_local; ++j)
+                {
+                    TK sum_cs = TK(0);
+                    TK sum_co = TK(0);
+                    for (int i = 0; i < nb_local; ++i)
+                    {
+                        const TK c = wfc(ik, i, mu);
+                        sum_cs += c * s[static_cast<size_t>(i * nb_local + j)];
+                        sum_co += c * omega[static_cast<size_t>(i * nb_local + j)];
+                    }
+                    c_times_s[static_cast<size_t>(mu * nb_local + j)] = sum_cs;
+                    c_times_omega[static_cast<size_t>(mu * nb_local + j)] = sum_co;
+                }
+
+            // Keep non-rotation part unchanged and precondition only rotation block.
+            for (int ib = 0; ib < nb_local; ++ib)
+                for (int mu = 0; mu < nbs_local; ++mu)
+                {
+                    const size_t idx = static_cast<size_t>(mu * nb_local + ib);
+                    out(ik, ib, mu) = in(ik, ib, mu) - c_times_s[idx] + c_times_omega[idx];
+                }
+        }
+    };
+
     energy_grad_->invalidate_hone_cache();
 
     if (config_.orb_ls_fixed_step && !use_sd)
@@ -3772,7 +4009,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         prev_dir.zero_out();
     }
 
-    double prev_gnorm2 = 0.0;
+    double prev_gz = 0.0;
     double prev_orb_gnorm = 0.0;
     double prev_orb_E = 0.0;
     // After a line-search failure, CG retries with pure SD and lbfgs/Adam
@@ -3844,8 +4081,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
 
         // ---- Build search direction ----
         //   SD:       d = -G
-        //   CG (FR):  d = -G + beta * T(d_prev),  beta = ||G||^2 / ||G_prev||^2
-        //             Safeguards: beta >= 0 (FR+), restart on first step and
+        //   CG (preconditioned FR): d = -M^{-1}G + beta * T(d_prev),
+        //             beta = <G, M^{-1}G> / <G_prev, M^{-1}G_prev> with FR+ clipping.
+        //             Safeguards: restart on first step and
         //             whenever <G, d> >= 0 (not a descent direction) or the
         //             inner product <G_prev, G> / ||G_prev||^2 is too large
         //             (Powell restart).
@@ -3858,12 +4096,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         //             Armijo line search (with backtracking as a safety
         //             net in case the manifold curvature invalidates the
         //             Euclidean step scale).
+        psi::Psi<TK> precond_grad(wfc);
+        orb_cg_apply_precond(grad_wfc, precond_grad);
+        const double gz = use_cg
+                              ? energy_grad_->stiefel_canonical_inner_product(wfc, grad_wfc, precond_grad)
+                              : gnorm2;
         psi::Psi<TK> dir(wfc);
-        // dir = -grad_wfc
+        // SD baseline:
+        //   - CG path: d = -M^{-1} g (ELK-style diagonal preconditioner)
+        //   - non-CG path: d = -g
         for (int ik = 0; ik < nk; ++ik)
             for (int ib = 0; ib < nb_local; ++ib)
                 for (int mu = 0; mu < nbs_local; ++mu)
-                    dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+                    dir(ik, ib, mu) = use_cg ? -precond_grad(ik, ib, mu) : -grad_wfc(ik, ib, mu);
 
         bool restart = true;
 
@@ -3898,7 +4143,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             }
             restart = false;
         }
-        if (use_cg && inner > 0 && prev_gnorm2 > 1e-30)
+        if (use_cg && inner > 0 && prev_gz > 1e-30)
         {
             // Vector-transport prev_dir to the current tangent space. We use the
             // simplest transport: project onto the new tangent space (this is
@@ -3914,8 +4159,8 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             const double powell_thr = 0.1;
             if (std::abs(prev_grad_dot) <= powell_thr * gnorm2)
             {
-                double beta = gnorm2 / prev_gnorm2;
-                // Polak-Ribiere+ style: enforce beta >= 0 for FR too.
+                // Preconditioned FR+ parameter: beta = <g, M^{-1}g> / <g_prev, M^{-1}g_prev>.
+                double beta = gz / prev_gz;
                 beta = std::max(0.0, beta);
                 // dir += beta * prev_dir
                 for (int ik = 0; ik < nk; ++ik)
@@ -3941,7 +4186,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
             for (int ik = 0; ik < nk; ++ik)
                 for (int ib = 0; ib < nb_local; ++ib)
                     for (int mu = 0; mu < nbs_local; ++mu)
-                        dir(ik, ib, mu) = -grad_wfc(ik, ib, mu);
+                        dir(ik, ib, mu) = use_cg ? -precond_grad(ik, ib, mu) : -grad_wfc(ik, ib, mu);
         }
 
         // Directional derivative  dd = <grad, dir>  (must be negative)
@@ -4176,7 +4421,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
                         prev_grad(ik, ib, mu) = grad_wfc(ik, ib, mu);
                         prev_dir(ik, ib, mu)  = dir(ik, ib, mu);
                     }
-            prev_gnorm2 = gnorm2;
+            prev_gz = gz;
         }
 
         // Energy + Riemannian gradient at the new iterate (after accepted line search).
@@ -4229,6 +4474,42 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
         << std::endl;
 
     return result;
+}
+
+template <typename TK, typename TR>
+std::vector<double> RDMFTSolver<TK, TR>::compute_elk_style_band_energies(const std::vector<double>& occ_flat,
+                                                                          const psi::Psi<TK>& wfc,
+                                                                          double n_probe)
+{
+    const size_t expected = static_cast<size_t>(nk_) * static_cast<size_t>(nbands_);
+    std::vector<double> eps(expected, 0.0);
+    if (!kv_ || !energy_grad_ || nk_ <= 0 || nbands_ <= 0 || occ_flat.size() != expected)
+    {
+        return eps;
+    }
+
+    // Keep the probe occupancy in the physical [0, 1] interval.
+    n_probe = std::min(1.0, std::max(0.0, n_probe));
+
+    std::vector<double> occ_probe = occ_flat;
+    std::vector<double> grad_occ;
+    psi::Psi<TK> grad_wfc;
+
+    for (int ik = 0; ik < nk_; ++ik)
+    {
+        const double wk = kv_->wk[ik];
+        for (int ib = 0; ib < nbands_; ++ib)
+        {
+            const int idx = ik * nbands_ + ib;
+            const double n0 = occ_probe[idx];
+            occ_probe[idx] = n_probe;
+            energy_grad_->compute(occ_probe, const_cast<psi::Psi<TK>&>(wfc), grad_occ, grad_wfc);
+            const double g_wk = grad_occ[static_cast<size_t>(idx)];
+            eps[static_cast<size_t>(idx)] = (std::abs(wk) > 1.0e-20) ? (g_wk / wk) : g_wk;
+            occ_probe[idx] = n0;
+        }
+    }
+    return eps;
 }
 
 template <typename TK, typename TR>

@@ -94,6 +94,12 @@ class RDMFTSolver
     /// rdmft_orb_grad_tol and logging.
     double orb_grad_norm(const psi::Psi<TK>& wfc_X, const psi::Psi<TK>& rgrad) const;
 
+    /// ELK-style band energies ε_ik = dE/dn|_{n_ik=probe} / wk at fixed orbitals.
+    /// Returns a flat vector in (ik-major, ib-minor) layout of size nk*nbands.
+    std::vector<double> compute_elk_style_band_energies(const std::vector<double>& occ_flat,
+                                                        const psi::Psi<TK>& wfc,
+                                                        double n_probe = 0.5);
+
     RDMFTConfig config_;
     EnergyGradient<TK, TR>* energy_grad_ = nullptr;
     const K_Vectors* kv_ = nullptr;

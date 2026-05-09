@@ -787,6 +787,19 @@ TEST(RdmftJointStrategy, alternating_still_works_with_lbfgs_adam)
         if (std::abs(c) > 1e-6) problem.mu = std::min(problem.mu * 2.0, 1e6);
     }
 
-    double E = problem.total_energy(occ, C);
-    EXPECT_NEAR(E, E_ref, 5e-2);
+    const double E_alt_phys = problem.orb_energy(occ, C);
+    EXPECT_NEAR(E_alt_phys, E_ref, 5e-2);
+
+    // Joint strategy should reproduce the same physical minimum energy while
+    // updating occupations and orbitals simultaneously.
+    auto problem_joint = make_toy_diag(8, 4, 2.0, 0.5);
+    std::vector<double> n_joint_init, C_joint_init;
+    make_init(problem_joint.n, problem_joint.nb, problem_joint.Ne, n_joint_init, C_joint_init);
+    std::vector<double> n_joint, C_joint;
+    (void)run_joint_toy_single(problem_joint,
+                               OptimizerType::LBFGS,
+                               1200, 0.1,
+                               n_joint_init, C_joint_init, n_joint, C_joint);
+    const double E_joint_phys = problem_joint.orb_energy(n_joint, C_joint);
+    EXPECT_NEAR(E_joint_phys, E_alt_phys, 5e-2);
 }
