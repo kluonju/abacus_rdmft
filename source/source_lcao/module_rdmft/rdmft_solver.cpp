@@ -701,10 +701,10 @@ void print_rdmft_run_config(const RDMFTConfig& cfg,
             if (cfg.orb_optimizer == OptimizerType::ConjugateGradient
                 || cfg.orb_optimizer == OptimizerType::LBFGS)
             {
-                add_kv(keys, vals, "rdmft_orb_cg_precond", cfg.orb_cg_precond ? "true" : "false");
+                add_kv(keys, vals, "rdmft_orb_precond", cfg.orb_cg_precond ? "true" : "false");
                 add_kv(keys,
                        vals,
-                       "rdmft_orb_cg_precond_delta",
+                       "rdmft_orb_precond_delta",
                        (cfg.orb_cg_precond_delta > 0.0) ? as_sci(cfg.orb_cg_precond_delta) : std::string("auto"));
             }
             add_kv(keys, vals, "rdmft_outer_maxiter", std::to_string(cfg.outer_maxiter));
@@ -3887,7 +3887,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_orbitals(
     bool orb_cg_precond_logged = false;
     if ((use_cg || use_lbfgs) && !config_.orb_cg_precond)
     {
-        GlobalV::ofs_running << "      orb level-shift preconditioner: disabled by rdmft_orb_cg_precond = false"
+        GlobalV::ofs_running << "      orb level-shift preconditioner: disabled by rdmft_orb_precond = false"
                              << std::endl;
     }
     const auto refresh_orb_precond_from_grad_occ = [&](const std::vector<double>& grad_occ_in,

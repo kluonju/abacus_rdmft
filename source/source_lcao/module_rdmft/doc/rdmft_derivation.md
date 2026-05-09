@@ -1,5 +1,13 @@
 # Reduced Density Matrix Functional Theory (RDMFT): Mathematical Derivation
 
+This note is written to match the **ABACUS LCAO implementation** in
+`source/source_lcao/module_rdmft` (energy/gradients in `rdmft_energy_gradient.*`,
+XC kernels in `rdmft_xc_functional.h`, manifold ops in `rdmft_stiefel.h`,
+constraints in `rdmft_occupation.h`, outer loops in `rdmft_solver.cpp`). Where
+the physics literature uses a compact integral notation, we spell out the same
+weighting and signs as in the code (including optional HF occupation entropy and
+mixed EXX channels).
+
 ## 1. One-Body Reduced Density Matrix
 
 The one-body reduced density matrix (1-RDM) in spectral representation is
@@ -43,26 +51,31 @@ $$
 \rho(\mathbf{r}) = \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_{\mu\nu} \gamma_{\mu\nu}^{\mathbf{k}}  \chi_{\mu\mathbf{k}}(\mathbf{r})  \chi_{\nu\mathbf{k}}^*(\mathbf{r})
 $$
 
-### Planewave Expansion
+### Role of the planewave grid (ABACUS)
 
-For planewave (PW) basis, each natural orbital is:
-
-$$
-\phi_{i\mathbf{k}}(\mathbf{r}) = \frac{1}{\sqrt{\Omega}} \sum_{\mathbf{G}} c_{i\mathbf{k}}(\mathbf{G})  e^{i(\mathbf{k}+\mathbf{G})\cdot\mathbf{r}}
-$$
-
-where $\Omega$ is the unit cell volume and $\mathbf{G}$ are reciprocal lattice vectors within
-the kinetic energy cutoff. Orthonormality is simply
-$\sum_{\mathbf{G}} c_{i\mathbf{k}}^*(\mathbf{G}) c_{j\mathbf{k}}(\mathbf{G}) = \delta_{ij}$,
-so the coefficients lie on the standard Stiefel manifold $\mathrm{St}(N_b, N_{\mathrm{pw}}^{\mathbf{k}})$.
+The **natural orbitals optimised in RDMFT are expanded in the LCAO basis** as in
+the previous subsection. The electronic **density** is accumulated on the
+real-space grid and the **Hartree** potential uses the same PW-based Hartree
+machinery as the rest of LCAO (`H_Hartree_pw`, `rho_basis` passed into
+`EnergyGradient::update_ion`). The helper `StiefelManifold` can be constructed
+with `S = I` (identity overlap) as a *mathematical* special case (see comments
+in `rdmft_stiefel.h`); the shipped RDMFT driver, however, always works in LCAO
+with overlap $S^{\mathbf{k}}$ and the $S$-weighted Stiefel constraint
+$(C^{\mathbf{k}})^\dagger S^{\mathbf{k}} C^{\mathbf{k}} = I$.
 
 ---
 
 ## 2. Total Energy Functional
 
 $$
-E[n_{i\mathbf{k}}, C^{\mathbf{k}}] = E_{\mathrm{one}} + E_H[\rho] + E_{xc}[\gamma] + E_{\mathrm{Ewald}}
+E[n_{i\mathbf{k}}, C^{\mathbf{k}}] = E_{\mathrm{one}} + E_H[\rho] + E_{xc}[\gamma]
++ E_{\mathrm{ent}}(n) + E_{\mathrm{Ewald}}
 $$
+
+where $E_{\mathrm{ent}} = \gamma \sum_{\mathbf{k},i} w_{\mathbf{k}} f_{\mathrm{bin}}(n_{i\mathbf{k}})$
+is **optional HF-only** entropy (`rdmft_occ_entropy_gamma`, default $\gamma=0$).
+The running total returned by `EnergyGradient::compute` is
+`E_one_ + E_hartree_ + E_xc_ + E_entropy_ + E_ewald_`.
 
 ### 2.1 One-Body Energy
 
@@ -90,8 +103,9 @@ This is a functional of $\rho$, which in turn depends on $n_{i\mathbf{k}}$, $C^{
 ### 2.3 Exchange-Correlation Functionals
 
 In RDMFT, the xc energy is typically an explicit functional of the 1-RDM.
-We consider four functionals, all defined through the coupling function
-$f(n_i, n_j)$ appearing in the exchange-like integral:
+The code implements several kernels (`rdmft_functional` / `XCFunctionalType`),
+many of which are defined through a coupling function $f(n_i, n_j)$ in the
+exchange-like integral notation:
 
 $$
 E_{xc}[\gamma] = -\frac{1}{2} \sum_{\mathbf{k}\mathbf{k}'} w_{\mathbf{k}} w_{\mathbf{k}'}
@@ -100,6 +114,10 @@ $$
 
 where $K_{ij}^{\mathbf{k}\mathbf{k}'} = \langle \phi_{i\mathbf{k}} \phi_{j\mathbf{k}'} | \hat{v}_{c} | \phi_{j\mathbf{k}'} \phi_{i\mathbf{k}} \rangle$
 are two-electron exchange integrals.
+
+The sign and $\tfrac{1}{2}$ prefactor in this **continuum** notation are conventional;
+the **code** evaluates exchange through the modified density matrix and
+`Exx_LRI` as in §2.4 (no explicit dense $K_{ij}$ tensor).
 
 #### 2.3.1 Hartree-Fock (HF)
 
@@ -134,32 +152,113 @@ $$
 The diagonal modification ensures correct self-interaction cancellation.
 The off-diagonal part uses the Müller form.
 
-### 2.4 Unified Exchange via Modified Density Matrix
-
-For the separable functionals (HF, Müller, Power), we can write
-$f(n_i, n_j) = g(n_i) g(n_j)$, and define the **modified density matrix**:
+#### 2.3.5 Corrected Hartree-Fock (CHF, INPUT `chf`)
 
 $$
-\gamma_{\mathrm{xc},\mu\nu}^{\mathbf{k}} = \sum_i w_{\mathbf{k}}  g(n_{i\mathbf{k}})  C_{\mu i}^{\mathbf{k}} (C_{\nu i}^{\mathbf{k}})^*
+f^{\mathrm{CHF}}(n_i, n_j)
+= \tfrac{1}{2} n_i n_j
++ \tfrac{1}{2} \sqrt{n_i(1-n_i)} \, \sqrt{n_j(1-n_j)}
 $$
 
-The exchange energy is then
+(as implemented in `XCFunctional::f`; derivatives use `chf_corr_term_deriv`).
+
+#### 2.3.6 Csanyi–Goedecker–Arias (CGA, INPUT `cga`)
 
 $$
-E_{xc} = -\frac{1}{2} \mathrm{Tr}[\gamma_{\mathrm{xc}}  K  \gamma_{\mathrm{xc}}]
-= \frac{1}{2} \mathrm{Tr}[\gamma_{\mathrm{xc}}  H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}]]
+f^{\mathrm{CGA}}(n_i, n_j)
+= \tfrac{1}{4} n_i n_j
++ \tfrac{1}{4} \sqrt{n_i(2-n_i)} \, \sqrt{n_j(2-n_j)}
 $$
 
-where $H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}]$ is the exchange Hamiltonian computed from
-$\gamma_{\mathrm{xc}}$ using LibRI.
-
-For the GU functional, the energy has an additional correction:
+#### 2.3.7 GEO functional (INPUT `geo`)
 
 $$
-E_{xc}^{\mathrm{GU}} = E_{xc}^{\mathrm{Müller}} + \frac{1}{2} \sum_{\mathbf{k}} w_{\mathbf{k}}^2 \sum_i (n_{i\mathbf{k}}^2 - n_{i\mathbf{k}})  J_{ii}^{\mathbf{k}\mathbf{k}}
+f^{\mathrm{GEO}}(n_i, n_j)
+= \frac{1}{4} n_i n_j
++ \frac{1}{4} n_i^{1/2} n_j^{1/2}
++ \frac{1}{2} n_i^{3/4} n_j^{3/4}
 $$
 
-where $J_{ii}^{\mathbf{k}\mathbf{k}} = K_{ii}^{\mathbf{k}\mathbf{k}}$ is the self-exchange integral.
+implemented as a **sum of three separable power pieces** with coefficients
+$(\tfrac{1}{4}, \tfrac{1}{4}, \tfrac{1}{2})$ and exponents $(1, \tfrac{1}{2}, \tfrac{3}{4})$,
+each regularised at small $n$ like the Power functional (`pow_reg` / `dpow_reg`).
+
+#### 2.3.8 OptGM (INPUT `optgm`)
+
+Convex combination of HF and a fixed Power-like channel:
+
+$$
+f^{\mathrm{OptGM}}(n_i, n_j)
+= w_{\mathrm{HF}} \, n_i n_j
++ w_{\mathrm{P}} \, n_i^{\alpha_{\mathrm{OptGM}}} n_j^{\alpha_{\mathrm{OptGM}}},
+\qquad
+\alpha_{\mathrm{OptGM}} \approx 0.54242188,\quad
+w_{\mathrm{P}} \approx 0.94012500
+$$
+
+(with $w_{\mathrm{HF}} = 1 - w_{\mathrm{P}}$).
+
+### 2.4 Exchange energy in the ABACUS implementation
+
+#### Modified density matrix (single EXX build)
+
+In `EnergyGradient::build_DM_xc`, the exchange density matrix at each
+$\mathbf{k}$ is assembled with **band weights** $w_{\mathbf{k}}\,g(n_{i\mathbf{k}})$
+fed into the same `cal_dm_psi` machinery as the KS density matrix. In LCAO
+components,
+
+$$
+\gamma_{\mathrm{xc},\mu\nu}^{\mathbf{k}}
+= \sum_i w_{\mathbf{k}} \, g(n_{i\mathbf{k}}) \,
+C_{\mu i}^{\mathbf{k}} (C_{\nu i}^{\mathbf{k}})^*
+$$
+
+Bands with $|g(n)|$ below a tiny cutoff are skipped (`rdmft_occ_weight_eps`).
+
+The **Fock exchange** Hamiltonian $H_{\mathrm{exx}}$ is then built from
+$\gamma_{\mathrm{xc}}$ via the **range-separated / density-fitting EXX stack**
+(`Exx_LRI`, `RI_2D_Comm::add_Hexx`, `cal_exx_elec`), not a literal dense
+four-index $K_{ij}$ build.
+
+For **HF** in code, $g(n)=\max(0,n)$ (occupations are still clipped to $[0,1]$
+for other functionals; HF keeps the raw weight for the KS seed convention).
+
+#### Energy accumulation (separable HF / Müller / Power / GU)
+
+Let $\varepsilon^{\mathrm{exx}}_{i\mathbf{k}} = \langle \phi_{i\mathbf{k}} |
+H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}] | \phi_{i\mathbf{k}} \rangle$ be the
+diagonal returned as `vx_diag` in `EnergyGradient::compute`. The exchange part
+of the RDMFT energy is accumulated **per band** as
+
+$$
+E_{xc} = \frac{1}{2} \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i
+g(n_{i\mathbf{k}}) \, \varepsilon^{\mathrm{exx}}_{i\mathbf{k}}
+$$
+
+(the same $\tfrac{1}{2}$ prefactor as the Hartree term uses for the explicit
+$n$-weighted diagonal).
+
+**GU functional (implementation detail).** The analytic GU kernel uses
+$f^{\mathrm{GU}}(n_i,n_j)=\sqrt{n_i}\sqrt{n_j}$ off-diagonal and $n_i^2$ on the
+diagonal; `XCFunctional` also exposes `gu_diag_factor(n)=n^2-n$ and its
+derivative for that diagonal correction. In the **current** `EnergyGradient`
+path, GU is assigned the same Müller exponent $\alpha=\tfrac{1}{2}$ for $g$ and
+$\mathrm{d}g$ as Müller, and **only** the single modified DM above is passed to
+EXX: the explicit extra energy $\tfrac{1}{2}\sum_{\mathbf{k}} w_{\mathbf{k}}^2
+\sum_i (n_{i\mathbf{k}}^2-n_{i\mathbf{k}})\,J_{ii}^{\mathbf{k}\mathbf{k}}$ is
+**not** added in `compute` / `compute_energy`. Thus GU in production runs
+coincides with the Müller-type EXX treatment until a future patch wires in the
+diagonal correction.
+
+#### Mixed channels (GEO, CHF, CGA, OptGM)
+
+For these types, `EnergyGradient::compute` performs **several** EXX builds in
+sequence: for each channel $t$ it forms a modified DM with per-band weights
+$w_{\mathbf{k}}$ times the channel weight $p_t(n_{i\mathbf{k}})$ (linear $n$ for
+the HF-like piece, $\sqrt{n(1-n)}$, $\sqrt{n(2-n)}$, or regularised
+$n^{\alpha_t}$ as coded), accumulates $H_{\mathrm{exx}}\psi$ and diagonal
+contributions, and sums energy and gradients with the fixed coefficients
+(`geo_coef` / `optgm_*_weight` / CHF / CGA weights).
 
 ---
 
@@ -172,6 +271,9 @@ $$
 $$
 
 where $N_e$ is the number of electrons per unit cell.
+
+The solver target $N_e$ may follow KS-weighted sums or `PARAM.inp.nelec` plus an
+optional `rdmft_nelec_delta` offset (`RDMFTNelectronTargetMeta` in `rdmft_type.h`).
 
 ### 3.2 Ensemble N-representability
 
@@ -220,7 +322,26 @@ $$
 
 **Inverse:** $x = \ln(n/(1-n))$ 
 
-### 4.3 Transformed Gradient
+### 4.3 Sigma-shift parameterization (INPUT `sigma_shift`)
+
+Used with the **joint** solver only (`RDMFTSolver::init` rejects `sigma_shift` when
+`rdmft_solver_strategy` is alternating). Unconstrained parameters
+$z_{i\mathbf{k}}\in\mathbb{R}$ are mapped through a **shared** scalar shift
+$\lambda$ and the stable sigmoid $\sigma$ (`SigmaShiftOccParam::stable_sigmoid`):
+
+$$
+n_{i\mathbf{k}} = \sigma(z_{i\mathbf{k}} + \lambda),
+\qquad
+\sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i n_{i\mathbf{k}} = N_e .
+$$
+
+Each outer step solves for $\lambda$ by **bisection** on the monotone map
+$\lambda \mapsto \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i \sigma(z_{i\mathbf{k}}+\lambda)$.
+The chain rule for $\partial E/\partial z$ subtracts a single electron-count
+term proportional to $w_{\mathbf{k}}$; see `SigmaShiftOccParam` in
+`rdmft_occupation.h`.
+
+### 4.4 Transformed gradient
 
 Given the energy gradient $\partial E / \partial n_{i\mathbf{k}}$, the gradient in the
 unconstrained parameter is:
@@ -237,117 +358,122 @@ $$
 
 ## 5. Gradients of the Total Energy
 
-### 5.1 Gradient w.r.t. Natural Occupation Numbers
+### 5.1 Gradient w.r.t. natural occupation numbers (as in `EnergyGradient::compute`)
+
+Let $h_{ii}^{\mathrm{one}}(\mathbf{k})$ and $v_{H,ii}(\mathbf{k})$ denote the
+**diagonal** matrix elements (code: `h_one_diag`, `vh_diag`) of the one-body
+Hamiltonian and the Hartree potential in the natural-orbital basis at
+$(\mathbf{k},i)$, and let $\varepsilon^{\mathrm{exx}}_{i\mathbf{k}}$ be the
+corresponding diagonal of $H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}]$ (`vx_diag`).
+
+The **accumulated** partial derivatives use a **plus** Hartree diagonal (this is
+what the implementation differentiates consistently with the $n$-weighted
+Hartree energy term and the internal potential rebuild):
 
 $$
-\frac{\partial E}{\partial n_{i\mathbf{k}}} = w_{\mathbf{k}}  h_{ii}^{\mathrm{one}}(\mathbf{k})
-- w_{\mathbf{k}}  v_{H,ii}(\mathbf{k})
-- \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}}}
+\frac{\partial E}{\partial n_{i\mathbf{k}}}
+= w_{\mathbf{k}} \Bigl(
+h_{ii}^{\mathrm{one}}(\mathbf{k}) + v_{H,ii}(\mathbf{k})
+\Bigr)
++ \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}}}
 $$
 
-where $v_{H,ii}(\mathbf{k}) = (C^{\mathbf{k}})^\dagger V_H^{\mathbf{k}} C^{\mathbf{k}} |_{ii}$.
-
-For the separable functionals (HF, Müller, Power):
+For **separable** HF / Müller / Power / GU (single EXX build),
 
 $$
-\frac{\partial E_{xc}}{\partial n_{i\mathbf{k}}} = w_{\mathbf{k}}  g'(n_{i\mathbf{k}})  \langle \phi_{i\mathbf{k}} | H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}] | \phi_{i\mathbf{k}} \rangle
+\frac{\partial E_{xc}}{\partial n_{i\mathbf{k}}}
+= w_{\mathbf{k}} \, g'(n_{i\mathbf{k}}) \,
+\varepsilon^{\mathrm{exx}}_{i\mathbf{k}} .
 $$
 
-For the GU functional, there is an additional self-interaction correction term:
+For **mixed** GEO / CHF / CGA / OptGM, the code adds the weighted derivatives of
+each channel’s occupation weights to the same diagonal exchange response
+(`mix_vx_G_acc` in `rdmft_energy_gradient.cpp`).
+
+**Optional HF entropy** (INPUT `rdmft_occ_entropy_gamma` $=\gamma>0$, HF only):
 
 $$
-\frac{\partial E_{xc}^{\mathrm{GU}}}{\partial n_{i\mathbf{k}}} = w_{\mathbf{k}} \Bigl[
-g'_{\mathrm{M}}(n_{i\mathbf{k}})  h_{\mathrm{exx},ii}^{\mathbf{k}}
-- w_{\mathbf{k}} (2n_{i\mathbf{k}} - 1)  J_{ii}^{\mathbf{k}\mathbf{k}}
-\Bigr]
+E_{\mathrm{ent}} = \gamma \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i f_{\mathrm{bin}}(n_{i\mathbf{k}}),
+\qquad
+\frac{\partial E_{\mathrm{ent}}}{\partial n_{i\mathbf{k}}}
+= \gamma \, w_{\mathbf{k}} \, f'_{\mathrm{bin}}(n_{i\mathbf{k}}),
 $$
 
-### Derivatives of g(n):
+with $f_{\mathrm{bin}}(n)=n\ln n+(1-n)\ln(1-n)$ (`binary_entropy_f`).
+
+**GU remark.** The analytic extra term from the diagonal GU kernel is **not**
+added on top of the Müller-type $\mathrm{d}g$ contribution in `compute`; the
+occupation derivative follows the same formula as Müller/Power with GU’s
+regularised $g,\mathrm{d}g$ at $\alpha=\tfrac{1}{2}$.
+
+### Derivatives of $g(n)$ (closed form on $n\ge\varepsilon$; see code for $n<\varepsilon$)
 
 
-| Functional | $g(n)$     | $g'(n)$                |
-| ---------- | -------- | -------------------- |
-| HF         | $n$        | $1$                    |
-| Müller     | $n^{1/2}$  | $\frac{1}{2} n^{-1/2}$ |
-| Power      | $n^\alpha$ | $\alpha n^{\alpha-1}$  |
+| Functional | $g(n)$ (code, $n\in[0,1]$) | $g'(n)$ on $n\ge\varepsilon$ |
+| ---------- | ------------------------- | ------------------------------ |
+| HF         | $\max(0,n)$               | $1$                            |
+| Müller     | $n^{1/2}$ (regularised)   | $\tfrac{1}{2} n^{-1/2}$        |
+| Power      | $n^{\alpha}$ (regularised) | $\alpha n^{\alpha-1}$        |
+| GU         | same Müller branch        | same Müller branch             |
+
+For $\alpha<1$, `XCFunctional` replaces $g$ and $g'$ below a cutoff
+$\varepsilon_{\mathrm{reg}}$ (default $10^{-8}$) by a linear Taylor extrapolation
+from $n=\varepsilon_{\mathrm{reg}}$ so $g'(0)$ stays finite (`rdmft_xc_functional.h`).
 
 
-### 5.2 Gradient w.r.t. Orbital Coefficients (Euclidean)
+### 5.2 Gradient w.r.t. orbital coefficients (C-space, before Stiefel projection)
 
-The Euclidean gradient in the ambient space is:
-
-$$
-G_{\mu i}^{\mathbf{k}} = \frac{\partial E}{\partial (C_{\mu i}^{\mathbf{k}})^*}
-= w_{\mathbf{k}} \Bigl[
-n_{i\mathbf{k}} \bigl(h^{\mathbf{k}} + V_H^{\mathbf{k}}\bigr) C^{\mathbf{k}} \big|_{\mu i}
-
-- g(n_{i\mathbf{k}})  H_{\mathrm{exx}}^{\mathbf{k}} C^{\mathbf{k}} \big|_{\mu i}
-\Bigr]
-$$
-
-In compact notation:
-
-$$
-G^{\mathbf{k}} = w_{\mathbf{k}} \Bigl[
-\bigl(h^{\mathbf{k}} + V_H^{\mathbf{k}}\bigr) C^{\mathbf{k}}  \mathrm{diag}(\mathbf{n}_{\mathbf{k}})
-
-- H_{\mathrm{exx}}^{\mathbf{k}} C^{\mathbf{k}}  \mathrm{diag}(g(\mathbf{n}_{\mathbf{k}}))
-\Bigr]
-$$
-
-For GU, the exchange Hamiltonian $H_{\mathrm{exx}}$ is from the Müller DM,
-plus a diagonal self-interaction correction:
+The **returned** LCAO gradient in `EnergyGradient::compute` includes the usual
+factor **2** from the real pairing / Wirtinger convention documented in the
+source (gamma-only real case matches $\partial E/\partial C = 2 n H C$ for a
+single quadratic orbital energy):
 
 $$
-G^{\mathbf{k}}_{\mathrm{GU}} = G^{\mathbf{k}}_{\mathrm{Müller}}
-- w_{\mathbf{k}}^2 \sum_i (n_{i\mathbf{k}}^2 - n_{i\mathbf{k}}) \frac{\partial J_{ii}}{\partial (C^{\mathbf{k}})^*}
+G_{\mu i}^{\mathbf{k}}
+= 2 \, w_{\mathbf{k}} \Bigl[
+n_{i\mathbf{k}} \bigl((h^{\mathbf{k}} + V_H^{\mathbf{k}}) C^{\mathbf{k}}\bigr)_{\mu i}
++ \bigl(\text{exchange column}\bigr)_{\mu i}
+\Bigr],
 $$
 
-### 5.3 Riemannian Gradient on Stiefel Manifold
+where the exchange column is $g(n_{i\mathbf{k}})\,(H_{\mathrm{exx}}^{\mathbf{k}} C^{\mathbf{k}})_{\mu i}$
+for a single EXX build, and for mixed functionals it is the pre-summed
+$H_{\mathrm{exx}}\psi$ contribution per band (`mix_Hpsi_x_acc`). Bands with
+zero occupation (or zero $g(n)$ in the exchange-only column) are skipped.
 
-The Stiefel manifold $\mathrm{St}(N_b, N; S)$ with metric induced by $S$ has the
-tangent space at $C$:
+After assembly, $G$ is converted to **X-space** (`grad_C_to_X`) and projected on
+the Stiefel tangent space (`project_orbital_gradient`).
 
-$$
-T_C \mathrm{St} = \{ Z \in \mathbb{C}^{N \times N_b} : C^\dagger S Z + Z^\dagger S C = 0 \}
-$$
 
-The Riemannian gradient is the projection of the Euclidean gradient onto the tangent space:
+### 5.3 Riemannian gradient on the Stiefel manifold (code: `StiefelManifold::project_tangent`)
 
-$$
-\mathrm{grad} E = G - S^{-1} C  \mathrm{sym}(C^\dagger G)
-$$
-
-where $\mathrm{sym}(A) = \frac{1}{2}(A + A^\dagger)$.
-
-For the **canonical metric** on Stiefel:
+With overlap $S^{\mathbf{k}}$, the tangent space at $C$ is
+$T_C \mathrm{St} = \{ Z : C^\dagger S Z + Z^\dagger S C = 0 \}$.
+The implementation projects the ambient (Euclidean) gradient $G$ as
 
 $$
-\mathrm{grad} E = G - C (C^\dagger S G)_{\mathrm{sym}}
+\mathrm{proj}_C(G) = G - C \,\mathrm{sym}\!\bigl(C^\dagger S G\bigr),
+\qquad
+\mathrm{sym}(A)=\tfrac{1}{2}(A+A^\dagger),
 $$
 
-Wait, more precisely, with the metric $\langle Z_1, Z_2 \rangle = \mathrm{Re}\,\mathrm{Tr}(Z_1^\dagger S Z_2)$:
+i.e. the first Hermitian factor uses $S C$ when $S$ is present (`rdmft_stiefel.h`).
+
+The **inner product** on tangent vectors is
+$\langle \eta_1, \eta_2 \rangle = \mathrm{Re}\,\mathrm{Tr}(\eta_1^\dagger S \eta_2)$.
+
+### 5.4 Retraction (code: `StiefelManifold::retract` / `reorthogonalize`)
+
+Given a tangent step $\eta$ and line-search parameter $\alpha$, set
+$Y = C + \alpha\eta$, form the Gram matrix $M = Y^\dagger S Y$, Cholesky factor
+$M = L L^\dagger$, and retract to
 
 $$
-\mathrm{grad} E = S^{-1} G - C  \mathrm{sym}(C^\dagger G)
+C_{\mathrm{new}} = Y \, L^{-\dagger}.
 $$
 
-### 5.4 Retraction on Stiefel Manifold
-
-Given a tangent vector $\eta \in T_C \mathrm{St}$, the QR-based retraction is:
-
-$$
-R_C(\eta) = \mathrm{qf}(C + \eta)
-$$
-
-where $\mathrm{qf}$ denotes the Q-factor of the QR decomposition (with positive diagonal in R),
-followed by S-orthogonalization: solve $S^{1/2} (C+\eta) = QR$, return $S^{-1/2} Q$.
-
-For the **polar retraction**:
-
-$$
-R_C(\eta) = (C + \eta) \bigl[ (C + \eta)^\dagger S (C + \eta) \bigr]^{-1/2}
-$$
+(Comments in the header also mention a polar form; the **default** retraction
+path used by the solver is this Cholesky-based $S$-orthogonalisation.)
 
 ---
 
@@ -512,8 +638,8 @@ Numerical tips and implementation notes:
 - If many occupations are interior (not at bounds), projected gradient is efficient.
 - If orthonormal orbitals are optimized concurrently, use separate step sizes for
    orbitals and occupations or alternate updates (block coordinate style).
-- For orbital constraints (Stiefel), prefer Riemannian retraction (QR or polar)
-   rather than Euclidean clipping; see §5.4.
+- For orbital constraints (Stiefel), use the Cholesky-based $S$-orthogonalisation
+  retraction in production (`StiefelManifold::retract`); see §5.4.
 
 Pseudocode (ABACUS projected-gradient inner loop; `project` denotes
 $P_{\mathcal{C}}$; neglect spin labels):
@@ -556,99 +682,45 @@ When not to use:
    an active-set method or a second-order reduced Newton solve on the free set
    may converge much faster near the solution.
 
-### 6.3 Active Set Method
+### 6.3 Active set (`rdmft_constraint = active_set`)
 
-Maintain active sets
-$$\mathcal{A}_0 = \{I:\; n_I = 0\},\qquad \mathcal{A}_1 = \{I:\; n_I = 1\}$$
-and the free set $\mathcal{F} = \{I:\; 0 < n_I < 1\}$, where again $I=(i,\mathbf{k})$.
+This path is **not** a full reduced-space Newton KKT solve on the free variables;
+it is a **gradient-projection style** loop that shares much machinery with the PG
+case (`rdmft_solver.cpp`, `ConstraintMethod::ActiveSet`).
 
-Overview:
+**Active identification** (`OccupationConstraint::identify_active_set`): for each
+flattened index $I=(i,\mathbf{k})$ with tolerance `tol` (default $10^{-8}$),
 
-- The active-set method iteratively guesses which bounds are active (occupied at
-   0 or 1) and solves a reduced equality-constrained optimization on the free set.
-   It then updates Lagrange multipliers for the active constraints and adjusts the
-   active set until KKT conditions are satisfied.
+- **lower active** if $n_I \le \texttt{tol}$ and $(\nabla E)_I > 0$ (gradient points
+  into the interior of $[0,1]$ from the $n=0$ face);
+- **upper active** if $n_I \ge 1-\texttt{tol}$ and $(\nabla E)_I < 0$;
+- otherwise **free**.
 
-Core algorithm (bound/simplex case):
+**Reduced gradient** (`apply_active_set`): components on active indices are set to
+zero; on free indices the code adds $\lambda\, w_{\mathbf{k}}$ with
+$\lambda = -(\sum_{I\in\mathcal{F}} w_{\mathbf{k}(I)} (\nabla E)_I) /
+\sum_{I\in\mathcal{F}} w_{\mathbf{k}(I)}^2$ so the modified vector is orthogonal
+(in the $w$-weighted sense) to the electron-sum constraint row.
 
-1. Choose an initial active set (for example from the current projected-gradient iterate).
-2. Solve the reduced problem on free variables: minimize $E(n)$ subject to
-    $\sum_{I\in\mathcal{F}} w_I n_I = N_e - \sum_{I\in\mathcal{A}_1} w_I$ and
-    $n_I$ fixed at 0 or 1 on active indices. This can be done via a Newton step
-    on free variables or by solving the KKT linear system for a quadratic model.
-3. If the step violates a bound for some free index, move along the step until
-    the first bound is hit; add that index to the corresponding active set and go to 2.
-4. Compute multipliers $\lambda_I$ for active constraints. If any multiplier
-    violates complementarity (wrong sign), remove its constraint from the active
-    set and go to 2.
-5. Stop when primal feasibility, complementary slackness and dual feasibility
-    (KKT residuals) are below tolerances.
+**Search direction** uses the same `EuclideanOptimizer` family as PG (SD / CG /
+L-BFGS / Adam) on this modified gradient; the direction is then **zeroed on active
+indices** so bound-pinned occupations do not move.
 
-Pseudocode (sketch):
+**Line search** follows the same `rdmft_occ_ls_type` policy as PG (Armijo by
+default; optional strong / weak Wolfe for CG / L-BFGS in alternating mode, etc.),
+with **trial points clipped and re-projected** onto
+$\mathcal{C}=\{0\le n\le 1,\ \sum w n = N_e\}$ via the same shift–clip dual solve
+as in §6.2.
 
-```text
-initialize n, form A0, A1, F
-while not converged:
-   solve reduced Newton system on F (or perform CG on Hessian-free model)
-   compute candidate step and max step length before hitting bounds
-   if bound hit:
-      step to bound, add index to A0 or A1
-      continue
-   accept full step
-   compute multipliers for active constraints
-   if any multiplier violates sign condition:
-      remove violating index from active set
-      continue
-   check KKT residuals -> break if small
-end
-```
+**Stopping / diagnostics**: early exit on the first inner iteration if the
+constraint residual, free-set stationarity norm of the modified gradient, and a
+**dual complementarity** surrogate (`active_set_dual_complementarity_violation` in
+`rdmft_solver.cpp`) are all below `rdmft_occ_tol`. Otherwise the loop continues up
+to `rdmft_occ_maxiter`. When the **number of active constraints changes**, the
+occupation optimiser state is **reset** (same pattern as PG line-search failure).
 
-Computing multipliers and KKT system:
-
-- If the reduced problem is solved by Newton, form the KKT linear system
-   (H_F  A^T; A 0) for Hessian on free set $H_F$ and equality constraint matrix
-   $A$ (the weighted-sum row). Solve for primal step and multiplier update.
-- For large systems use iterative solvers (CG, MINRES) preconditioned by a
-   diagonal or limited-memory factor.
-
-Numerical tips:
-
-- Warm-start linear solves: cache factorizations of the reduced Hessian and update
-   incrementally when the active set changes.
-- Use limited-memory quasi-Newton (lbfgs) on the free set if exact Hessians are
-   expensive; form a small KKT system for the equality constraint.
-- Add trust-region safeguards or fallback to projected-gradient when the
-   reduced-step increases the objective (nonconvexity caution).
-
-When to prefer active-set:
-
-- When only a small fraction of occupations are at the bounds (sparse active set),
-   the reduced Newton/QUASI-NEWTON solves can converge in very few outer iterations
-   and achieve fast (superlinear) local convergence.
-
-Hybrid strategies:
-
-- A practical pattern is to run projected-gradient iterations to approach
-   a neighborhood of the solution, then switch to an active-set solver to
-   enforce exact complementary slackness and remove the residual projected gradient.
-- For RDMFT: use projected gradient for several outer iterations, detect when
-   many occupations settle near 0 or 1, then invoke active-set on the remaining
-   free occupations while holding orbitals fixed (or solved together in a
-   reduced joint solve).
-
-Stopping and tolerances:
-
-- KKT residual tolerances for active-set: primal feasibility ~1e-8–1e-6,
-   dual complementarity ~1e-6–1e-4 depending on problem scale.
-- Use looser tolerances during early iterations and tighten near convergence.
-
-Examples and diagnostics:
-
-- Log active-set entries and multiplier signs each iteration to diagnose
-   oscillations (add/remove cycles). If oscillations occur, increase damping
-   or use a small trust-region.
-- Compare final active-set with projected-gradient saturations to validate
-   the hybrid strategy.
+For a textbook reduced active-set Newton method on the free face, see standard
+optimisation references; the paragraph above describes what is actually coded.
 
 
 ---
@@ -670,16 +742,20 @@ $$
 \mathcal{M} = \underbrace{\mathbb{R}^{N_k \times N_b}}_{\text{occupation (Euclidean)}} \times \prod_{\mathbf{k}} \underbrace{\mathrm{St}(N_b, N; S^{\mathbf{k}})}_{\text{orbitals (Stiefel)}}
 $$
 
-With cosine-squared parameterization, the occupation part becomes unconstrained Euclidean
-(plus the augmented Lagrangian for electron number). The product manifold approach optimizes
-all variables simultaneously using Riemannian optimization.
+With cosine-squared or logistic parameters, the occupation block is unconstrained
+Euclidean **together with** the augmented Lagrangian for $\sum w n = N_e$ when
+using `rdmft_constraint = augmented_lagrangian`. With **`rdmft_occ_param sigma_shift`**
+and the **joint** strategy, the electron sum is enforced by the implicit shift
+(§4.3) and **no** augmented-Lagrangian penalty on $N_e$ is used for occupations.
 
-The tangent vector at a point $(\boldsymbol{\theta}, C^{\mathbf{k}})$ is
-$(\delta\boldsymbol{\theta}, \eta^{\mathbf{k}})$ where
-$\delta\boldsymbol{\theta} \in \mathbb{R}^{N_k \times N_b}$ and
+The tangent vector at a point $(\boldsymbol{p}, C^{\mathbf{k}})$ is
+$(\delta\boldsymbol{p}, \eta^{\mathbf{k}})$ where
+$\delta\boldsymbol{p} \in \mathbb{R}^{N_k \times N_b}$ and
 $\eta^{\mathbf{k}} \in T_{C^{\mathbf{k}}} \mathrm{St}$.
 
-Retraction: apply Euclidean update to $\boldsymbol{\theta}$ and Stiefel retraction to each $C^{\mathbf{k}}$.
+Retraction: update occupation parameters in Euclidean fashion (linear in $p$ for
+cosine/logistic; implicit $\lambda$ solve each step for sigma-shift), and apply
+the Stiefel retraction of §5.4 to each $C^{\mathbf{k}}$.
 
 In the implementation (`rdmft_solver.cpp::solve_joint`), the occupation
 parameters and orbital coefficients are packed into **one** vector
@@ -701,8 +777,10 @@ keyword (default lbfgs), drives its evolution. Each outer iteration:
    derivative
    $dd_{\text{total}} = \langle \nabla_p E, d_p\rangle + \sum_{\mathbf{k}} \langle G_R^{\mathbf{k}}, d_{C^{\mathbf{k}}}\rangle_{S^{\mathbf{k}}}$
    is not negative;
-5. performs a single Armijo backtracking line search along the packed
-   direction: the occupation parameters are updated linearly
+5. performs **geometric** Armijo backtracking along the packed direction (trial
+   $\alpha$, shrink by `line_search_rho` until Armijo holds or `line_search_max_iter`
+   is hit—**no** polynomial interpolation branch, unlike `armijo_line_search` in
+   `rdmft_optimizer.h`): occupation parameters update linearly
    $p \leftarrow p + \alpha\, d_p$, while each $C^{\mathbf{k}}$ is retracted onto
    the generalised Stiefel manifold via
    $C^{\mathbf{k}} \leftarrow R_{C^{\mathbf{k}}}(\alpha\, d_{C^{\mathbf{k}}})$;
@@ -718,56 +796,215 @@ two independent block updates.
 
 ---
 
-## 8. Optimization Algorithms
+## 8. Optimisation algorithms and line searches
 
-All algorithms below work generically on the manifold $\mathcal{M}$ (or its submanifolds
-in the alternating case).
+The **Euclidean** directions for occupations (after parameterisation) and for the
+**packed** joint vector are produced by `EuclideanOptimizer` in `rdmft_optimizer.h`.
+Orbital-only steps in the **alternating** strategy additionally **project** the
+ambient gradient to the Stiefel tangent space and use **Riemannian** inner
+products in the line search (`stiefel_canonical_inner_product`).
 
-### 8.1 Steepest Descent (SD)
+### 8.1 Steepest descent (SD)
+
+Search direction $d_k = -g_k$ (negative Euclidean gradient in the current
+working variables: unconstrained occupation parameters, packed joint vector, or
+ambient orbital gradient before projection—depending on the loop).
+
+### 8.2 Nonlinear conjugate gradient (CG)
+
+Implemented as **Polak–Ribière** on the current gradient $g_k$ and the previous
+gradient $g_{k-1}$ (`compute_cg_direction`):
 
 $$
-x_{t+1} = R_{x_t}(-\alpha_t  \mathrm{grad} f(x_t))
+\beta_k^{\mathrm{PR}}
+= \frac{g_k^\top (g_k - g_{k-1})}{\|g_{k-1}\|^2},
+\qquad
+d_k = -g_k + \beta_k^{\mathrm{PR}} \, d_{k-1}.
 $$
 
-with step size $\alpha_t$ chosen by line search (Armijo backtracking).
+Details in code:
 
-### 8.2 Conjugate Gradient (CG)
+- **First step** ($k=0$): $d_0 = -g_0$.
+- **Restart:** $\beta_k^{\mathrm{PR}} \leftarrow \max(0, \beta_k^{\mathrm{PR}})$ (Hager–style
+  safeguard so PR never reverses the search direction).
+- **Descent test:** if $d_k^\top g_k \ge 0$, the code **replaces** $d_k$ by $-g_k$
+  (same safeguard as the projected occupation loop).
 
-Riemannian CG with vector transport $\mathcal{T}$:
+**Alternating orbital CG** (`optimize_orbitals` in `rdmft_solver.cpp`): after forming
+$d_k$ from projected Riemannian gradients, a linear combination
+$d_k \leftarrow -g_k + \beta_k \,\mathcal{T}(d_{k-1})$ uses the **previous** tangent
+direction as a stand-in for transport, then **re-projects** $d_k$ onto the tangent
+space at the current $C$ to remove drift from the CG combination.
 
-$$
-\eta_t = -\mathrm{grad} f(x_t) + \beta_t  \mathcal{T}_{x_{t-1} \to x_t}(\eta_{t-1})
-$$
+### 8.3 Limited-memory BFGS (L-BFGS)
 
-with Fletcher-Reeves or Polak-Ribière $\beta_t$.
+`EuclideanOptimizer::compute_lbfgs_direction` implements the **two-loop recursion**
+(Nocedal & Wright) in the **standard Euclidean** metric of the working vector:
 
-### 8.3 lbfgs
+- After an accepted step, `update()` stores $s_k = \Delta x$ (the `step_vec` passed
+  in by the solver) and $y_k = g_{k+1} - g_k$.
+- Pairs are kept only if $s_k^\top y_k > 10^{-12}$; at most **`rdmft_lbfgs_memory`**
+  pairs are retained (oldest dropped from the front of the deque).
+- Initial inverse-Hessian diagonal scaling uses
+  $\gamma_k = (s_{k-1}^\top y_{k-1}) / \|y_{k-1}\|^2$ from the **most recent** pair.
 
-limited-memory lbfgs adapted to Riemannian setting using vector transport
-to move previous gradients and steps to the current tangent space.
+The returned direction is **minus** the two-loop result so that, for positive-definite
+curvature information, $d_k$ is a descent direction in the Euclidean sense. For
+**joint** optimisation this is applied to the packed $(p,\mathrm{flat}(C))$ vector;
+for **alternating orbitals**, the line search still evaluates the energy along a
+**retraction**, but the lbfgs history is built from **ambient** orbital increments
+after the step—consistent with a pragmatic “projected lbfgs” pattern rather than a
+full manifold-aware lbfgs transport.
 
 ### 8.4 Adam
 
-Riemannian Adam with bias-corrected first and second moment estimates,
-transported to the current tangent space.
+`compute_adam_direction` maintains bias-corrected moments $(\hat m_k,\hat v_k)$ and sets
+
+$$
+d_k = -\texttt{adam\_lr}\; \hat m_k / (\sqrt{\hat v_k} + \texttt{adam\_eps})
+$$
+
+with $\beta_1,\beta_2$ from `RDMFTConfig` (`rdmft_adam_*` INPUT). The joint solver
+uses $\alpha_0 = 1$ for the outer line search when `joint_optimizer` is Adam.
 
 ---
 
-## 9. Gradient Consistency Check
+### 8.5 Line search routines (`armijo_line_search`, Wolfe family)
 
-For numerical verification, use finite differences:
+All are free functions in `rdmft_optimizer.h`. They share INPUT **`line_search_c1`**
+(Armijo / Wolfe sufficient-decrease constant $c_1$, default $10^{-4}$),
+**`line_search_c2`** (curvature parameter, default $0.9$),
+**`line_search_max_iter`**, and for Wolfe searches **`line_search_max_zoom`**
+(zoom-phase iteration cap).
+
+#### 8.5.1 Armijo backtracking
+
+Accepts the first $\alpha$ such that
 
 $$
-\frac{\partial E}{\partial n_{i\mathbf{k}}} \approx \frac{E(n_{i\mathbf{k}} + \epsilon) - E(n_{i\mathbf{k}} - \epsilon)}{2\epsilon}
+\phi(\alpha) \le \phi(0) + c_1 \,\alpha\, \phi'(0),
 $$
 
-For orbital gradients, perturb along a tangent direction $\eta$:
+where $\phi(\alpha)$ is the 1D objective along the search ray and $\phi'(0)$ is the
+directional derivative $g^\top d$ supplied by the caller.
+
+- If **`rdmft_line_search_polynomial`** is `true` (default), a failed trial uses a
+  **quadratic** model through $(0,\phi(0),\phi'(0))$ and $(\alpha,\phi(\alpha))$ for the
+  first failure, then **cubic** models using the last two failed points; the suggested
+  next $\alpha$ is **clamped** to $[0.1,\,0.5]$ times the last failed step (fixed
+  factors in code). If the model is unusable, fall back to $\alpha \leftarrow \rho\alpha$.
+- If `false`, use **pure geometric** shrinking $\alpha \leftarrow \texttt{line\_search\_rho}\,\alpha$
+  (default $\rho=\tfrac{1}{2}$).
+
+Used for: **ALM** occupation steps when `rdmft_occ_ls_type` is `auto` or `armijo`;
+**PG / AS** occupation monotone mode; **orbital SD / Adam**; and anywhere else the
+solver calls `armijo_line_search` explicitly.
+
+#### 8.5.2 Strong Wolfe
+
+Implements Nocedal & Wright **Algorithm 3.5 / 3.6** (`strong_wolfe_line_search`):
+
+1. **Sufficient decrease:** $\phi(\alpha) \le \phi(0) + c_1 \alpha \phi'(0)$.
+2. **Strong curvature:** $|\phi'(\alpha)| \le c_2 |\phi'(0)|$.
+
+The bracketing phase **doubles** $\alpha$ until violation, then **zooms** with a
+cubic interpolant between bracket endpoints. Requires $\phi'(0) < 0$.
+
+#### 8.5.3 Non-monotone strong Wolfe (Zhang–Hager-style reference)
+
+`strong_wolfe_nm_line_search` is the same bracket–zoom machinery, but the sufficient
+decrease test uses a **fixed** reference value $f_{\mathrm{ref}}$ instead of $\phi(0)$:
 
 $$
-\langle \mathrm{grad} E, \eta \rangle \approx \frac{E(R_C(t\eta)) - E(R_C(-t\eta))}{2t}
+\phi(\alpha) \le f_{\mathrm{ref}} + c_1 \alpha \phi'(0),
 $$
 
-These checks are critical for validating the implementation before running production calculations.
+with curvature conditions unchanged. In `rdmft_solver.cpp` this is wired to **PG /
+AS occupation** line search when `rdmft_occ_ls_type = sw` **and**
+`rdmft_occ_optimizer = cg`; $f_{\mathrm{ref}}$ is updated from a Zhang–Hager-like
+non-monotone rule using **`rdmft_occ_cg_nonmonotone_eta`**.
+
+#### 8.5.4 Weak Wolfe
+
+`weak_wolfe_line_search` enforces
+
+$$
+\phi(\alpha) \le \phi(0) + c_1 \alpha \phi'(0),
+\qquad
+\phi'(\alpha) \ge c_2 \,\phi'(0)
+$$
+
+(with $\phi'(0) < 0$, the second inequality allows the slope to become **less negative**,
+not necessarily small in absolute value). Used for **L-BFGS orbital** line search when
+`rdmft_orb_ls_type` selects weak Wolfe.
+
+---
+
+### 8.6 INPUT mapping (`rdmft_occ_ls_type`, `rdmft_orb_ls_type`)
+
+Parsed as `RdmftLineSearchPreset` (`auto`, `armijo`, `sw`, `wolfe`—see
+`rdmft_input_parse.h`). Effective policies are computed in `rdmft_solver.cpp`.
+
+**Occupations, augmented Lagrangian** (`effective_rdmft_ls_policy` — optimiser type
+is **ignored**):
+
+| `rdmft_occ_ls_type` | Line search on augmented Lagrangian $L$ |
+| ------------------- | ---------------------------------------- |
+| `auto` or `armijo`  | `armijo_line_search` (polynomial per `rdmft_line_search_polynomial`) |
+| `sw`                | `strong_wolfe_line_search` |
+| `wolfe`             | `weak_wolfe_line_search` |
+
+**Occupations, projected gradient / active set** (`occ_proj_ls_mode_from_preset`):
+
+| `rdmft_occ_ls_type` | `rdmft_occ_optimizer` | Mode |
+| ------------------- | ---------------------- | ---- |
+| `auto` or `armijo` | any | **Monotone** projected Armijo (`\alpha \leftarrow \rho\alpha` only—no polynomial branch) |
+| `sw` | **cg** | **Non-monotone strong Wolfe** on the projected arc (`strong_wolfe_nm_line_search`) |
+| `sw` | **sd / lbfgs / adam** | **Standard strong Wolfe** (`strong_wolfe_line_search`) |
+| `wolfe` | any | **Weak Wolfe** (`weak_wolfe_line_search`) |
+
+Additional PG knobs: **`rdmft_pg_occ_cg_ls_alpha_cap`** caps the initial Wolfe trial
+when using CG; **`rdmft_pg_occ_ls_recovery_alpha`** controls a small Armijo recovery
+after failed Wolfe (when enabled).
+
+**Orbitals, alternating inner** (`effective_orbital_ls_policy`):
+
+| `rdmft_orb_ls_type` | Optimiser | Line search |
+| ------------------- | --------- | ----------- |
+| `auto` | **cg** | Strong Wolfe |
+| `auto` | **lbfgs** | Weak Wolfe |
+| `auto` | **sd / adam** | Armijo (`armijo_line_search` with polynomial flag) |
+| explicit `armijo` / `sw` / `wolfe` | — | Forces that family regardless of optimiser |
+
+**Joint strategy** (`solve_joint`): a **single geometric Armijo** loop on the packed
+step (§7.2); `rdmft_occ_ls_type` / `rdmft_orb_ls_type` do **not** switch the joint line
+search to Wolfe. Initial $\alpha_0$ is **`rdmft_alm_bb_enabled`** Barzilai–Borwein on
+the packed iterate when `joint_optimizer` is **sd/cg**; it is fixed to **1** for
+**lbfgs/adam** joint runs.
+
+**Barzilai–Borwein** (`BarzilaiBorweinStep` in `rdmft_optimizer.h`): cold start uses
+$\alpha \approx \|x\|/\|g\|$; thereafter **BB1** $\|s\|^2/(s^\top y)$, **BB2**
+$(s^\top y)/\|y\|^2$, or **alternate** between them (`rdmft_alm_bb_mode`), clamped to
+[`rdmft_alm_bb_alpha_min`, `rdmft_alm_bb_alpha_max`]. Used for ALM occupation
+`rdmft_occ_ls_init_step = bb`, joint SD/CG initial step when enabled, and PG/AS
+**initial** Armijo trial via `rdmft_occ_ls_init_step` (see `rdmft_usage.md`).
+
+---
+
+## 9. Gradient consistency check (`rdmft_grad_check`)
+
+When `RDMFTConfig::grad_check` is true, `RDMFTSolver::solve` runs finite-difference
+checks **after** `precompute_cholesky_S()` and conversion of orbitals to internal
+**X-space** (`wfc_C_to_X`), before the main optimisation loop.
+
+- **Occupations:** central difference in each $n_{i\mathbf{k}}$ vs analytic
+  `grad_occ` from `EnergyGradient::compute`.
+- **Orbitals:** compares the **projected** Riemannian gradient $G_R$ to a **forward**
+  difference along the same retraction used in line search,
+  $(E(R_C(t\eta)) - E_0)/t$, which matches the Armijo slope $-\lVert G_R\rVert^2$
+  more reliably than a symmetric $\pm t$ probe (`rdmft_usage.md`).
+
+These checks are expensive but mirror the validation path used in development.
 
 ---
 
@@ -881,44 +1118,28 @@ E_H[\rho]
 d\mathbf{r} \, d\mathbf{r}'
 $$
 
-For the exchange-like RDMFT contribution, only equal-spin pairs contribute:
+For the exchange-like RDMFT contribution, the **implementation** evaluates
+Fock exchange from the spin-resolved modified density matrices via `Exx_LRI`
+(§2.4) rather than assembling dense $K_{ij}$ four-centre integrals. In collinear
+`nspin=2`, `EnergyGradient` passes `nspin` through to the density-matrix and EXX
+pipelines so $\rho_\uparrow$, $\rho_\downarrow$, and the exchange Hamiltonian are
+built with the same spin bookkeeping as KS-LCAO.
+
+For each separable / single-channel build, the exchange energy is accumulated as
+in §2.4 **per spin channel** (equal-spin exchange only):
 
 $$
-E_{xc}[\gamma_{\uparrow}, \gamma_{\downarrow}]
-= -\frac{1}{2} \sum_{\sigma}
-\sum_{\mathbf{k}\mathbf{k}'} w_{\mathbf{k}} w_{\mathbf{k}'}
-\sum_{ij} f(n_{i\mathbf{k}\sigma}, n_{j\mathbf{k}'\sigma})
-K_{ij}^{\mathbf{k}\mathbf{k}',\sigma}
+E_{xc} = \frac{1}{2} \sum_{\sigma} \sum_{\mathbf{k}} w_{\mathbf{k}} \sum_i
+g(n_{i\mathbf{k}\sigma}) \,
+\varepsilon^{\mathrm{exx}}_{i\mathbf{k}\sigma},
 $$
 
-because the spin functions are orthogonal and there is therefore no exchange
-between $\uparrow$ and $\downarrow$ blocks.
+with $\gamma_{\mathrm{xc}}^{\mathbf{k}\sigma}$ built using weights
+$w_{\mathbf{k}}\, g(n_{i\mathbf{k}\sigma})$ as in the spinless formula.
 
-For the separable functionals (HF, Müller, Power), define the spin-resolved
-modified density matrix
-
-$$
-\gamma_{\mathrm{xc},\mu\nu}^{\mathbf{k}\sigma}
-= \sum_i w_{\mathbf{k}} \, g(n_{i\mathbf{k}\sigma})
-C_{\mu i}^{\mathbf{k}\sigma} (C_{\nu i}^{\mathbf{k}\sigma})^*
-$$
-
-Then the exchange energy is the sum of the two spin-channel contributions:
-
-$$
-E_{xc} = \frac{1}{2} \sum_{\sigma}
-\operatorname{Tr}\bigl[\gamma_{\mathrm{xc},\sigma}
-H_{\mathrm{exx}}[\gamma_{\mathrm{xc},\sigma}]\bigr]
-$$
-
-For the GU functional, the self-interaction correction is also spin-resolved:
-
-$$
-E_{xc}^{\mathrm{GU}}
-= E_{xc}^{\mathrm{Müller}}
-+ \frac{1}{2} \sum_{\sigma} \sum_{\mathbf{k}} w_{\mathbf{k}}^2 \sum_i
-(n_{i\mathbf{k}\sigma}^2 - n_{i\mathbf{k}\sigma}) J_{ii}^{\mathbf{k}\mathbf{k},\sigma}
-$$
+**GU (implementation).** As in the spinless case, the explicit diagonal
+$(n^2-n)\,J_{ii}$ GU correction is **not** added on top of the Müller-type EXX
+build in `EnergyGradient::compute`; the same caveat applies spin-by-spin.
 
 ### 11.3 Constraints
 
@@ -953,35 +1174,38 @@ with $M_z$.
 
 ### 11.4 Gradients
 
-The occupation-number gradient is the direct spin-resolved analogue of §5.1:
+The occupation-number gradient matches §5.1 **per spin** (again with a **plus**
+Hartree diagonal as implemented):
 
 $$
 \frac{\partial E}{\partial n_{i\mathbf{k}\sigma}}
-= w_{\mathbf{k}} \, h_{ii}^{\mathrm{one},\sigma}(\mathbf{k})
-- w_{\mathbf{k}} \, v_{H,ii}^{\sigma}(\mathbf{k})
-- \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}\sigma}}
+= w_{\mathbf{k}} \Bigl(
+h_{ii}^{\mathrm{one},\sigma}(\mathbf{k}) + v_{H,ii}^{\sigma}(\mathbf{k})
+\Bigr)
++ \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}\sigma}} .
 $$
 
-For the separable functionals,
+For separable / single-channel exchange,
 
 $$
 \frac{\partial E_{xc}}{\partial n_{i\mathbf{k}\sigma}}
-= w_{\mathbf{k}} \, g'(n_{i\mathbf{k}\sigma})
-\langle \phi_{i\mathbf{k}\sigma}
-| H_{\mathrm{exx}}[\gamma_{\mathrm{xc},\sigma}] |
-\phi_{i\mathbf{k}\sigma} \rangle
+= w_{\mathbf{k}} \, g'(n_{i\mathbf{k}\sigma}) \,
+\varepsilon^{\mathrm{exx}}_{i\mathbf{k}\sigma} .
 $$
 
-The Euclidean orbital gradient for each spin block is likewise
+Mixed functionals (GEO / CHF / CGA / OptGM) use the same channel-summing scheme
+as §5.1, independently per $\sigma$.
+
+The Euclidean orbital gradient for each spin block matches §5.2, including the
+explicit factor **2** from the Wirtinger / real-pairing convention:
 
 $$
 G^{\mathbf{k}\sigma}
-= w_{\mathbf{k}} \Bigl[
+= 2 \, w_{\mathbf{k}} \Bigl[
 \bigl(h^{\mathbf{k}\sigma} + V_H^{\mathbf{k}}\bigr)
 C^{\mathbf{k}\sigma} \operatorname{diag}(\mathbf{n}_{\mathbf{k}\sigma})
-- H_{\mathrm{exx}}^{\mathbf{k}\sigma}
-C^{\mathbf{k}\sigma} \operatorname{diag}(g(\mathbf{n}_{\mathbf{k}\sigma}))
-\Bigr]
++ \text{(mixed or } g\cdot H_{\mathrm{exx}} \text{ exchange column)}
+\Bigr].
 $$
 
 The Riemannian projection and retraction are then applied independently to each
@@ -995,51 +1219,34 @@ C_{\mathrm{new}}^{\mathbf{k}\sigma}
 = R_{C^{\mathbf{k}\sigma}}\bigl(\eta^{\mathbf{k}\sigma}\bigr)
 $$
 
-The occupation parameterizations from §4 also extend trivially by carrying the
-spin index:
+The occupation parameterizations from §4 (including sigma-shift, §4.3) extend
+by carrying the spin index on $z$, $\theta$, or $x$ when applicable.
 
-$$
-n_{i\mathbf{k}\sigma} = \cos^2(\theta_{i\mathbf{k}\sigma})
-\qquad \text{or} \qquad
-n_{i\mathbf{k}\sigma} = \frac{1}{1 + e^{-x_{i\mathbf{k}\sigma}}}
-$$
+### 11.5 Reduction to the current implementation
 
-### 11.5 Reduction to the Current Implementation
+`EnergyGradient::init` sets `nk_` from `pelec->wg.nr`, i.e. the same **flattened
+$(\mathbf{k},\sigma)$ row count** used for KS occupation weights in the running
+calculation. The occupation vector `occ_flat` therefore has length
+`nk_ * nbands` with the ABACUS LCAO convention for collinear spin (rather than a
+separate explicit list of $\sigma$ indices in the solver API).
 
-For `nspin=2`, the implementation can be viewed as folding the spin label into
-a composite index $I = (\sigma, \mathbf{k})$. Equivalently,
-
-$$
-\sum_I \equiv \sum_{\sigma} \sum_{\mathbf{k}}
-$$
-
-Then the spin-polarized formulas reduce to the same algebraic form as the
-spin-restricted ones after the replacements
-
-$$
-n_{i\mathbf{k}} \to n_{iI},
-\qquad
-C^{\mathbf{k}} \to C^I,
-\qquad
-w_{\mathbf{k}} \to w_I = w_{\mathbf{k}}
-$$
-
-The only physical caveat is that the exchange operator remains block-diagonal in
-spin, so $H_{\mathrm{exx}}[\gamma_{\mathrm{xc}}]$ is built independently for the
-$\uparrow$ and $\downarrow$ channels before their contributions are summed.
+The spin-resolved formulas in §11.1–§11.4 are still the correct physics; they map
+onto the code’s layout after identifying how `ik` encodes spin in the current
+`K_Vectors` / `wg` convention.
 
 ---
 
 ## 12. Summary of Implementation Requirements
 
 
-| Component                   | Variables | Manifold               | Gradient                |
-| --------------------------- | --------- | ---------------------- | ----------------------- |
-| One-body energy             | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
-| Hartree energy              | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
-| XC energy (HF/Müller/Power) | n, C      | —                      | Eqs. in §5.1, §5.2, §11 |
-| XC energy (GU)              | n, C      | —                      | Additional SIC terms, §11 |
-| Occupation constraint       | n         | $[0,1]$, $\sum w n = N_e$ | §4, §6, §11            |
-| Orbital orthogonality       | C         | Stiefel                | §5.3, §5.4, §11        |
+| Component                         | Variables | Manifold / discretisation        | Where in code / this note        |
+| --------------------------------- | --------- | -------------------------------- | -------------------------------- |
+| One-body + Hartree                | n, C      | —                                | §5.1–§5.2, `EnergyGradient::compute` |
+| XC (HF / Müller / Power)          | n, C      | Modified DM + `Exx_LRI`          | §2.4, §5.1–§5.2                  |
+| XC (GU)                           | n, C      | Same EXX path as Müller ($g=\sqrt{n}$ reg.); analytic $(n^2-n)J_{ii}$ **not** in `compute` | §2.4 GU remark |
+| XC (GEO / CHF / CGA / OptGM)      | n, C      | Multiple EXX builds, summed      | §2.4 mixed channels              |
+| HF occupation entropy (optional)  | n         | —                                | §5.1, `occ_entropy_gamma_`       |
+| Occupation constraints            | n         | ALM / PG / active-set + §4.3 shift | §4, §6                         |
+| Orbital orthogonality             | C (X)     | Stiefel: §5.3–§5.4               | `StiefelManifold`, `project_orbital_gradient` |
 
 

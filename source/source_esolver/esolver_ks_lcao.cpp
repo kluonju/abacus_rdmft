@@ -686,8 +686,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         rdmft_config.orb_optimizer = rdmft::parse_optimizer_input_or_quit(inp.rdmft_orb_optimizer,
                                                                           "rdmft_orb_optimizer",
                                                                           "ESolver_KS_LCAO::after_scf");
-        rdmft_config.orb_cg_precond = inp.rdmft_orb_cg_precond;
-        rdmft_config.orb_cg_precond_delta = inp.rdmft_orb_cg_precond_delta;
+        rdmft_config.orb_cg_precond = inp.rdmft_orb_precond;
+        rdmft_config.orb_cg_precond_delta = inp.rdmft_orb_precond_delta;
         rdmft_config.occ_ls_preset = rdmft::parse_line_search_preset_or_quit(inp.rdmft_occ_ls_type,
                                                                              "rdmft_occ_ls_type",
                                                                              "ESolver_KS_LCAO::after_scf");

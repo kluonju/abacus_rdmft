@@ -1028,7 +1028,7 @@ void ReadInput::item_others()
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_orb_cg_precond");
+        Input_Item item("rdmft_orb_precond");
         item.annotation = "Enable orbital CG/L-BFGS pairwise level-shift preconditioner (on/off)";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Bool";
@@ -1039,28 +1039,28 @@ void ReadInput::item_others()
         item.default_value = "true";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_bool(input.rdmft_orb_cg_precond);
+        read_sync_bool(input.rdmft_orb_precond);
         this->add_item(item);
     }
     {
-        Input_Item item("rdmft_orb_cg_precond_delta");
+        Input_Item item("rdmft_orb_precond_delta");
         item.annotation = "Orbital CG/L-BFGS preconditioner level-shift delta";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
-        item.description = "Used when rdmft_orb_optimizer = cg/lbfgs and rdmft_orb_cg_precond = true. "
+        item.description = "Used when rdmft_orb_optimizer = cg/lbfgs and rdmft_orb_precond = true. "
                            "delta in 1/(|epsilon_i - epsilon_j| + delta). "
                            "Set > 0 for an explicit fixed delta. Set <= 0 (default) to use the internal "
                            "automatic scale from current epsilon statistics.";
         item.default_value = "0.0";
         item.unit = "Ry";
         item.availability = "rdmft == true && rdmft_functional != \"\"";
-        read_sync_double(input.rdmft_orb_cg_precond_delta);
+        read_sync_double(input.rdmft_orb_precond_delta);
         item.check_value = [](const Input_Item& item, const Parameter& para) {
             if (para.input.rdmft && !para.input.rdmft_functional.empty())
             {
-                if (!std::isfinite(para.input.rdmft_orb_cg_precond_delta))
+                if (!std::isfinite(para.input.rdmft_orb_precond_delta))
                 {
-                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_orb_cg_precond_delta must be finite");
+                    ModuleBase::WARNING_QUIT("ReadInput", "rdmft_orb_precond_delta must be finite");
                 }
             }
         };
