@@ -42,7 +42,9 @@ read_file_dir    ../KS_HF/OUT.ABACUS/
 rdmft            true
 rdmft_functional  hf  
 
-# One-shot: evaluate RDMFT/HF energy components at fixed KS-HF (wfc, wg); no occupation or orbital updates.
+# Drive RDMFT occupation optimization with the projected-gradient method
+# to verify HF Si converges to clean 1/0 occupations without imposing
+# Aufbau filling.
 rdmft_occ_init_mode    ks
 rdmft_solver_strategy  alternating
 rdmft_constraint       projected_gradient
@@ -50,8 +52,8 @@ rdmft_constraint       projected_gradient
 rdmft_occ_optimizer    cg
 rdmft_orb_optimizer    cg
 rdmft_outer_maxiter    1
-rdmft_occ_maxiter      0
-rdmft_orb_maxiter      5
+rdmft_occ_maxiter      10
+rdmft_orb_maxiter      0
 rdmft_energy_tol       1e-7
 
 rdmft_orb_grad_tol  1e-5

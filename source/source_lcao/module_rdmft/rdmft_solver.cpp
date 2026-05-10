@@ -195,6 +195,82 @@ double projected_gradient_map_norm(const std::vector<double>& occ,
     return l2;
 }
 
+/// Bertsekas map residual using the **unweighted** gradient (eps = g/w_k) and
+/// **uniform** projection (project_uniform).  This is the natural geometry for
+/// SPG with box [0,1] + equality constraint sum_k w_k n_ki = N_e.
+///
+/// At a KKT point, ε_ik = λ for free bands, ε_ik <= λ at n=1, ε_ik >= λ at n=0.
+/// The uniform shift μ in project_uniform(n - α ε - μ) absorbs α λ and the
+/// projected map P(n - α ε) returns n exactly, so ‖n - P(n - α ε)‖ = 0.
+/// (Contrast with `projected_gradient_map_l2_linf` which uses the weighted
+/// gradient and a w_k-proportional shift; that map does NOT vanish at KKT
+/// when the active set spans different k-weights.)
+inline void projected_gradient_map_unweighted_l2_linf(const std::vector<double>& occ,
+                                                      const std::vector<double>& eps,
+                                                      const OccupationConstraint& constraint,
+                                                      const double alpha,
+                                                      double& l2,
+                                                      double& linf)
+{
+    std::vector<double> trial(occ.size());
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        trial[i] = occ[i] - alpha * eps[i];
+    }
+    constraint.project_uniform(trial);
+
+    double n2 = 0.0;
+    linf = 0.0;
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        const double d = occ[i] - trial[i];
+        n2 += d * d;
+        linf = std::max(linf, std::abs(d));
+    }
+    l2 = std::sqrt(std::max(0.0, n2));
+}
+
+/// KKT residual for box [0,1] + equality sum_k w_k n_ki = N_e:
+///   ∃λ s.t. max_{n=1 or free} ε_ik <= λ <= min_{n=0 or free} ε_ik
+/// (with strict equality on free bands).  Returns max(0, V - W) where
+///   V = max ε over (free ∪ active n=1)
+///   W = min ε over (free ∪ active n=0)
+/// 0 ⇔ KKT satisfied (a consistent λ in [W, V] exists).  Free bands contribute
+/// to both, so spread of ε on the free set also adds to the residual.
+/// `boundary_tol` decides when an occupation is treated as boundary.
+inline double pg_kkt_residual(const std::vector<double>& occ,
+                              const std::vector<double>& eps,
+                              const double boundary_tol = 1e-10)
+{
+    double V = -std::numeric_limits<double>::infinity();
+    double W = std::numeric_limits<double>::infinity();
+    for (size_t i = 0; i < occ.size(); ++i)
+    {
+        const double n = occ[i];
+        const double e = eps[i];
+        const bool at_upper = (n >= 1.0 - boundary_tol);
+        const bool at_lower = (n <= boundary_tol);
+        if (at_upper)
+        {
+            V = std::max(V, e);
+        }
+        else if (at_lower)
+        {
+            W = std::min(W, e);
+        }
+        else
+        {
+            V = std::max(V, e);
+            W = std::min(W, e);
+        }
+    }
+    if (!std::isfinite(V) || !std::isfinite(W))
+    {
+        return 0.0;
+    }
+    return std::max(0.0, V - W);
+}
+
 double active_set_dual_complementarity_violation(const std::vector<double>& grad,
                                                  const OccupationConstraint::ActiveSetInfo& as_info,
                                                  const OccupationConstraint& constraint)
@@ -2735,7 +2811,40 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 E_prev = E;
                 have_E_prev = true;
 
-                // Bertsekas τ matches line-search scale: same alpha0 as first monotone trial.
+                // ---------------------------------------------------------------
+                // Standard projected gradient (SPG) for box [0,1] + equality
+                // sum_k w_k n_ki = N_e in the **unweighted** geometry:
+                //   x_{k+1} = P_uniform( x_k - alpha_k * eps )
+                // where eps_ik = (dE/dn_ik) / w_k is the per-occupation gradient
+                // (HF Fock diagonal at HF, generalised diagonal at non-HF) and
+                // P_uniform applies a single uniform shift μ to enforce the
+                // electron-count constraint while clipping to [0,1].
+                //
+                // This geometry preserves the KKT optimum for HF (gapped,
+                // integer 1/0 occupations): at KKT, ε = λ on free bands and
+                // ε <= λ at n=1, ε >= λ at n=0; the uniform shift μ = α λ
+                // recovers the original n exactly so P(n - α ε) = n.
+                // No Aufbau filling is imposed -- convergence is detected by
+                // the KKT residual max_{n=1 or free} ε - min_{n=0 or free} ε.
+                // The same SPG iteration handles non-HF functionals where
+                // fractional occupations are optimal: the line search will
+                // accept descent steps until the KKT condition holds at the
+                // generalised λ.
+                // ---------------------------------------------------------------
+
+                // Unweighted gradient eps_ik = dE/dn_ik / w_k.
+                std::vector<double> eps(grad_occ.size());
+                for (int ik = 0; ik < nk_; ++ik)
+                {
+                    const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
+                    const double inv_wk = (wk > 1e-30) ? 1.0 / wk : 0.0;
+                    for (int ib = 0; ib < nbands_; ++ib)
+                        eps[ik * nbands_ + ib] = grad_occ[ik * nbands_ + ib] * inv_wk;
+                }
+
+                // Bertsekas / SPG diagnostic norms in the natural geometry
+                // (unweighted gradient + uniform projection).  The α used here
+                // matches the line-search scale below.
                 double alpha_pg0 = choose_occ_ls_alpha0(
                     config_, occ_flat, grad_occ, &bb_step, pg_ls_qhist);
                 if (config_.occ_optimizer == OptimizerType::ConjugateGradient && config_.pg_occ_cg_ls_alpha_cap > 0.0)
@@ -2744,34 +2853,26 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 }
                 const double tau_bert_pre
                     = pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
-                constexpr double tau_pg_stop = 1.0;
 
                 double pg_map_l2_pre = 0.0;
                 double pg_map_inf_pre = 0.0;
-                projected_gradient_map_l2_linf(occ_flat,
-                    grad_occ,
+                projected_gradient_map_unweighted_l2_linf(occ_flat,
+                    eps,
                     *occ_constraint_,
                     tau_bert_pre,
                     pg_map_l2_pre,
                     pg_map_inf_pre);
-
                 const double g_inf_pre = pg_map_inf_pre / tau_bert_pre;
                 const double g_l2_pre = pg_map_l2_pre / tau_bert_pre;
-                double pg_map_l2_stop_pre = 0.0;
-                double pg_map_inf_stop_pre = 0.0;
-                projected_gradient_map_l2_linf(occ_flat,
-                    grad_occ,
-                    *occ_constraint_,
-                    tau_pg_stop,
-                    pg_map_l2_stop_pre,
-                    pg_map_inf_stop_pre);
-                const double g_inf_stop_pre = pg_map_inf_stop_pre / tau_pg_stop;
+
+                // KKT residual: 0 ⇔ a consistent Lagrange multiplier exists.
+                // This is the convergence criterion that identifies the HF
+                // stationary state with 1/0 occupations *without* imposing
+                // Aufbau as a search direction.
+                const double kkt_resid = pg_kkt_residual(occ_flat, eps);
 
                 double grad_l2_pre = 0.0;
-                for (auto g : grad_occ)
-                {
-                    grad_l2_pre += g * g;
-                }
+                for (auto g : grad_occ) grad_l2_pre += g * g;
                 grad_l2_pre = std::sqrt(grad_l2_pre);
 
                 {
@@ -2779,41 +2880,29 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     os << "      occ inner PG " << (inner + 1) << "  E=" << std::fixed
                        << std::setprecision(10) << E << "  dE=" << std::scientific << dE
                        << "  |c|=" << c_abs
-                       << "  ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (pre-step)=" << g_inf_pre
+                       << "  KKT_resid=" << kkt_resid
+                       << "  ||g_proj||_inf=" << g_inf_pre
                        << "  ||g_proj||_2=" << g_l2_pre
-                       << "  (diag map ||n-P||_inf=" << pg_map_inf_pre << "  τ=" << tau_bert_pre << ")"
-                       << "  ||grad_n E||_2 (diag)=" << grad_l2_pre;
+                       << "  (geom: eps=g/w_k, P=uniform; α=" << tau_bert_pre << ")"
+                       << "  ||grad_n E||_2=" << grad_l2_pre;
                     log_occ_inner_summary_and_nik(os.str(), occ_flat, occ_prev_for_dn, nk_, nbands_);
                 }
 
-                if (inner == 0 && g_inf_stop_pre < config_.occ_grad_tol)
+                if (kkt_resid < config_.occ_grad_tol)
                 {
                     result.converged = true;
-                    result.iterations = 1;
+                    result.iterations = inner + 1;
                     result.final_energy = E;
-                    result.grad_norm = g_inf_stop_pre;
-                    print_inner_loop_stdout("RDMFT occ inner", 1, result.final_energy, occ_flat, nk_, nbands_);
-                    GlobalV::ofs_running << "      PG ||g_proj||_inf (pre-step) = " << std::scientific
-                                         << g_inf_pre << "  (||n-P(n-τ∇E)||_inf=" << pg_map_inf_pre
-                                         << "  τ=" << tau_bert_pre << ")  rdmft_occ_grad_tol=" << config_.occ_grad_tol
-                                         << "  stop_metric(τ=1)=" << g_inf_stop_pre
-                                         << std::defaultfloat << std::endl;
-                    GlobalV::ofs_running << "      occ inner PG: converged at first inner (||g_proj||_inf < "
-                                            "rdmft_occ_grad_tol); skipping line search."
-                                         << std::endl;
+                    result.grad_norm = kkt_resid;
+                    print_inner_loop_stdout("RDMFT occ inner", inner + 1, result.final_energy, occ_flat, nk_, nbands_);
+                    GlobalV::ofs_running << "      occ inner PG: KKT residual " << std::scientific << kkt_resid
+                                         << " < rdmft_occ_grad_tol=" << config_.occ_grad_tol
+                                         << "; converged (no descent within feasible set)." << std::defaultfloat << std::endl;
                     break;
                 }
 
-                // ---------------------------------------------------------------
-                // Standard projected gradient (SPG / Bertsekas):
-                //   x_{k+1} = P( x_k  -  alpha_k * g_unw )
-                // where g_unw = dE/dn / w_k is the unweighted (per-occupation)
-                // gradient.  Occupations live in [0,1] so the step must be in
-                // that scale; the w_k-scaled analytic gradient dE/dn is divided
-                // by w_k before the line search.  P handles both the box [0,1]
-                // and the equality constraint sum(w_k * n_ki) = N_e.
-                // Monotone backtracking: accept when E(x_trial) <= E(x).
-                // ---------------------------------------------------------------
+                // SPG step: x_trial = P_uniform( x - alpha * eps ).  Backtracking
+                // line search to enforce E(x_trial) <= E(x).
                 const std::vector<double> occ_before_step(occ_flat);
                 bool ls_success = false;
                 bool pg_step_applied = false;
@@ -2824,61 +2913,29 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double E_last_trial = E;
                 const double proj_constraint_tol = 1e-6;
 
-                // Unweighted gradient: epsilon_ik = (dE/dn_ik) / w_k
-                std::vector<double> grad_unw(grad_occ.size());
-                for (int ik = 0; ik < nk_; ++ik)
                 {
-                    const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
-                    const double inv_wk = (wk > 1e-30) ? 1.0 / wk : 0.0;
-                    for (int ib = 0; ib < nbands_; ++ib)
-                        grad_unw[ik * nbands_ + ib] = grad_occ[ik * nbands_ + ib] * inv_wk;
-                }
-                double dd_line = 0.0;
-                for (size_t i = 0; i < grad_occ.size(); ++i)
-                    dd_line -= grad_occ[i] * grad_unw[i];
-
-                // Build Aufbau trial: sort states by epsilon (ascending),
-                // fill lowest states to 1.0 until N_e electrons are placed.
-                // This is the correct PG limit for HF where the feasible set
-                // extremum is always at integer occupations.
-                {
-                    struct EpsIdx { double eps; int idx; };
-                    std::vector<EpsIdx> sorted(grad_unw.size());
-                    for (size_t i = 0; i < grad_unw.size(); ++i)
-                        sorted[i] = {grad_unw[i], static_cast<int>(i)};
-                    std::sort(sorted.begin(), sorted.end(),
-                              [](const EpsIdx& a, const EpsIdx& b) { return a.eps < b.eps; });
-
-                    // Backtracking: blend alpha * aufbau + (1-alpha) * current
-                    double alpha = 1.0;
+                    double alpha = alpha_pg0;
                     for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                     {
                         pg_ls_trial = ls + 1;
-                        // Build Aufbau target
-                        std::vector<double> occ_aufbau(occ_flat.size(), 0.0);
-                        double electrons_left = n_electrons_;
-                        for (const auto& ei : sorted)
-                        {
-                            const int ik = ei.idx / nbands_;
-                            const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
-                            if (electrons_left >= wk - 1e-12)
-                            {
-                                occ_aufbau[ei.idx] = 1.0;
-                                electrons_left -= wk;
-                            }
-                            else if (electrons_left > 1e-12)
-                            {
-                                occ_aufbau[ei.idx] = electrons_left / wk;
-                                electrons_left = 0.0;
-                            }
-                        }
-
-                        occ_trial.resize(occ_flat.size());
+                        occ_trial.assign(occ_flat.size(), 0.0);
                         for (size_t i = 0; i < occ_flat.size(); ++i)
-                            occ_trial[i] = (1.0 - alpha) * occ_flat[i] + alpha * occ_aufbau[i];
-                        occ_constraint_->project(occ_trial);
+                            occ_trial[i] = occ_flat[i] - alpha * eps[i];
+                        occ_constraint_->project_uniform(occ_trial);
 
                         if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
+                        {
+                            alpha *= config_.line_search_rho;
+                            continue;
+                        }
+
+                        // First-order descent along the projected segment:
+                        // dd_proj = grad_occ . (x_trial - x).  If non-negative,
+                        // SPG step is not a descent direction at this α; shrink.
+                        double dd_proj = 0.0;
+                        for (size_t i = 0; i < occ_flat.size(); ++i)
+                            dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+                        if (dd_proj >= 0.0)
                         {
                             alpha *= config_.line_search_rho;
                             continue;
@@ -2891,9 +2948,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         if (E_trial <= E)
                         {
                             pg_step_acc = alpha;
-                            pg_dd_proj_acc = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
+                            pg_dd_proj_acc = dd_proj;
                             ls_success = true;
                             break;
                         }
@@ -2902,11 +2957,12 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
                     {
                         std::ostringstream pg_ls;
-                        pg_ls << "      occ SPG (Aufbau): alpha_init=1"
-                              << " alpha=" << std::scientific << (ls_success ? pg_step_acc : 0.0)
+                        pg_ls << "      occ SPG (eps,P_uniform): alpha_init=" << std::scientific << alpha_pg0
+                              << " alpha=" << (ls_success ? pg_step_acc : 0.0)
                               << " n_trial=" << pg_ls_trial
-                              << " E0=" << E << " E_trial=" << E_last_trial
-                              << "  rho=" << std::defaultfloat << config_.line_search_rho
+                              << " E0=" << E << " E_trial=" << E_last_trial;
+                        if (ls_success) pg_ls << " dTw=" << pg_dd_proj_acc;
+                        pg_ls << "  rho=" << std::defaultfloat << config_.line_search_rho
                               << (ls_success ? "  ok" : "  fail");
                         log_occ_inner_line(pg_ls.str());
                     }
@@ -2922,8 +2978,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     occ_flat = occ_before_step;
                     bb_step.reset();
                     GlobalV::ofs_running << "      SPG line search failed at inner=" << (inner + 1)
-                                         << "; no step taken, stopping inner iterations"
-                                         << std::endl;
+                                         << "; no descent step found.  KKT_resid=" << std::scientific
+                                         << kkt_resid << " (declaring stationary if KKT_resid is small enough)"
+                                         << std::defaultfloat << std::endl;
                 }
 
                 std::vector<double> step_vec(occ_flat.size());
@@ -2934,34 +2991,32 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double E_post = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                              new_grad_occ, grad_wfc_dummy);
                 double grad_l2_post = 0.0;
-                for (double g : new_grad_occ)
-                    grad_l2_post += g * g;
+                for (double g : new_grad_occ) grad_l2_post += g * g;
                 grad_l2_post = std::sqrt(grad_l2_post);
 
+                std::vector<double> eps_post(new_grad_occ.size());
+                for (int ik = 0; ik < nk_; ++ik)
+                {
+                    const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
+                    const double inv_wk = (wk > 1e-30) ? 1.0 / wk : 0.0;
+                    for (int ib = 0; ib < nbands_; ++ib)
+                        eps_post[ik * nbands_ + ib] = new_grad_occ[ik * nbands_ + ib] * inv_wk;
+                }
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, RDMFT_DEFAULT_LS_ALPHA_INIT)
                     : pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
                 double pg_map_l2_post = 0.0;
                 double pg_map_inf_post = 0.0;
-                projected_gradient_map_l2_linf(occ_flat,
-                    new_grad_occ,
+                projected_gradient_map_unweighted_l2_linf(occ_flat,
+                    eps_post,
                     *occ_constraint_,
                     tau_post,
                     pg_map_l2_post,
                     pg_map_inf_post);
                 const double g_inf_post = pg_map_inf_post / tau_post;
                 const double g_l2_post = pg_map_l2_post / tau_post;
-                double pg_map_l2_stop_post = 0.0;
-                double pg_map_inf_stop_post = 0.0;
-                projected_gradient_map_l2_linf(occ_flat,
-                    new_grad_occ,
-                    *occ_constraint_,
-                    tau_pg_stop,
-                    pg_map_l2_stop_post,
-                    pg_map_inf_stop_post);
-                const double g_inf_stop_post = pg_map_inf_stop_post / tau_pg_stop;
-                const double g_l2_stop_post = pg_map_l2_stop_post / tau_pg_stop;
-                result.grad_norm = g_inf_stop_post;
+                const double kkt_resid_post = pg_kkt_residual(occ_flat, eps_post);
+                result.grad_norm = kkt_resid_post;
                 if (ls_success)
                 {
                     bb_step.record_state(occ_flat, new_grad_occ);
@@ -2975,26 +3030,26 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double sum_abs_dn = sum_abs_diff(occ_flat, occ_before_step);
                 GlobalV::ofs_running << "      sum|dn|_step (L1 move)=" << std::scientific
                     << sum_abs_dn << "  sum(w*n)=" << occ_constraint_->weighted_occupation_sum(occ_flat)
-                    << "  N_e=" << n_electrons_ << std::endl;
+                    << "  N_e=" << n_electrons_ << std::defaultfloat << std::endl;
                 const double dE_occ_step = std::abs(E_post - E);
                 GlobalV::ofs_running
-                    << "      PG ||g_proj||_inf=||n-P(n-τ∇E)||_inf/τ (post-step) = " << std::scientific
-                    << g_inf_post << "  (map ||n-P||_inf=" << pg_map_inf_post << "  τ=" << tau_post << ")"
-                    << "  stop_metric(τ=1)=" << g_inf_stop_post
+                    << "      PG (post-step)  KKT_resid=" << std::scientific << kkt_resid_post
+                    << "  ||g_proj||_inf=" << g_inf_post << "  ||g_proj||_2=" << g_l2_post
+                    << "  (geom: eps=g/w_k, P=uniform; α=" << tau_post << ")"
                     << "  rdmft_occ_grad_tol=" << config_.occ_grad_tol << std::defaultfloat << std::endl;
                 GlobalV::ofs_running << "      PG diagnostic: |E_post-E|=" << std::scientific << dE_occ_step
-                                     << std::defaultfloat << std::endl;
-                GlobalV::ofs_running << "      PG diagnostics: sum|dn|=" << std::scientific << sum_abs_dn
-                                     << "  ||g_proj||_2=" << g_l2_post << "  (map ||n-P||_2=" << pg_map_l2_post
-                                     << ", stop_metric_2(τ=1)=" << g_l2_stop_post
-                                     << ")  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
-                if (g_inf_stop_post < config_.occ_grad_tol && pg_step_applied)
+                                     << "  ||grad_n E||_2=" << grad_l2_post << std::defaultfloat << std::endl;
+                if (kkt_resid_post < config_.occ_grad_tol && pg_step_applied)
                 {
                     result.converged = true;
                     break;
                 }
                 if (!pg_step_applied)
                 {
+                    // Line search failed: no descent within feasible set at the
+                    // current α schedule.  Stop the inner loop; the outer loop
+                    // either converges (KKT_resid below tol) or relies on orbital
+                    // optimisation to break the stalemate next outer iter.
                     break;
                 }
             }
