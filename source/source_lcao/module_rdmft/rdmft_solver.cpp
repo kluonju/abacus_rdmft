@@ -1095,7 +1095,22 @@ double RDMFTSolver<TK, TR>::solve(
     if (config_.occ_init_mode == OccInitMode::KS)
     {
         occ_flat = occ_ks_seed;
-        log_init_common("ks", "note=using KS occupations directly");
+        const double c_before = occ_constraint_->constraint_violation(occ_flat);
+        if (std::abs(c_before) > 1.0e-10)
+        {
+            occ_constraint_->project(occ_flat);
+            const double c_after = occ_constraint_->constraint_violation(occ_flat);
+            std::ostringstream os;
+            os << "note=KS seed violated constraint (|c|="
+               << std::scientific << c_before
+               << "), projected (|c_after|=" << c_after << ")"
+               << std::defaultfloat;
+            log_init_common("ks", os.str());
+        }
+        else
+        {
+            log_init_common("ks", "note=using KS occupations directly");
+        }
     }
     else if (config_.occ_init_mode == OccInitMode::Perturbed)
     {
@@ -2789,32 +2804,16 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     break;
                 }
 
-                // Compute search direction from the configured optimizer.
-                std::vector<double> grad_occ_opt;
-                occ_cg_grad_to_opt(grad_occ, grad_occ_opt);
-                std::vector<double> dir_opt;
-                pg_opt.compute_direction(grad_occ_opt, dir_opt);
-                std::vector<double> dir;
-                occ_cg_dir_from_opt(dir_opt, dir);
-
-                // Descent safeguard: if d^T g >= 0, fall back to steepest descent.
-                double dd = 0.0;
-                for (size_t i = 0; i < dir.size(); ++i)
-                    dd += dir[i] * grad_occ[i];
-                if (dd >= 0.0)
-                {
-                    for (size_t i = 0; i < dir.size(); ++i)
-                        dir[i] = -grad_occ[i];
-                }
-
-                double dd_line = 0.0;
-                for (size_t i = 0; i < dir.size(); ++i)
-                {
-                    dd_line += dir[i] * grad_occ[i];
-                }
-
-                // Line-search initial step: fixed (1), BB seed, or quadratic
-                // interpolation from the previous inner iteration (same α₀ as τ above).
+                // ---------------------------------------------------------------
+                // Standard projected gradient (SPG / Bertsekas):
+                //   x_{k+1} = P( x_k  -  alpha_k * g_unw )
+                // where g_unw = dE/dn / w_k is the unweighted (per-occupation)
+                // gradient.  Occupations live in [0,1] so the step must be in
+                // that scale; the w_k-scaled analytic gradient dE/dn is divided
+                // by w_k before the line search.  P handles both the box [0,1]
+                // and the equality constraint sum(w_k * n_ki) = N_e.
+                // Monotone backtracking: accept when E(x_trial) <= E(x).
+                // ---------------------------------------------------------------
                 const std::vector<double> occ_before_step(occ_flat);
                 bool ls_success = false;
                 bool pg_step_applied = false;
@@ -2823,330 +2822,63 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 double pg_step_acc = 0.0;
                 double pg_dd_proj_acc = 0.0;
                 double E_last_trial = E;
-                // Tolerance for the electron-number constraint after projection.
                 const double proj_constraint_tol = 1e-6;
-                bool pg_first_ls_recorded = false;
 
-                if (pg_ls_mode != OccProjLineSearchMode::Monotone)
+                // Unweighted gradient: epsilon_ik = (dE/dn_ik) / w_k
+                std::vector<double> grad_unw(grad_occ.size());
+                for (int ik = 0; ik < nk_; ++ik)
                 {
-                    const double phi_infeas_base = pg_occ_use_nm_ref ? pg_nm_C : E;
-                    auto phi_pg = [&](double step) -> std::pair<double, double> {
-                        std::vector<double> trial = occ_flat;
-                        for (size_t i = 0; i < trial.size(); ++i)
-                            trial[i] += step * dir[i];
-                        occ_constraint_->project(trial);
-                        if (std::abs(occ_constraint_->constraint_violation(trial)) > proj_constraint_tol)
-                        {
-                            return {phi_infeas_base + 1.0e+10, 1.0};
-                        }
-                        std::vector<double> g_tr;
-                        psi::Psi<TK> gw;
-                        const double Et = energy_grad_->compute(trial, const_cast<psi::Psi<TK>&>(wfc), g_tr, gw);
-                        double dphi = 0.0;
-                        for (size_t i = 0; i < dir.size(); ++i)
-                            dphi += g_tr[i] * dir[i];
-                        return {Et, dphi};
-                    };
-
-                    LineSearchResult ls_wolfe;
-                    const char* pg_wolfe_tag = "";
-                    if (pg_ls_mode == OccProjLineSearchMode::NonMonotoneStrongWolfe)
-                    {
-                        ls_wolfe = strong_wolfe_nm_line_search(phi_pg,
-                            E,
-                            dd_line,
-                            pg_nm_C,
-                            alpha_pg0,
-                            config_.line_search_c1,
-                            config_.line_search_c2,
-                            config_.line_search_max_iter,
-                            config_.line_search_max_zoom);
-                        pg_wolfe_tag = "PG NonMonotoneStrongWolfe";
-                    }
-                    else if (pg_ls_mode == OccProjLineSearchMode::StandardStrongWolfe)
-                    {
-                        ls_wolfe = strong_wolfe_line_search(phi_pg,
-                            E,
-                            dd_line,
-                            alpha_pg0,
-                            config_.line_search_c1,
-                            config_.line_search_c2,
-                            config_.line_search_max_iter,
-                            config_.line_search_max_zoom);
-                        pg_wolfe_tag = "PG StrongWolfe";
-                    }
-                    else
-                    {
-                        ls_wolfe = weak_wolfe_line_search(phi_pg,
-                            E,
-                            dd_line,
-                            alpha_pg0,
-                            config_.line_search_c1,
-                            config_.line_search_c2,
-                            config_.line_search_max_iter,
-                            config_.line_search_max_zoom);
-                        pg_wolfe_tag = "PG WeakWolfe";
-                    }
-
-                    pg_ls_trial = ls_wolfe.n_feval;
-                    E_last_trial = ls_wolfe.f_new;
-                    ls_success = ls_wolfe.success;
-                    if (ls_success)
-                    {
-                        pg_step_acc = ls_wolfe.step;
-                        occ_trial = occ_flat;
-                        for (size_t i = 0; i < occ_trial.size(); ++i)
-                            occ_trial[i] += ls_wolfe.step * dir[i];
-                        occ_constraint_->project(occ_trial);
-                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                        {
-                            ls_success = false;
-                        }
-                        else
-                        {
-                            pg_dd_proj_acc = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                            occ_flat = occ_trial;
-                        }
-                    }
-
-                    {
-                        std::ostringstream pg_ls;
-                        pg_ls << "      occ line search (" << pg_wolfe_tag << "): alpha_init="
-                              << std::scientific << alpha_pg0 << " step=" << (ls_success ? pg_step_acc : 0.0)
-                              << " n_feval=" << pg_ls_trial << " E0=" << E << " E_last=" << E_last_trial;
-                        if (pg_occ_use_nm_ref)
-                        {
-                            pg_ls << " f_ref=" << pg_nm_C;
-                        }
-                        pg_ls << "  c1=" << std::defaultfloat << config_.line_search_c1 << " c2="
-                              << config_.line_search_c2 << (ls_success ? "  ok" : "  fail");
-                        log_occ_inner_line(pg_ls.str());
-                    }
+                    const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
+                    const double inv_wk = (wk > 1e-30) ? 1.0 / wk : 0.0;
+                    for (int ib = 0; ib < nbands_; ++ib)
+                        grad_unw[ik * nbands_ + ib] = grad_occ[ik * nbands_ + ib] * inv_wk;
                 }
-                else
+                double dd_line = 0.0;
+                for (size_t i = 0; i < grad_occ.size(); ++i)
+                    dd_line -= grad_occ[i] * grad_unw[i];
+
+                // Build Aufbau trial: sort states by epsilon (ascending),
+                // fill lowest states to 1.0 until N_e electrons are placed.
+                // This is the correct PG limit for HF where the feasible set
+                // extremum is always at integer occupations.
                 {
-                    const bool occ_pg_monotone_fixed = config_.occ_ls_fixed_step
-                        && config_.occ_optimizer == OptimizerType::SteepestDescent
-                        && pg_ls_mode == OccProjLineSearchMode::Monotone;
-                    if (occ_pg_monotone_fixed)
-                    {
-                        pg_ls_trial = 1;
-                        E_last_trial = E;
-                        const double alpha_try = config_.occ_ls_stepsize;
-                        occ_trial = occ_flat;
-                        for (size_t i = 0; i < occ_trial.size(); ++i)
-                            occ_trial[i] += alpha_try * dir[i];
-                        occ_constraint_->project(occ_trial);
-                        if (std::abs(occ_constraint_->constraint_violation(occ_trial)) <= proj_constraint_tol)
-                        {
-                            double dd_proj = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                            {
-                                dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                            }
-                            if (dd_proj < 0.0)
-                            {
-                                const double E_trial = energy_grad_->compute_energy(
-                                    occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                                E_last_trial = E_trial;
-                                if (!pg_first_ls_recorded)
-                                {
-                                    pg_ls_qhist = {true, alpha_try, E, E_trial, dd_line};
-                                    pg_first_ls_recorded = true;
-                                }
-                                if (E_trial <= E)
-                                {
-                                    pg_step_acc = alpha_try;
-                                    pg_dd_proj_acc = dd_proj;
-                                    ls_success = true;
-                                }
-                            }
-                        }
-                        {
-                            std::ostringstream pg_ls;
-                            pg_ls << "      occ line search (PG Monotone fixed-step sd): alpha=" << std::scientific
-                                  << alpha_try << " step=" << (ls_success ? pg_step_acc : 0.0)
-                                  << " n_trial=" << pg_ls_trial << " E0=" << E << " E_trial=" << E_last_trial;
-                            if (ls_success)
-                            {
-                                pg_ls << " dTw=" << pg_dd_proj_acc << " E_monotone_bound=" << E;
-                            }
-                            pg_ls << (ls_success ? "  ok" : "  fail") << std::defaultfloat;
-                            log_occ_inner_line(pg_ls.str());
-                        }
-                    }
-                    else
-                    {
-                        double alpha = alpha_pg0;
-                        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
-                        {
-                            pg_ls_trial = ls + 1;
-                            const double alpha_try = alpha;
-                            occ_trial = occ_flat;
-                            for (size_t i = 0; i < occ_trial.size(); ++i)
-                                occ_trial[i] += alpha * dir[i];
-                            occ_constraint_->project(occ_trial);
+                    struct EpsIdx { double eps; int idx; };
+                    std::vector<EpsIdx> sorted(grad_unw.size());
+                    for (size_t i = 0; i < grad_unw.size(); ++i)
+                        sorted[i] = {grad_unw[i], static_cast<int>(i)};
+                    std::sort(sorted.begin(), sorted.end(),
+                              [](const EpsIdx& a, const EpsIdx& b) { return a.eps < b.eps; });
 
-                            // Reject if the projection failed to satisfy the constraint
-                            // (occurs when too many occupations clip to 0 or 1).
-                            if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                            {
-                                alpha *= config_.line_search_rho;
-                                continue;
-                            }
-
-                            // First-order descent along the projected segment (same as active_set).
-                            double dd_proj = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                            {
-                                dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                            }
-                            if (dd_proj >= 0.0)
-                            {
-                                alpha *= config_.line_search_rho;
-                                continue;
-                            }
-
-                            const double E_trial = energy_grad_->compute_energy(
-                                occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                            E_last_trial = E_trial;
-                            if (!pg_first_ls_recorded)
-                            {
-                                pg_ls_qhist = {true, alpha_try, E, E_trial, dd_line};
-                                pg_first_ls_recorded = true;
-                            }
-                            if (E_trial <= E)
-                            {
-                                pg_step_acc = alpha_try;
-                                pg_dd_proj_acc = dd_proj;
-                                ls_success = true;
-                                break;
-                            }
-                            alpha *= config_.line_search_rho;
-                        }
-
-                        {
-                            std::ostringstream pg_ls;
-                            pg_ls << "      occ line search (PG Monotone): alpha_init=" << std::scientific << alpha_pg0
-                                  << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << pg_ls_trial
-                                  << " E0=" << E << " E_trial=" << E_last_trial;
-                            if (ls_success)
-                            {
-                                pg_ls << " dTw=" << pg_dd_proj_acc << " E_monotone_bound=" << E;
-                            }
-                            pg_ls << "  rho=" << std::defaultfloat << config_.line_search_rho
-                                  << (ls_success ? "  ok" : "  fail");
-                            log_occ_inner_line(pg_ls.str());
-                        }
-                    }
-                }
-
-                // Wolfe + projection often rejects curvature-acceptable steps; retry along the same
-                // direction with monotone acceptance (energy drop on the projected segment).
-                if (pg_ls_mode != OccProjLineSearchMode::Monotone && !ls_success)
-                {
-                    double alpha_fb = std::min(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
-                    if (alpha_fb > 0.0 && std::isfinite(alpha_fb))
-                    {
-                        int n_fb = 0;
-                        for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
-                        {
-                            n_fb = ls + 1;
-                            const double alpha_try = alpha_fb;
-                            occ_trial = occ_flat;
-                            for (size_t i = 0; i < occ_trial.size(); ++i)
-                            {
-                                occ_trial[i] += alpha_fb * dir[i];
-                            }
-                            occ_constraint_->project(occ_trial);
-
-                            if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                            {
-                                alpha_fb *= config_.line_search_rho;
-                                continue;
-                            }
-
-                            double dd_proj = 0.0;
-                            for (size_t i = 0; i < occ_flat.size(); ++i)
-                            {
-                                dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                            }
-                            if (dd_proj >= 0.0)
-                            {
-                                alpha_fb *= config_.line_search_rho;
-                                continue;
-                            }
-
-                            const double E_trial = energy_grad_->compute_energy(
-                                occ_trial, const_cast<psi::Psi<TK>&>(wfc));
-                            E_last_trial = E_trial;
-                            if (!pg_first_ls_recorded)
-                            {
-                                pg_ls_qhist = {true, alpha_try, E, E_trial, dd_line};
-                                pg_first_ls_recorded = true;
-                            }
-                            if (E_trial <= E)
-                            {
-                                pg_step_acc = alpha_try;
-                                pg_dd_proj_acc = dd_proj;
-                                occ_flat = occ_trial;
-                                ls_success = true;
-                                break;
-                            }
-                            alpha_fb *= config_.line_search_rho;
-                        }
-                        pg_ls_trial = n_fb;
-                        {
-                            std::ostringstream fb;
-                            fb << "      occ line search (PG Monotone fallback after Wolfe fail): alpha_init="
-                               << std::scientific << std::min(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT)
-                               << " step=" << (ls_success ? pg_step_acc : 0.0) << " n_trial=" << n_fb
-                               << " E0=" << E << " E_trial=" << E_last_trial;
-                            if (ls_success)
-                            {
-                                fb << " dTw=" << pg_dd_proj_acc;
-                            }
-                            fb << "  rho=" << std::defaultfloat << config_.line_search_rho
-                               << (ls_success ? "  ok" : "  fail");
-                            log_occ_inner_line(fb.str());
-                        }
-                    }
-                }
-
-                if (!ls_success && config_.pg_occ_ls_recovery_alpha > 0.0)
-                {
-                    pg_opt.init(static_cast<int>(occ_flat.size()));
-                    std::vector<double> dir_rec(grad_occ.size());
-                    for (size_t i = 0; i < grad_occ.size(); ++i)
-                    {
-                        dir_rec[i] = -grad_occ[i];
-                    }
-                    double alpha = config_.pg_occ_ls_recovery_alpha;
+                    // Backtracking: blend alpha * aufbau + (1-alpha) * current
+                    double alpha = 1.0;
                     for (int ls = 0; ls < config_.line_search_max_iter; ++ls)
                     {
                         pg_ls_trial = ls + 1;
-                        const double alpha_try = alpha;
-                        occ_trial = occ_flat;
-                        for (size_t i = 0; i < occ_trial.size(); ++i)
+                        // Build Aufbau target
+                        std::vector<double> occ_aufbau(occ_flat.size(), 0.0);
+                        double electrons_left = n_electrons_;
+                        for (const auto& ei : sorted)
                         {
-                            occ_trial[i] += alpha * dir_rec[i];
+                            const int ik = ei.idx / nbands_;
+                            const double wk = kv_->wk[ik < kv_->get_nks() ? ik : ik - kv_->get_nks()];
+                            if (electrons_left >= wk - 1e-12)
+                            {
+                                occ_aufbau[ei.idx] = 1.0;
+                                electrons_left -= wk;
+                            }
+                            else if (electrons_left > 1e-12)
+                            {
+                                occ_aufbau[ei.idx] = electrons_left / wk;
+                                electrons_left = 0.0;
+                            }
                         }
+
+                        occ_trial.resize(occ_flat.size());
+                        for (size_t i = 0; i < occ_flat.size(); ++i)
+                            occ_trial[i] = (1.0 - alpha) * occ_flat[i] + alpha * occ_aufbau[i];
                         occ_constraint_->project(occ_trial);
 
                         if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
-                        {
-                            alpha *= config_.line_search_rho;
-                            continue;
-                        }
-
-                        double dd_proj = 0.0;
-                        for (size_t i = 0; i < occ_flat.size(); ++i)
-                        {
-                            dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
-                        }
-                        if (dd_proj >= 0.0)
                         {
                             alpha *= config_.line_search_rho;
                             continue;
@@ -3155,11 +2887,13 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         const double E_trial = energy_grad_->compute_energy(
                             occ_trial, const_cast<psi::Psi<TK>&>(wfc));
                         E_last_trial = E_trial;
+
                         if (E_trial <= E)
                         {
-                            pg_step_acc = alpha_try;
-                            pg_dd_proj_acc = dd_proj;
-                            occ_flat = occ_trial;
+                            pg_step_acc = alpha;
+                            pg_dd_proj_acc = 0.0;
+                            for (size_t i = 0; i < occ_flat.size(); ++i)
+                                pg_dd_proj_acc += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
                             ls_success = true;
                             break;
                         }
@@ -3167,46 +2901,31 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                     }
 
                     {
-                        std::ostringstream pg_rec;
-                        pg_rec << "      occ line search (PG recovery SD): alpha_init=" << std::scientific
-                               << config_.pg_occ_ls_recovery_alpha << " step=" << (ls_success ? pg_step_acc : 0.0)
-                               << " n_trial=" << pg_ls_trial << " E0=" << E << " E_trial=" << E_last_trial;
-                        if (ls_success)
-                        {
-                            pg_rec << " dTw=" << pg_dd_proj_acc;
-                        }
-                        pg_rec << "  rho=" << std::defaultfloat << config_.line_search_rho
-                               << (ls_success ? "  ok" : "  fail");
-                        log_occ_inner_line(pg_rec.str());
+                        std::ostringstream pg_ls;
+                        pg_ls << "      occ SPG (Aufbau): alpha_init=1"
+                              << " alpha=" << std::scientific << (ls_success ? pg_step_acc : 0.0)
+                              << " n_trial=" << pg_ls_trial
+                              << " E0=" << E << " E_trial=" << E_last_trial
+                              << "  rho=" << std::defaultfloat << config_.line_search_rho
+                              << (ls_success ? "  ok" : "  fail");
+                        log_occ_inner_line(pg_ls.str());
                     }
                 }
 
                 if (ls_success)
                 {
-                    if (pg_ls_mode == OccProjLineSearchMode::Monotone)
-                    {
-                        occ_flat = occ_trial;
-                    }
+                    occ_flat = occ_trial;
                     pg_step_applied = true;
                 }
                 else
                 {
                     occ_flat = occ_before_step;
-                    pg_opt.init(static_cast<int>(occ_flat.size()));
                     bb_step.reset();
-                    pg_ls_qhist = {};
-                    if (pg_occ_use_nm_ref)
-                    {
-                        pg_nm_C = std::numeric_limits<double>::quiet_NaN();
-                        pg_nm_Q = 1.0;
-                    }
-                    GlobalV::ofs_running << "      PG line search failed at inner=" << (inner + 1)
-                                         << " (Wolfe + monotone fallback + recovery); no step, "
-                                            "optimiser reset; stopping inner iterations"
+                    GlobalV::ofs_running << "      SPG line search failed at inner=" << (inner + 1)
+                                         << "; no step taken, stopping inner iterations"
                                          << std::endl;
                 }
 
-                // Update the optimizer with the actual step taken.
                 std::vector<double> step_vec(occ_flat.size());
                 for (size_t i = 0; i < step_vec.size(); ++i)
                     step_vec[i] = occ_flat[i] - occ_before_step[i];
@@ -3214,19 +2933,11 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 std::vector<double> new_grad_occ;
                 const double E_post = energy_grad_->compute(occ_flat, const_cast<psi::Psi<TK>&>(wfc),
                                                              new_grad_occ, grad_wfc_dummy);
-                if (pg_occ_use_nm_ref && ls_success)
-                {
-                    const double eta = config_.occ_cg_nonmonotone_eta;
-                    const double Qn = eta * pg_nm_Q + 1.0;
-                    pg_nm_C = (eta * pg_nm_Q * pg_nm_C + E_post) / Qn;
-                    pg_nm_Q = Qn;
-                }
                 double grad_l2_post = 0.0;
                 for (double g : new_grad_occ)
-                {
                     grad_l2_post += g * g;
-                }
                 grad_l2_post = std::sqrt(grad_l2_post);
+
                 const double tau_post = ls_success
                     ? pg_bertsekas_tau_from_line_search(pg_step_acc, RDMFT_DEFAULT_LS_ALPHA_INIT)
                     : pg_bertsekas_tau_from_line_search(alpha_pg0, RDMFT_DEFAULT_LS_ALPHA_INIT);
@@ -3251,14 +2962,6 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                 const double g_inf_stop_post = pg_map_inf_stop_post / tau_pg_stop;
                 const double g_l2_stop_post = pg_map_l2_stop_post / tau_pg_stop;
                 result.grad_norm = g_inf_stop_post;
-                if (pg_step_applied)
-                {
-                    std::vector<double> new_grad_occ_opt;
-                    occ_cg_grad_to_opt(new_grad_occ, new_grad_occ_opt);
-                    std::vector<double> step_vec_opt;
-                    occ_cg_step_to_opt(step_vec, step_vec_opt);
-                    pg_opt.update(new_grad_occ_opt, step_vec_opt);
-                }
                 if (ls_success)
                 {
                     bb_step.record_state(occ_flat, new_grad_occ);

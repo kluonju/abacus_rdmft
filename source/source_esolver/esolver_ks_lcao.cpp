@@ -701,6 +701,8 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 
         // RDMFT equality target N_e: default base is sum wg (matches loaded occupations);
         // optional base PARAM.inp.nelec plus rdmft_nelec_delta (see INPUT).
+        // When sum(wg) ≈ 0 (e.g. scf_nmax=0 so calculate_weights never ran), fall
+        // back to inp.nelec so RDMFT can still proceed with the correct electron count.
         double sum_wg = 0.0;
         for (int ik = 0; ik < nk; ++ik)
         {
@@ -709,7 +711,23 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
                 sum_wg += this->pelec->wg(ik, ib);
             }
         }
-        const double nelec_base = inp.rdmft_nelec_use_input ? inp.nelec : sum_wg;
+        double nelec_base;
+        if (inp.rdmft_nelec_use_input)
+        {
+            nelec_base = inp.nelec;
+        }
+        else if (sum_wg > 1.0e-12)
+        {
+            nelec_base = sum_wg;
+        }
+        else
+        {
+            nelec_base = inp.nelec;
+            GlobalV::ofs_running
+                << "RDMFT: sum(wg) ~ 0 (no KS occupations available, e.g. scf_nmax=0); "
+                << "falling back to inp.nelec=" << inp.nelec << " for N_e target."
+                << std::endl;
+        }
         const double n_electrons = nelec_base + inp.rdmft_nelec_delta;
         if (n_electrons <= 0.0)
         {

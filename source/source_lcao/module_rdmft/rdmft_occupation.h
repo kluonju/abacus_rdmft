@@ -181,6 +181,20 @@ class OccupationConstraint
         rescale_to_nel(occ);
     }
 
+    /// Project with a uniform (k-weight-independent) shift mu:
+    ///   n_ki = clip(n_ki^in - mu, 0, 1)
+    /// where mu is chosen so sum_k w_k sum_i n_ki = N_e.
+    /// This preserves the relative ordering of the input occupations
+    /// (water-filling / simplex projection), making it suitable for the
+    /// SPG line search where the gradient step must not be distorted by
+    /// non-uniform k-weight scaling.
+    void project_uniform(std::vector<double>& occ) const
+    {
+        for (auto& n : occ)
+            n = std::max(0.0, std::min(1.0, n));
+        rescale_to_nel_uniform(occ);
+    }
+
     /// Active set method: identify active constraints and solve reduced problem
     struct ActiveSetInfo
     {
@@ -363,6 +377,85 @@ class OccupationConstraint
                 const double w = kweights_[ik];
                 occ[ik * nbands_ + i] = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - lambda * w));
             }
+    }
+
+    void rescale_to_nel_uniform(std::vector<double>& occ) const
+    {
+        assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
+        for (auto& n : occ)
+            n = std::max(0.0, std::min(1.0, n));
+
+        const double target = n_electrons_;
+        const double tol_sum = 1e-12;
+        const std::vector<double> occ_tmp(occ);
+
+        auto weighted_sum_from_mu = [&](double mu)
+        {
+            double sum = 0.0;
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int i = 0; i < nbands_; ++i)
+                {
+                    const double y = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - mu));
+                    sum += kweights_[ik] * y;
+                }
+            return sum;
+        };
+
+        const double sum0 = weighted_sum_from_mu(0.0);
+        if (std::abs(sum0 - target) < tol_sum)
+            return;
+
+        double mu_lo = 0.0, mu_hi = 0.0;
+        double sum_lo = sum0, sum_hi = sum0;
+        const double expand_max = 2.0;
+
+        if (sum0 > target)
+        {
+            mu_hi = 1.0;
+            sum_hi = weighted_sum_from_mu(mu_hi);
+            while (sum_hi > target && mu_hi < expand_max)
+            {
+                mu_hi *= 2.0;
+                sum_hi = weighted_sum_from_mu(mu_hi);
+            }
+        }
+        else
+        {
+            mu_lo = -1.0;
+            sum_lo = weighted_sum_from_mu(mu_lo);
+            while (sum_lo < target && std::abs(mu_lo) < expand_max)
+            {
+                mu_lo *= 2.0;
+                sum_lo = weighted_sum_from_mu(mu_lo);
+            }
+        }
+
+        if (!(sum_lo >= target && sum_hi <= target))
+        {
+            rescale_to_nel(occ);
+            return;
+        }
+
+        for (int it = 0; it < 100; ++it)
+        {
+            const double mu_mid = 0.5 * (mu_lo + mu_hi);
+            const double sum_mid = weighted_sum_from_mu(mu_mid);
+            if (std::abs(sum_mid - target) < tol_sum)
+            {
+                mu_lo = mu_mid;
+                mu_hi = mu_mid;
+                break;
+            }
+            if (sum_mid > target)
+                mu_lo = mu_mid;
+            else
+                mu_hi = mu_mid;
+        }
+
+        const double mu = 0.5 * (mu_lo + mu_hi);
+        for (int ik = 0; ik < nk_; ++ik)
+            for (int i = 0; i < nbands_; ++i)
+                occ[ik * nbands_ + i] = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - mu));
     }
 
     ConstraintMethod method_;
