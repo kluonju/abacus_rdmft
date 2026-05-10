@@ -217,7 +217,7 @@ inline void projected_gradient_map_unweighted_l2_linf(const std::vector<double>&
     {
         trial[i] = occ[i] - alpha * eps[i];
     }
-    constraint.project_uniform(trial);
+    constraint.proximal_project_uniform(trial);
 
     double n2 = 0.0;
     linf = 0.0;
@@ -2921,7 +2921,9 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                         occ_trial.assign(occ_flat.size(), 0.0);
                         for (size_t i = 0; i < occ_flat.size(); ++i)
                             occ_trial[i] = occ_flat[i] - alpha * eps[i];
-                        occ_constraint_->project_uniform(occ_trial);
+                        // L2 proximal projection (no pre-clip): preserves the
+                        // SPG descent property and KKT preservation.
+                        occ_constraint_->proximal_project_uniform(occ_trial);
 
                         if (std::abs(occ_constraint_->constraint_violation(occ_trial)) > proj_constraint_tol)
                         {
@@ -2929,16 +2931,19 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
                             continue;
                         }
 
-                        // First-order descent along the projected segment:
-                        // dd_proj = grad_occ . (x_trial - x).  If non-negative,
-                        // SPG step is not a descent direction at this α; shrink.
+                        // First-order descent along the projected segment.
+                        // For a true L2 proximal projection, dd_proj < 0 is
+                        // guaranteed whenever x is not a stationary point
+                        // (Fejer / quasi-non-expansive property).  If we
+                        // observe dd_proj >= 0, x is already stationary in
+                        // this geometry; stop the line search and let the
+                        // outer KKT check declare convergence.
                         double dd_proj = 0.0;
                         for (size_t i = 0; i < occ_flat.size(); ++i)
                             dd_proj += grad_occ[i] * (occ_trial[i] - occ_flat[i]);
                         if (dd_proj >= 0.0)
                         {
-                            alpha *= config_.line_search_rho;
-                            continue;
+                            break;
                         }
 
                         const double E_trial = energy_grad_->compute_energy(

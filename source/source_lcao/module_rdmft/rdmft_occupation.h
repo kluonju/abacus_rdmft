@@ -173,7 +173,12 @@ class OccupationConstraint
         mu_ = std::min(mu_ * factor, max_mu);
     }
 
-    /// Project occupations onto feasible set [0,1] with electron number constraint
+    /// Project occupations onto feasible set [0,1] with electron number constraint.
+    /// Pre-clips the input to [0,1] before the bisection-based rescale, suitable
+    /// for cleaning up an already-feasible occupation that has drifted slightly
+    /// out of range. **Not** the L2 proximal projection of an arbitrary point:
+    /// the pre-clip discards how far n_ki is below 0 or above 1, which the
+    /// proximal projection needs.  Use `proximal_project` for SPG steps.
     void project(std::vector<double>& occ) const
     {
         for (auto& n : occ)
@@ -181,17 +186,41 @@ class OccupationConstraint
         rescale_to_nel(occ);
     }
 
-    /// Project with a uniform (k-weight-independent) shift mu:
-    ///   n_ki = clip(n_ki^in - mu, 0, 1)
-    /// where mu is chosen so sum_k w_k sum_i n_ki = N_e.
-    /// This preserves the relative ordering of the input occupations
-    /// (water-filling / simplex projection), making it suitable for the
-    /// SPG line search where the gradient step must not be distorted by
-    /// non-uniform k-weight scaling.
+    /// Same as `project` but uses a uniform (k-weight-independent) shift.
+    /// **Not** the L2 proximal projection of an arbitrary point.  Use
+    /// `proximal_project_uniform` for SPG steps.
     void project_uniform(std::vector<double>& occ) const
     {
         for (auto& n : occ)
             n = std::max(0.0, std::min(1.0, n));
+        rescale_to_nel_uniform(occ);
+    }
+
+    /// L2 proximal projection (wk-proportional shift) onto
+    ///   { y in [0,1]^N : sum_k w_k sum_i y_ki = N_e }.
+    ///
+    ///   y = argmin_y ||y - x||^2  s.t.  y in [0,1], sum_k w_k y = N_e
+    ///
+    /// Solved via the dual: y_ki(λ) = clip(x_ki - λ w_k, 0, 1), bisecting λ to
+    /// satisfy the equality constraint.  Unlike `project`, this does NOT
+    /// pre-clip x; the bisection sees the un-clipped input so the convex hull
+    /// of the box constraint is respected.  This is the projection that makes
+    /// the SPG step `y = P(x - α g)` a descent direction (Fejer property),
+    /// and at a KKT point of E with this metric, P(x - α g) = x exactly.
+    void proximal_project(std::vector<double>& occ) const
+    {
+        rescale_to_nel(occ);
+    }
+
+    /// L2 proximal projection with a uniform shift (k-weight-independent).
+    ///   y_ki = clip(x_ki - mu, 0, 1),  mu chosen so sum_k w_k sum_i y_ki = N_e.
+    /// This is the proximal projection in the metric ||y||^2 = sum_ki y^2
+    /// (no w_k weighting on the diagonal); it pairs naturally with SPG using
+    /// the unweighted gradient eps_ki = (∂E/∂n_ki) / w_k.  Unlike
+    /// `project_uniform`, this does NOT pre-clip, preserving the proximal
+    /// geometry required for SPG descent and KKT preservation.
+    void proximal_project_uniform(std::vector<double>& occ) const
+    {
         rescale_to_nel_uniform(occ);
     }
 
@@ -280,8 +309,11 @@ class OccupationConstraint
     void rescale_to_nel(std::vector<double>& occ) const
     {
         assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
-        for (auto& n : occ)
-            n = std::max(0.0, std::min(1.0, n));
+        // Note: do NOT pre-clip occ here.  The bisection below applies the
+        // box clip [0,1] inside `weighted_sum_from_lambda`, so passing the
+        // un-clipped input is what makes this an L2 proximal projection.
+        // Callers that want to pre-clip (e.g. `project()` cleaning up a
+        // drifted feasible occupation) do so before calling this routine.
 
         const double target = n_electrons_;
         const double tol_sum = 1e-12;
@@ -382,8 +414,7 @@ class OccupationConstraint
     void rescale_to_nel_uniform(std::vector<double>& occ) const
     {
         assert(occ.size() == static_cast<size_t>(nk_ * nbands_));
-        for (auto& n : occ)
-            n = std::max(0.0, std::min(1.0, n));
+        // No internal pre-clip; see comment in `rescale_to_nel`.
 
         const double target = n_electrons_;
         const double tol_sum = 1e-12;
@@ -407,7 +438,10 @@ class OccupationConstraint
 
         double mu_lo = 0.0, mu_hi = 0.0;
         double sum_lo = sum0, sum_hi = sum0;
-        const double expand_max = 2.0;
+        // Allow large expansion because the un-clipped input to the proximal
+        // projection can be far outside [0,1] for SPG steps with
+        // α·ε > O(1) on some bands.
+        const double expand_max = 1.0e12;
 
         if (sum0 > target)
         {
@@ -432,7 +466,11 @@ class OccupationConstraint
 
         if (!(sum_lo >= target && sum_hi <= target))
         {
-            rescale_to_nel(occ);
+            // Saturated: clamp mu to the side closer to feasibility.
+            const double mu_sat = (sum_lo < target) ? mu_lo : mu_hi;
+            for (int ik = 0; ik < nk_; ++ik)
+                for (int i = 0; i < nbands_; ++i)
+                    occ[ik * nbands_ + i] = std::max(0.0, std::min(1.0, occ_tmp[ik * nbands_ + i] - mu_sat));
             return;
         }
 
