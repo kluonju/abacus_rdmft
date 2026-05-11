@@ -41,7 +41,7 @@ On the shipped `H2_HF` and `LiH_HF` examples we verify
 | Keyword | Type | Default | Description |
 |---------|------|---------|-------------|
 | `rdmft` | bool | `false` | Master switch. Set to `1` (or `true`) to enable RDMFT. |
-| `rdmft_functional` | string | `""` (empty) | RDMFT XC functional. Supported: `hf`, `muller`, `power`, `gu`, `chf`, `cga`, `geo`, `optgm`. **When left empty only the legacy single-step RDMFT evaluator is run — the RDMFT energy is NOT minimised. Set this keyword to activate the full RDMFT optimisation engine.** |
+| `rdmft_functional` | string | `""` (empty) | RDMFT XC functional. Supported: `hf`, `muller`, `power`, `gu`, `chf`, `cga`, `geo`, `hybopt`. **When left empty only the legacy single-step RDMFT evaluator is run — the RDMFT energy is NOT minimised. Set this keyword to activate the full RDMFT optimisation engine.** |
 | `rdmft_power_alpha` | real | `0.656` | Exponent α in the coupling function g(n) = n^α. Only used when `rdmft_functional` is `power`. For HF and Müller, α is fixed automatically (1.0 and 0.5). Valid range: (0, 1). |
 
 The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMFT optimisation** uses
@@ -56,7 +56,7 @@ The **initial KS-SCF** uses `dft_functional` (LDA, PBE, SCAN, etc.).  The **RDMF
 | `chf` | 1/2 n_i n_j + 1/2 √(n_i(1−n_i))√(n_j(1−n_j)) | Corrected Hartree–Fock (Csanyi–Arias) |
 | `cga` | 1/4 n_i n_j + 1/4 √(n_i(2−n_i))√(n_j(2−n_j)) | Csanyi–Goedecker–Arias (PRA 65, 032510) |
 | `geo` | [n_i n_j + (n_i n_j)^(1/2) + 2(n_i n_j)^(3/4)] / 4 | GEO mixture functional |
-| `optgm` | (1-λ) n_i n_j + λ n_i^α n_j^α | OptGM fixed-parameter convex mixture |
+| `hybopt` | (1-λ) n_i n_j + λ n_i^α n_j^α | HybOpt fixed-parameter convex mixture |
 
 ### Solver strategy
 
@@ -461,7 +461,7 @@ Typical causes (in roughly decreasing likelihood):
 
 1. **`rdmft_functional` is not set.** Only the legacy single-step evaluator
    runs and no `===== RDMFT Alternating Optimization =====` banner is printed.
-   Set `rdmft_functional muller` (or `hf`/`power`/`gu`/`chf`/`cga`/`geo`/`optgm`) to activate the
+   Set `rdmft_functional muller` (or `hf`/`power`/`gu`/`chf`/`cga`/`geo`/`hybopt`) to activate the
    optimisation engine.
 2. **`dft_functional` is set to a hybrid (e.g. `muller`, `hf`, `pbe0`).**
    The KS-SCF itself then runs with exact exchange, and LibRI initialisation

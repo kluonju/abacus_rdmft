@@ -108,16 +108,16 @@ TEST_F(XCFunctionalTest, GU_diag_factor)
     EXPECT_NEAR(xc.gu_diag_factor(n), n * n - n, 1e-12);
 }
 
-TEST_F(XCFunctionalTest, ParseAndStringIncludeGeoAndOptgm)
+TEST_F(XCFunctionalTest, ParseAndStringIncludeGeoAndHybopt)
 {
     EXPECT_EQ(parse_xc_type("chf"), XCFunctionalType::CHF);
     EXPECT_EQ(parse_xc_type("cga"), XCFunctionalType::CGA);
     EXPECT_EQ(parse_xc_type("geo"), XCFunctionalType::GEO);
-    EXPECT_EQ(parse_xc_type("optgm"), XCFunctionalType::OptGM);
+    EXPECT_EQ(parse_xc_type("hybopt"), XCFunctionalType::HybOpt);
     EXPECT_EQ(xc_type_to_string(XCFunctionalType::CHF), "chf");
     EXPECT_EQ(xc_type_to_string(XCFunctionalType::CGA), "cga");
     EXPECT_EQ(xc_type_to_string(XCFunctionalType::GEO), "geo");
-    EXPECT_EQ(xc_type_to_string(XCFunctionalType::OptGM), "optgm");
+    EXPECT_EQ(xc_type_to_string(XCFunctionalType::HybOpt), "hybopt");
 }
 
 TEST_F(XCFunctionalTest, CHF_coupling_matches_formula)
@@ -176,26 +176,26 @@ TEST_F(XCFunctionalTest, GEO_coupling_matches_formula)
     EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
 }
 
-TEST_F(XCFunctionalTest, OptGM_coupling_matches_formula)
+TEST_F(XCFunctionalTest, HybOpt_coupling_matches_formula)
 {
-    XCFunctional xc(XCFunctionalType::OptGM);
+    XCFunctional xc(XCFunctionalType::HybOpt);
     const double ni = 0.4;
     const double nj = 0.7;
-    const double a = XCFunctional::optgm_power_exponent();
-    const double expected = XCFunctional::optgm_hf_weight() * ni * nj
-                          + XCFunctional::optgm_power_weight()
+    const double a = XCFunctional::hybopt_power_exponent();
+    const double expected = XCFunctional::hybopt_hf_weight() * ni * nj
+                          + XCFunctional::hybopt_power_weight()
                                 * std::pow(ni, a) * std::pow(nj, a);
     EXPECT_NEAR(xc.f(ni, nj), expected, 1e-12);
 }
 
-TEST_F(XCFunctionalTest, OptGM_derivative_matches_formula)
+TEST_F(XCFunctionalTest, HybOpt_derivative_matches_formula)
 {
-    XCFunctional xc(XCFunctionalType::OptGM);
+    XCFunctional xc(XCFunctionalType::HybOpt);
     const double ni = 0.4;
     const double nj = 0.7;
-    const double a = XCFunctional::optgm_power_exponent();
-    const double expected = XCFunctional::optgm_hf_weight() * nj
-                          + XCFunctional::optgm_power_weight()
+    const double a = XCFunctional::hybopt_power_exponent();
+    const double expected = XCFunctional::hybopt_hf_weight() * nj
+                          + XCFunctional::hybopt_power_weight()
                                 * a * std::pow(ni, a - 1.0) * std::pow(nj, a);
     EXPECT_NEAR(xc.df_dni(ni, nj), expected, 1e-10);
 }

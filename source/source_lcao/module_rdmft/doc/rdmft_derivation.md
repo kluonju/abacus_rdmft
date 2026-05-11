@@ -183,17 +183,17 @@ implemented as a **sum of three separable power pieces** with coefficients
 $(\tfrac{1}{4}, \tfrac{1}{4}, \tfrac{1}{2})$ and exponents $(1, \tfrac{1}{2}, \tfrac{3}{4})$,
 each regularised at small $n$ like the Power functional (`pow_reg` / `dpow_reg`).
 
-#### 2.3.8 OptGM (INPUT `optgm`)
+#### 2.3.8 HybOpt (INPUT `hybopt`)
 
 Convex combination of HF and a fixed Power-like channel:
 
 $$
-f^{\mathrm{OptGM}}(n_i, n_j)
+f^{\mathrm{HybOpt}}(n_i, n_j)
 = w_{\mathrm{HF}} \, n_i n_j
-+ w_{\mathrm{P}} \, n_i^{\alpha_{\mathrm{OptGM}}} n_j^{\alpha_{\mathrm{OptGM}}},
++ w_{\mathrm{P}} \, n_i^{\alpha_{\mathrm{HybOpt}}} n_j^{\alpha_{\mathrm{HybOpt}}},
 \qquad
-\alpha_{\mathrm{OptGM}} \approx 0.54242188,\quad
-w_{\mathrm{P}} \approx 0.94012500
+\alpha_{\mathrm{HybOpt}} = 0.541076,\quad
+w_{\mathrm{P}} = 0.938328
 $$
 
 (with $w_{\mathrm{HF}} = 1 - w_{\mathrm{P}}$).
@@ -250,7 +250,7 @@ EXX: the explicit extra energy $\tfrac{1}{2}\sum_{\mathbf{k}} w_{\mathbf{k}}^2
 coincides with the Müller-type EXX treatment until a future patch wires in the
 diagonal correction.
 
-#### Mixed channels (GEO, CHF, CGA, OptGM)
+#### Mixed channels (GEO, CHF, CGA, HybOpt)
 
 For these types, `EnergyGradient::compute` performs **several** EXX builds in
 sequence: for each channel $t$ it forms a modified DM with per-band weights
@@ -258,7 +258,7 @@ $w_{\mathbf{k}}$ times the channel weight $p_t(n_{i\mathbf{k}})$ (linear $n$ for
 the HF-like piece, $\sqrt{n(1-n)}$, $\sqrt{n(2-n)}$, or regularised
 $n^{\alpha_t}$ as coded), accumulates $H_{\mathrm{exx}}\psi$ and diagonal
 contributions, and sums energy and gradients with the fixed coefficients
-(`geo_coef` / `optgm_*_weight` / CHF / CGA weights).
+(`geo_coef` / `hybopt_*_weight` / CHF / CGA weights).
 
 ---
 
@@ -386,7 +386,7 @@ $$
 \varepsilon^{\mathrm{exx}}_{i\mathbf{k}} .
 $$
 
-For **mixed** GEO / CHF / CGA / OptGM, the code adds the weighted derivatives of
+For **mixed** GEO / CHF / CGA / HybOpt, the code adds the weighted derivatives of
 each channel’s occupation weights to the same diagonal exchange response
 (`mix_vx_G_acc` in `rdmft_energy_gradient.cpp`).
 
@@ -1193,7 +1193,7 @@ $$
 \varepsilon^{\mathrm{exx}}_{i\mathbf{k}\sigma} .
 $$
 
-Mixed functionals (GEO / CHF / CGA / OptGM) use the same channel-summing scheme
+Mixed functionals (GEO / CHF / CGA / HybOpt) use the same channel-summing scheme
 as §5.1, independently per $\sigma$.
 
 The Euclidean orbital gradient for each spin block matches §5.2, including the
@@ -1244,7 +1244,7 @@ onto the code’s layout after identifying how `ik` encodes spin in the current
 | One-body + Hartree                | n, C      | —                                | §5.1–§5.2, `EnergyGradient::compute` |
 | XC (HF / Müller / Power)          | n, C      | Modified DM + `Exx_LRI`          | §2.4, §5.1–§5.2                  |
 | XC (GU)                           | n, C      | Same EXX path as Müller ($g=\sqrt{n}$ reg.); analytic $(n^2-n)J_{ii}$ **not** in `compute` | §2.4 GU remark |
-| XC (GEO / CHF / CGA / OptGM)      | n, C      | Multiple EXX builds, summed      | §2.4 mixed channels              |
+| XC (GEO / CHF / CGA / HybOpt)      | n, C      | Multiple EXX builds, summed      | §2.4 mixed channels              |
 | HF occupation entropy (optional)  | n         | —                                | §5.1, `occ_entropy_gamma_`       |
 | Occupation constraints            | n         | ALM / PG / active-set + §4.3 shift | §4, §6                         |
 | Orbital orthogonality             | C (X)     | Stiefel: §5.3–§5.4               | `StiefelManifold`, `project_orbital_gradient` |

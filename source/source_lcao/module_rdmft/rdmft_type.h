@@ -30,9 +30,9 @@ enum class XCFunctionalType
     /// GEO functional:
     /// f(n_i, n_j) = [n_i n_j + (n_i n_j)^(1/2) + 2 (n_i n_j)^(3/4)] / 4
     GEO,
-    /// OptGM functional: convex combination of HF and Power(alpha)
+    /// HybOpt functional: convex combination of HF and Power(alpha)
     /// kernels with fixed literature parameters.
-    OptGM
+    HybOpt
 };
 
 enum class OccParamType
@@ -142,7 +142,7 @@ inline XCFunctionalType parse_xc_type(const std::string& name)
     if (name == "chf") return XCFunctionalType::CHF;
     if (name == "cga") return XCFunctionalType::CGA;
     if (name == "geo") return XCFunctionalType::GEO;
-    if (name == "optgm") return XCFunctionalType::OptGM;
+    if (name == "hybopt") return XCFunctionalType::HybOpt;
     throw std::invalid_argument("Unknown RDMFT XC functional: " + name);
 }
 
@@ -157,7 +157,7 @@ inline std::string xc_type_to_string(XCFunctionalType type)
         case XCFunctionalType::CHF: return "chf";
         case XCFunctionalType::CGA: return "cga";
         case XCFunctionalType::GEO: return "geo";
-        case XCFunctionalType::OptGM: return "optgm";
+        case XCFunctionalType::HybOpt: return "hybopt";
     }
     return "unknown";
 }

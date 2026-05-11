@@ -49,7 +49,7 @@ class XCFunctional
         else if (type == XCFunctionalType::CHF) alpha_ = 1.0;
         else if (type == XCFunctionalType::CGA) alpha_ = 1.0;
         else if (type == XCFunctionalType::GEO) alpha_ = 0.75;
-        else if (type == XCFunctionalType::OptGM) alpha_ = optgm_power_exponent();
+        else if (type == XCFunctionalType::HybOpt) alpha_ = hybopt_power_exponent();
     }
 
     XCFunctionalType type() const { return type_; }
@@ -108,7 +108,7 @@ class XCFunctional
                && type_ != XCFunctionalType::CHF
                && type_ != XCFunctionalType::CGA
                && type_ != XCFunctionalType::GEO
-               && type_ != XCFunctionalType::OptGM;
+               && type_ != XCFunctionalType::HybOpt;
     }
 
     static constexpr int num_geo_terms() { return 3; }
@@ -132,9 +132,9 @@ class XCFunctional
             default: return 1.0;
         }
     }
-    static constexpr double optgm_power_weight() { return 0.94012500; }
-    static constexpr double optgm_hf_weight() { return 1.0 - optgm_power_weight(); }
-    static constexpr double optgm_power_exponent() { return 0.54242188; }
+    static constexpr double hybopt_power_weight() { return 0.938328; }
+    static constexpr double hybopt_hf_weight() { return 1.0 - hybopt_power_weight(); }
+    static constexpr double hybopt_power_exponent() { return 0.541076; }
 
     /// CHF (Corrected Hartree-Fock):
     /// f(n_i,n_j)=1/2 n_i n_j + 1/2 sqrt(n_i(1-n_i)) sqrt(n_j(1-n_j))
@@ -232,11 +232,11 @@ class XCFunctional
             return cga_hf_weight() * ni * nj
                    + cga_corr_weight() * cga_corr_term(ni) * cga_corr_term(nj);
         }
-        if (type_ == XCFunctionalType::OptGM)
+        if (type_ == XCFunctionalType::HybOpt)
         {
-            const double a = optgm_power_exponent();
-            return optgm_hf_weight() * ni * nj
-                   + optgm_power_weight() * pow_reg(ni, a) * pow_reg(nj, a);
+            const double a = hybopt_power_exponent();
+            return hybopt_hf_weight() * ni * nj
+                   + hybopt_power_weight() * pow_reg(ni, a) * pow_reg(nj, a);
         }
         return g(ni) * g(nj);
     }
@@ -273,11 +273,11 @@ class XCFunctional
             return cga_hf_weight() * nj
                    + cga_corr_weight() * cga_corr_term_deriv(ni) * cga_corr_term(nj);
         }
-        if (type_ == XCFunctionalType::OptGM)
+        if (type_ == XCFunctionalType::HybOpt)
         {
-            const double a = optgm_power_exponent();
-            return optgm_hf_weight() * nj
-                   + optgm_power_weight() * dpow_reg(ni, a) * pow_reg(nj, a);
+            const double a = hybopt_power_exponent();
+            return hybopt_hf_weight() * nj
+                   + hybopt_power_weight() * dpow_reg(ni, a) * pow_reg(nj, a);
         }
         return dg(ni) * g(nj);
     }

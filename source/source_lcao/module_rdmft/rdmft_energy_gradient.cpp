@@ -1560,14 +1560,14 @@ double EnergyGradient<TK, TR>::compute(
     const std::int64_t hpsi_alloc
         = std::max<std::int64_t>(static_cast<std::int64_t>(nb_local * nbs_local), 1);
     const bool is_mixed_exx = (xc_func_.type() == XCFunctionalType::GEO
-                               || xc_func_.type() == XCFunctionalType::OptGM
+                               || xc_func_.type() == XCFunctionalType::HybOpt
                                || xc_func_.type() == XCFunctionalType::CHF
                                || xc_func_.type() == XCFunctionalType::CGA);
     auto mixed_num_terms = [&]() -> int {
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return XCFunctional::num_geo_terms();
-            case XCFunctionalType::OptGM:
+            case XCFunctionalType::HybOpt:
             case XCFunctionalType::CHF:
             case XCFunctionalType::CGA: return 2;
             default: return 0;
@@ -1577,8 +1577,8 @@ double EnergyGradient<TK, TR>::compute(
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return XCFunctional::geo_coef(t);
-            case XCFunctionalType::OptGM:
-                return (t == 0) ? XCFunctional::optgm_hf_weight() : XCFunctional::optgm_power_weight();
+            case XCFunctionalType::HybOpt:
+                return (t == 0) ? XCFunctional::hybopt_hf_weight() : XCFunctional::hybopt_power_weight();
             case XCFunctionalType::CHF:
                 return (t == 0) ? XCFunctional::chf_hf_weight() : XCFunctional::chf_corr_weight();
             case XCFunctionalType::CGA:
@@ -1590,8 +1590,8 @@ double EnergyGradient<TK, TR>::compute(
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return xc_func_.pow_reg(n, XCFunctional::geo_alpha(t));
-            case XCFunctionalType::OptGM:
-                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::HybOpt:
+                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::hybopt_power_exponent());
             case XCFunctionalType::CHF:
                 return (t == 0) ? n : xc_func_.chf_corr_term(n);
             case XCFunctionalType::CGA:
@@ -1603,8 +1603,8 @@ double EnergyGradient<TK, TR>::compute(
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return xc_func_.dpow_reg(n, XCFunctional::geo_alpha(t));
-            case XCFunctionalType::OptGM:
-                return (t == 0) ? 1.0 : xc_func_.dpow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::HybOpt:
+                return (t == 0) ? 1.0 : xc_func_.dpow_reg(n, XCFunctional::hybopt_power_exponent());
             case XCFunctionalType::CHF:
                 return (t == 0) ? 1.0 : xc_func_.chf_corr_term_deriv(n);
             case XCFunctionalType::CGA:
@@ -2061,14 +2061,14 @@ double EnergyGradient<TK, TR>::compute_energy(
     }
     op_hartree_->contributeHR();
     const bool is_mixed_exx = (xc_func_.type() == XCFunctionalType::GEO
-                               || xc_func_.type() == XCFunctionalType::OptGM
+                               || xc_func_.type() == XCFunctionalType::HybOpt
                                || xc_func_.type() == XCFunctionalType::CHF
                                || xc_func_.type() == XCFunctionalType::CGA);
     auto mixed_num_terms = [&]() -> int {
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return XCFunctional::num_geo_terms();
-            case XCFunctionalType::OptGM:
+            case XCFunctionalType::HybOpt:
             case XCFunctionalType::CHF:
             case XCFunctionalType::CGA: return 2;
             default: return 0;
@@ -2078,8 +2078,8 @@ double EnergyGradient<TK, TR>::compute_energy(
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return XCFunctional::geo_coef(t);
-            case XCFunctionalType::OptGM:
-                return (t == 0) ? XCFunctional::optgm_hf_weight() : XCFunctional::optgm_power_weight();
+            case XCFunctionalType::HybOpt:
+                return (t == 0) ? XCFunctional::hybopt_hf_weight() : XCFunctional::hybopt_power_weight();
             case XCFunctionalType::CHF:
                 return (t == 0) ? XCFunctional::chf_hf_weight() : XCFunctional::chf_corr_weight();
             case XCFunctionalType::CGA:
@@ -2091,8 +2091,8 @@ double EnergyGradient<TK, TR>::compute_energy(
         switch (xc_func_.type())
         {
             case XCFunctionalType::GEO: return xc_func_.pow_reg(n, XCFunctional::geo_alpha(t));
-            case XCFunctionalType::OptGM:
-                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::optgm_power_exponent());
+            case XCFunctionalType::HybOpt:
+                return (t == 0) ? n : xc_func_.pow_reg(n, XCFunctional::hybopt_power_exponent());
             case XCFunctionalType::CHF:
                 return (t == 0) ? n : xc_func_.chf_corr_term(n);
             case XCFunctionalType::CGA:

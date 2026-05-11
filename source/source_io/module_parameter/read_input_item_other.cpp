@@ -878,7 +878,7 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_functional");
-        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu, chf, cga, geo, optgm";
+        item.annotation = "RDMFT exchange-correlation functional: hf, muller, power, gu, chf, cga, geo, hybopt";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "String";
         item.description = "RDMFT XC functional used for the RDMFT optimisation stage. "
@@ -888,7 +888,7 @@ void ReadInput::item_others()
                            "chf (Corrected Hartree-Fock), "
                            "cga (Csanyi-Goedecker-Arias), "
                            "geo (GEO mixture functional), "
-                           "optgm (HF + power convex mixture with fixed parameters). "
+                           "hybopt (HF + power convex mixture with fixed parameters). "
                            "If empty, the old single-step RDMFT code path is used.";
         item.default_value = "";
         item.unit = "";
