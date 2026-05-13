@@ -8,6 +8,7 @@
 #include "source_base/formatter.h"
 #include "source_base/timer.h"
 #include "source_base/parallel_reduce.h"
+#include "source_io/module_parameter/parameter.h"
 
 #include <iostream>
 #include <iomanip>
@@ -1129,8 +1130,53 @@ void RDMFTSolver<TK, TR>::init(
     for (int ik = 0; ik < nk_; ++ik)
         kweights[ik] = kv_->wk[ik];
 
-    occ_constraint_ = std::make_unique<OccupationConstraint>(
-        config_.constraint_method, n_electrons_, kweights, nbands_);
+    // Determine whether we should enforce two equality constraints (one per
+    // spin) instead of a single combined N_e equality. This mirrors ABACUS
+    // KS-LCAO's split-Fermi treatment when `nupdown` is set
+    // (PARAM.globalv.two_fermi). We always enable it for nspin == 2 because
+    // RDMFT collinear spin degrees of freedom are otherwise under-constrained
+    // (a single μ cannot independently fix N_↑ and N_↓), which produces
+    // gradient/objective inconsistencies and breaks the FD check at non-zero
+    // magnetization.
+    const bool nspin_two = (nelec_meta_.two_fermi_active
+                            || (kv_->isk.size() == static_cast<size_t>(nk_)
+                                && PARAM.inp.nspin == 2));
+    if (nspin_two)
+    {
+        const int nspin = 2;
+        std::vector<int> isk(nk_, 0);
+        for (int ik = 0; ik < nk_; ++ik)
+        {
+            isk[ik] = kv_->isk[ik];
+        }
+        std::vector<double> nelec_per_spin = nelec_meta_.n_electrons_per_spin;
+        if (nelec_per_spin.size() != static_cast<size_t>(nspin))
+        {
+            // No explicit per-spin target supplied (e.g. nupdown == 0): split
+            // equally to a paired-spin reference. The user can request
+            // specific N_↑ / N_↓ via PARAM.inp.nupdown, which the LCAO driver
+            // forwards through nelec_meta.n_electrons_per_spin.
+            const double half = 0.5 * n_electrons_;
+            nelec_per_spin = {half, half};
+        }
+        occ_constraint_ = std::make_unique<OccupationConstraint>(
+            config_.constraint_method, kweights, nbands_, nspin, isk, nelec_per_spin);
+        GlobalV::ofs_running << "RDMFT spin constraint: nspin=2, two equality constraints active. "
+                             << "N_up=" << nelec_per_spin[0] << ", N_dn=" << nelec_per_spin[1]
+                             << ", isk=[";
+        for (int ik = 0; ik < nk_; ++ik)
+            GlobalV::ofs_running << (ik ? "," : "") << isk[ik];
+        GlobalV::ofs_running << "], spin_resolved="
+                             << (occ_constraint_->spin_resolved() ? "true" : "false")
+                             << std::endl;
+    }
+    else
+    {
+        occ_constraint_ = std::make_unique<OccupationConstraint>(
+            config_.constraint_method, n_electrons_, kweights, nbands_);
+        GlobalV::ofs_running << "RDMFT spin constraint: single combined N_e equality (nspin="
+                             << PARAM.inp.nspin << ")" << std::endl;
+    }
 
     occ_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.occ_optimizer, config_);
     orb_optimizer_ = std::make_unique<EuclideanOptimizer>(config_.orb_optimizer, config_);
@@ -1142,8 +1188,19 @@ void RDMFTSolver<TK, TR>::init(
     // each step via bisection; no augmented-Lagrangian penalty needed.
     if (config_.occ_param == OccParamType::SigmaShift)
     {
-        sigma_shift_param_ = std::make_unique<SigmaShiftOccParam>(
-            n_electrons_, kweights, nbands_);
+        if (occ_constraint_->spin_resolved())
+        {
+            // Mirror the per-spin equality used by the augmented-Lagrangian
+            // path so the implicit shift λ_s exactly enforces N_s per spin.
+            sigma_shift_param_ = std::make_unique<SigmaShiftOccParam>(
+                kweights, nbands_, occ_constraint_->nspin(), occ_constraint_->isk(),
+                occ_constraint_->n_electrons_per_spin());
+        }
+        else
+        {
+            sigma_shift_param_ = std::make_unique<SigmaShiftOccParam>(
+                n_electrons_, kweights, nbands_);
+        }
     }
 }
 

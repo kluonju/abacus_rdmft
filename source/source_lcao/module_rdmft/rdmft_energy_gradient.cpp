@@ -364,17 +364,24 @@ void local_build_HR_gint(const std::string& potential,
                           double* vtxc,
                           hamilt::HContainer<TR_>* hR)
 {
+    // RDMFT keeps a single spin slot per HContainer (HR_hartree_, HR_one_,
+    // HR_exx_): the per-spin matrix elements are always assembled later by
+    // `compute()` itself (folding hR(R) -> hk(k) for every (k, sigma) row of
+    // `pelec->wg`). For collinear nspin=2, V_H is identical for both spin
+    // components (PotHartree returns v(0)=v(1)=V_H), and V_xc is also added
+    // through the same single-slot hR, so we must only accumulate the
+    // potential ONCE — looping over `is` and calling cal_gint_vl(v(is), hR)
+    // for each spin would double-count V_H (and V_xc) and yield band matrix
+    // elements that are 2x larger than KS-LCAO Veff, breaking the RDMFT
+    // energy and gradient identities for nspin=2.
     double* vr_eff = nullptr;
     if (potential == "hartree")
     {
         ModuleBase::matrix v(nspin, charge->nrxx);
         elecstate::PotHartree potH(rho_basis);
         potH.cal_v_eff(charge, ucell, v);
-        for (int is = 0; is < nspin; ++is)
-        {
-            vr_eff = &v(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, hR);
-        }
+        vr_eff = &v(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
     }
     else if (potential == "local")
     {
@@ -392,11 +399,9 @@ void local_build_HR_gint(const std::string& potential,
         ModuleBase::matrix v(nspin, charge->nrxx);
         elecstate::PotXC potXC(rho_basis, etxc, vtxc, &vofk);
         potXC.cal_v_eff(charge, ucell, v);
-        for (int is = 0; is < nspin; ++is)
-        {
-            vr_eff = &v(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, hR);
-        }
+        // Same single-slot single-add reasoning as the "hartree" branch above.
+        vr_eff = &v(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
     }
 }
 } // anonymous namespace
@@ -647,7 +652,15 @@ void EnergyGradient<TK, TR>::build_charge(
     }
     else
     {
-        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_));
+        // `nk_` (== pelec_->wg.nr) is the FLATTENED (k, spin) row count, so it
+        // already includes the spin doubling from K_Vectors::set_kup_and_kdw.
+        // The DensityMatrix multi-k ctor expects the per-spin k-point count
+        // (DMK is internally sized as nk_per_spin * nspin), so we have to pass
+        // nk_/nspin_ here. Otherwise nspin=2 mis-orders DMK → DMR (mixing
+        // spin-up bands into the spin-up DMR while leaving spin-down DMR
+        // empty).
+        const int nk_per_spin = nk_ / nspin_;
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_per_spin));
     }
     elecstate::cal_dm_psi(ParaV_, wg, wfc, *DM);
     DM->init_DMR(gd_, ucell_);
@@ -716,7 +729,10 @@ void EnergyGradient<TK, TR>::build_DM_xc(
     }
     else
     {
-        DM_xc.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_));
+        // See comment in build_charge(): nk_ is flattened over (k, spin), but
+        // the DensityMatrix multi-k ctor wants the per-spin k-count.
+        const int nk_per_spin = nk_ / nspin_;
+        DM_xc.reset(new elecstate::DensityMatrix<TK, double>(ParaV_, nspin_, kv_->kvec_d, nk_per_spin));
     }
     elecstate::cal_dm_psi(ParaV_, wk_g, wfc, *DM_xc);
     for (int ik = 0; ik < nk_; ++ik)
