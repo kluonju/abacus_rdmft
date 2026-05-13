@@ -242,16 +242,19 @@ void build_HR_gint(const std::string& potential,
 {
     double* vr_eff = nullptr;
 
+    // RDMFT's HContainer carries a single spin slot, and V_H / V_xc are the
+    // same for both spin components in the collinear nspin=2 case
+    // (PotHartree returns v(0)=v(1)). Looping over `is` and calling
+    // cal_gint_vl(v(is), hR) for each spin doubles the matrix elements,
+    // breaking the RDMFT energy / gradient identities for nspin=2. We add
+    // exactly once instead.
     if (potential == "hartree")
     {
         ModuleBase::matrix v_matrix(nspin, charge->nrxx);
         elecstate::PotHartree potH(rho_basis);
         potH.cal_v_eff(charge, ucell, v_matrix);
-        for (int is = 0; is < nspin; ++is)
-        {
-            vr_eff = &v_matrix(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, hR);
-        }
+        vr_eff = &v_matrix(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
     }
     else if (potential == "local")
     {
@@ -264,17 +267,15 @@ void build_HR_gint(const std::string& potential,
     }
     else if (potential == "xc")
     {
-        // meta-GGA not supported yet for Veff_rdmft
+        // meta-GGA not supported yet for Veff_rdmft.  Same single-slot
+        // single-add convention as the "hartree" branch above.
         ModuleBase::matrix vofk = *vloc;
         vofk.zero_out();
         ModuleBase::matrix v_matrix(nspin, charge->nrxx);
         elecstate::PotXC potXC(rho_basis, etxc, vtxc, &vofk);
         potXC.cal_v_eff(charge, ucell, v_matrix);
-        for (int is = 0; is < nspin; ++is)
-        {
-            vr_eff = &v_matrix(is, 0);
-            ModuleGint::cal_gint_vl(vr_eff, hR);
-        }
+        vr_eff = &v_matrix(0, 0);
+        ModuleGint::cal_gint_vl(vr_eff, hR);
     }
     else
     {

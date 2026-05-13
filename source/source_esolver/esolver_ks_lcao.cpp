@@ -740,6 +740,51 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
         nelec_meta.input_nelec = inp.nelec;
         nelec_meta.use_input_nelec = inp.rdmft_nelec_use_input;
         nelec_meta.rdmft_nelec_delta = inp.rdmft_nelec_delta;
+        // Per-spin equality targets for nspin=2: split N_e via nupdown.  This
+        // mirrors KS-LCAO `nelec_spin` and the split-Fermi treatment of
+        // `nupdown` (`PARAM.globalv.two_fermi`); when nupdown is zero we
+        // still feed two paired N_s = N_e/2 targets so the RDMFT solver
+        // enforces the same number of equality constraints (two) as the
+        // collinear KS reference.
+        nelec_meta.nupdown = inp.nupdown;
+        if (PARAM.inp.nspin == 2)
+        {
+            nelec_meta.two_fermi_active = true;
+            // Prefer the per-spin sums of the KS occupation seed when they
+            // are populated (rdmft_nelec_use_input == false): this preserves
+            // the spin polarization KS converged to.  Otherwise fall back to
+            // a symmetric split using PARAM.inp.nupdown (matching ABACUS
+            // KS's `nelec_spin` initialiser).
+            double n_up = 0.0, n_dn = 0.0;
+            const int nks_kpt = this->kv.get_nks() / 2; // per-spin k-points
+            if (!inp.rdmft_nelec_use_input && sum_wg > 1.0e-12 && nks_kpt > 0)
+            {
+                for (int ik = 0; ik < nk; ++ik)
+                {
+                    const int isk = (ik < nks_kpt) ? 0 : 1;
+                    for (int ib = 0; ib < nbands; ++ib)
+                    {
+                        if (isk == 0) n_up += this->pelec->wg(ik, ib);
+                        else          n_dn += this->pelec->wg(ik, ib);
+                    }
+                }
+                // Apply rdmft_nelec_delta proportionally between spins so
+                // total stays consistent with n_electrons.
+                const double total_wg = n_up + n_dn;
+                if (total_wg > 1.0e-12)
+                {
+                    const double scale = n_electrons / total_wg;
+                    n_up *= scale;
+                    n_dn *= scale;
+                }
+            }
+            else
+            {
+                n_up = 0.5 * (n_electrons + inp.nupdown);
+                n_dn = 0.5 * (n_electrons - inp.nupdown);
+            }
+            nelec_meta.n_electrons_per_spin = {n_up, n_dn};
+        }
         rdmft::RDMFTSolver<TK, TR> rdmft_new_solver;
         rdmft_new_solver.init(rdmft_config, rdmft_eg, &this->kv, nbands, n_electrons, nelec_meta);
         this->rdmft_eg.set_occ_entropy_gamma(rdmft_config.occ_entropy_gamma);

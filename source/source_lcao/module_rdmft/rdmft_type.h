@@ -173,6 +173,24 @@ struct RDMFTNelectronTargetMeta
     bool use_input_nelec = false;
     /// Additive RDMFT-only offset: N_e = base + rdmft_nelec_delta.
     double rdmft_nelec_delta = 0.;
+
+    /// Spin-resolved equality targets used when nspin == 2.
+    ///
+    /// When the RDMFTSolver detects nspin=2 at init time, two equality
+    /// constraints are imposed: sum_k wk sum_i n_iks = N_s for s = up/down,
+    /// with two independent Lagrange multipliers (equivalently a common μ
+    /// plus a field-like multiplier coupling to N_↑ - N_↓). This mirrors
+    /// ABACUS KS-LCAO's split-Fermi-level treatment when `nupdown` is set
+    /// (`PARAM.globalv.two_fermi`).  When `two_fermi_active` is false the
+    /// solver falls back to a single combined N_e equality (legacy behavior).
+    bool two_fermi_active = false;
+    /// Per-spin electron-number targets (size 2 when two_fermi_active, else
+    /// size 1 holding the total target). Sum over entries equals the total
+    /// electron count used by single-multiplier code paths.
+    std::vector<double> n_electrons_per_spin;
+    /// User-requested magnetisation N_↑ - N_↓ (PARAM.inp.nupdown). 0 means
+    /// either nspin=1 or unrestricted nspin=2 with a paired-spin target.
+    double nupdown = 0.;
 };
 
 struct RDMFTConfig

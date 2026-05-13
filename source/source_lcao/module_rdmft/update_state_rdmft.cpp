@@ -113,7 +113,13 @@ void RDMFT<TK, TR>::update_charge(UnitCell& ucell)
     }
     else
     {
-        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV, nspin, kv->kvec_d, nk_total));
+        // `nk_total` already includes spin doubling (nk_total = kv->get_nks()
+        // * nspin in the legacy RDMFT init), so divide by nspin to feed the
+        // DensityMatrix multi-k ctor with the per-spin k count it expects.
+        // Otherwise nspin=2 mis-orders DMK -> DMR (spin-up DMR receives both
+        // spins; spin-down DMR stays empty).
+        const int nk_per_spin = nk_total / nspin;
+        DM.reset(new elecstate::DensityMatrix<TK, double>(ParaV, nspin, kv->kvec_d, nk_per_spin));
     }
 
     elecstate::cal_dm_psi(ParaV, wg, wfc, *DM);
