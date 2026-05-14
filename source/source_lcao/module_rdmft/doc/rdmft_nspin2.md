@@ -231,7 +231,51 @@ cmake -B build -DENABLE_RDMFT=ON -DUSE_ELPA=OFF -DBUILD_TESTING=OFF \
 cmake --build build -j4
 ```
 
-and ran a gamma-only `nspin = 2` H₂ test with KS-HF SCF followed by an
+### 5.1 Closed-shell `nspin = 1` ↔ `nspin = 2` invariance
+
+For a closed-shell system with integer occupations 1 / 0 (HF Aufbau) and
+the same KS reference, the RDMFT objective must give the **same** total
+energy independent of `nspin`. Pre-fix, `nspin = 2` was systematically
+higher than `nspin = 1` because the `V_H` double-add inflated `E_H` by
+exactly 2× for `nspin = 2` (Section 1.1). With the fix in place the
+identity is recovered to within optimisation tolerance.
+
+LiH (gamma-only) with `dft_functional = pbe` for the KS reference, then
+RDMFT-HF on top (`rdmft_outer_maxiter 50`, `rdmft_occ_maxiter 5`,
+`rdmft_orb_maxiter 5`, `rdmft_energy_tol 1e-7`,
+`rdmft_orb_grad_tol 1e-5`, `rdmft_occ_grad_tol 1e-5`,
+`rdmft_occ_init_mode = ks` so occupations stay at 1 / 0):
+
+| Quantity                | `nspin = 1`              | `nspin = 2`              |
+| ----------------------- | ------------------------ | ------------------------ |
+| `E_one_elec` (Ry)       | -21.32323095             | -21.32315340             |
+| `E_Hartree` (Ry)        |   9.18592165             |   9.18579375             |
+| `E_xc` (Ry)             |  -3.84473043             |  -3.84468006             |
+| `E_total` (Ry)          | **-15.19029180**         | **-15.19029177**         |
+| `E_total` (eV)          | -206.6745227             | -206.6745224             |
+
+Both stop on `|dE| < rdmft_energy_tol = 1e-7 Ry`; the residual gap is
+3 × 10⁻⁷ eV (≈ 2 × 10⁻⁸ Ry), far below the convergence tolerance.
+
+H₂ (gamma-only) with the same recipe and tighter tolerances
+(`rdmft_outer_maxiter 20`, `rdmft_orb_maxiter 30`,
+`rdmft_orb_grad_tol 1e-7`, `rdmft_energy_tol 1e-9`):
+
+| Quantity                | `nspin = 1`              | `nspin = 2`              |
+| ----------------------- | ------------------------ | ------------------------ |
+| `E_total` (Ry)          | -2.0945324138            | -2.0945324138            |
+| `E_total` (eV)          | -28.4975754736           | -28.4975754737           |
+
+Match to ~10⁻¹⁰ Ry (machine precision).
+
+Pre-fix the same H₂ closed-shell run gave `E_total(nspin=2)` ≈
+`E_total(nspin=1) + E_H` (a ~12 eV gap on H₂, ~125 eV on LiH); seeing
+that "`nspin = 2` has higher energy" with otherwise correct integer 1 / 0
+occupations is the canonical fingerprint of the V_H double-add bug.
+
+### 5.2 Open-shell H₂ (KS-HF reference)
+
+A gamma-only `nspin = 2` H₂ test with KS-HF SCF followed by an
 RDMFT-HF one-shot evaluation (4 OMP threads, 1 MPI rank):
 
 | Quantity                               | KS-HF (`dft_functional=hf`) | RDMFT-HF (`rdmft_functional=hf`) one-shot |
