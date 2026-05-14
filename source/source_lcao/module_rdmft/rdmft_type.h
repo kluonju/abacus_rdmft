@@ -258,6 +258,8 @@ struct RDMFTConfig
     /// to stay below this (Ry). Set <= 0 to disable the energy criterion (gradient-only).
     double orb_energy_tol = 1e-8;
     /// Augmented Lagrangian (and similar): stop an inner step when sum_i |Δn_i| in one iteration is below this.
+    /// Alternating outer loop: two consecutive occupation subproblems with sum|dn|_outer below this freeze later
+    /// occ optimization for the rest of the solve; <=0 disables that outer freeze.
     double rdmft_occ_tol = 1e-8;
     /// Reserved / unused for projected_gradient (PG uses occ_grad_tol on ||g_proj|| only; kept for INPUT compat).
     double occ_energy_tol = 1e-8;

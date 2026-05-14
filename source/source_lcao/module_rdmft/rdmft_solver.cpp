@@ -1526,6 +1526,9 @@ double RDMFTSolver<TK, TR>::solve_alternating(
     double occ_time_sec = 0.0;
     double orb_time_sec = 0.0;
 
+    int consecutive_small_outer_dn = 0;
+    bool freeze_occ_optimization = false;
+
     for (int iter = 0; iter < config_.outer_maxiter; ++iter)
     {
         occ_at_outer_start.assign(occ_flat.begin(), occ_flat.end());
@@ -1543,20 +1546,48 @@ double RDMFTSolver<TK, TR>::solve_alternating(
             }
         }
 
-        // 1. Optimize occupations with orbitals fixed (every outer iteration).
+        // 1. Optimize occupations with orbitals fixed (every outer iteration), unless frozen
+        //    after two consecutive outer occupation updates with sum|dn| < rdmft_occ_tol.
         OptResult occ_result;
         const auto t_occ0 = std::chrono::steady_clock::now();
-        occ_result = optimize_occupations(occ_flat, wfc);
+        double occ_outer_dn_sum = 0.0;
+        bool occ_skipped_due_to_outer_freeze = false;
+        if (freeze_occ_optimization)
+        {
+            occ_skipped_due_to_outer_freeze = true;
+            occ_result = occ_energy_grad_snapshot(occ_flat, wfc);
+            occ_outer_dn_sum = 0.0;
+        }
+        else
+        {
+            occ_result = optimize_occupations(occ_flat, wfc);
+            occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
+            if (config_.rdmft_occ_tol > 0.0 && config_.occ_maxiter > 0)
+            {
+                if (occ_inner_should_stop(occ_outer_dn_sum, config_.rdmft_occ_tol))
+                {
+                    ++consecutive_small_outer_dn;
+                    if (consecutive_small_outer_dn >= 2)
+                    {
+                        freeze_occ_optimization = true;
+                    }
+                }
+                else
+                {
+                    consecutive_small_outer_dn = 0;
+                }
+            }
+        }
         const auto t_occ1 = std::chrono::steady_clock::now();
         occ_time_sec += std::chrono::duration<double>(t_occ1 - t_occ0).count();
         ++occ_calls;
         occ_inner_total += occ_result.iterations;
-        const double occ_outer_dn_sum = sum_abs_diff(occ_flat, occ_at_outer_start);
         GlobalV::ofs_running << "    occ inner: " << occ_result.iterations << " iters, gnorm="
             << std::scientific << occ_result.grad_norm
             << "  E=" << std::fixed << std::setprecision(10) << occ_result.final_energy
             << (occ_result.converged ? "  (converged)" : "")
             << (config_.occ_maxiter <= 0 ? "  (skipped: rdmft_occ_maxiter 0)" : "")
+            << (occ_skipped_due_to_outer_freeze ? "  (skipped: outer sum|dn| freeze)" : "")
             << "  sum|dn|_outer=" << std::scientific << occ_outer_dn_sum
             << std::defaultfloat << std::endl;
 
@@ -2400,6 +2431,24 @@ double RDMFTSolver<TK, TR>::solve_joint(
 }
 
 template <typename TK, typename TR>
+OptResult RDMFTSolver<TK, TR>::occ_energy_grad_snapshot(std::vector<double>& occ_flat, const psi::Psi<TK>& wfc)
+{
+    OptResult result;
+    std::vector<double> grad_occ;
+    psi::Psi<TK> grad_wfc_dummy;
+    result.final_energy = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc_dummy);
+    double g2 = 0.0;
+    for (double g : grad_occ)
+    {
+        g2 += g * g;
+    }
+    result.grad_norm = std::sqrt(g2);
+    result.iterations = 0;
+    result.converged = true;
+    return result;
+}
+
+template <typename TK, typename TR>
 OptResult RDMFTSolver<TK, TR>::optimize_occupations(
     std::vector<double>& occ_flat,
     const psi::Psi<TK>& wfc)
@@ -2408,18 +2457,7 @@ OptResult RDMFTSolver<TK, TR>::optimize_occupations(
 
     if (config_.occ_maxiter <= 0)
     {
-        std::vector<double> grad_occ;
-        psi::Psi<TK> grad_wfc_dummy;
-        result.final_energy = energy_grad_->compute(occ_flat, wfc, grad_occ, grad_wfc_dummy);
-        double g2 = 0.0;
-        for (double g : grad_occ)
-        {
-            g2 += g * g;
-        }
-        result.grad_norm = std::sqrt(g2);
-        result.iterations = 0;
-        result.converged = true;
-        return result;
+        return occ_energy_grad_snapshot(occ_flat, wfc);
     }
 
     if (config_.occ_ls_fixed_step && config_.occ_optimizer != OptimizerType::SteepestDescent)

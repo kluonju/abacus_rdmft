@@ -699,7 +699,7 @@ struct Input_para
     /// Occupation SD: single monotone trial at rdmft_occ_ls_stepsize (ALM Armijo / PG / AS monotone paths)
     bool rdmft_occ_ls_fixed_step = false;
     double rdmft_occ_ls_stepsize = 1.0;
-    double rdmft_occ_tol = 1e-7;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence)
+    double rdmft_occ_tol = 1e-8;                 // ALM etc.: sum|Δn| per inner iter (not PG convergence). Alternating: after two consecutive outer occ blocks with sum|dn|_outer < this, later occ optimization is skipped (<=0 disables that freeze).
     /// Unused for PG (ignored); PG inner stop uses rdmft_occ_grad_tol vs ||g_proj||_inf only
     double rdmft_occ_energy_tol = 1e-8;
     /// PG: ||(n-P(n-τ∇E))/τ||_inf; also ALM/AS/joint thresholds as in solver

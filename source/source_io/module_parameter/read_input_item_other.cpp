@@ -1340,12 +1340,16 @@ void ReadInput::item_others()
     }
     {
         Input_Item item("rdmft_occ_tol");
-        item.annotation = "RDMFT occupation inner: sum of |Δn| convergence";
+        item.annotation = "RDMFT occupation: |Δn| inner threshold and alternating outer occ-freeze";
         item.category = "Reduced Density Matrix Functional Theory";
         item.type = "Real";
         item.description = "Augmented Lagrangian occupation inner: stop a step when "
                            "sum_i |n_i^{new}-n_i^{old}| in one inner iteration is below this. "
-                           "Projected gradient inner stopping uses rdmft_occ_grad_tol vs ||g_proj||_inf only.";
+                           "Projected gradient inner stopping uses rdmft_occ_grad_tol vs ||g_proj||_inf only. "
+                           "Alternating strategy (rdmft_solver_strategy alternating): if two consecutive outer "
+                           "occupation optimizations each yield sum|dn|_outer below this, full occupation "
+                           "optimization is skipped on later outer iterations for that solve. Values <= 0 disable "
+                           "that outer freeze.";
         item.default_value = "1e-8";
         item.unit = "";
         item.availability = "rdmft == true && rdmft_functional != \"\"";

@@ -100,6 +100,10 @@ class RDMFTSolver
                                                         const psi::Psi<TK>& wfc,
                                                         double n_probe = 0.5);
 
+    /// Single `compute` at (occ, wfc): E and L2 norm of dE/dn; iterations=0, converged=true
+    /// (same contract as `rdmft_occ_maxiter` 0 and alternating outer occ-freeze path).
+    OptResult occ_energy_grad_snapshot(std::vector<double>& occ_flat, const psi::Psi<TK>& wfc);
+
     RDMFTConfig config_;
     EnergyGradient<TK, TR>* energy_grad_ = nullptr;
     const K_Vectors* kv_ = nullptr;
