@@ -5,7 +5,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 namespace
@@ -572,4 +572,4 @@ OccBlockResult OccOptimizer::run_bgd(RdmftBackend& backend, const RdmftParams& p
     return res;
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

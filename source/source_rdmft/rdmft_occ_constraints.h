@@ -17,7 +17,7 @@
 //! (k,spin) list on every rank before calling into this layer, so a plain
 //! serial sum is both correct and deadlock-free.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 //! Immutable description of the occupation index space and constraint targets.
@@ -105,6 +105,6 @@ struct OccConstraints
                                 bool use_filter) const;
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_OCC_CONSTRAINTS_H

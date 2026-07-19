@@ -6,7 +6,7 @@
 #include <cmath>
 #include <deque>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 namespace
@@ -297,4 +297,4 @@ OrbBlockResult OrbitalOptimizer::run(RdmftBackend& backend, const RdmftParams& p
     return res;
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

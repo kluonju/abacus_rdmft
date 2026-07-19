@@ -5,7 +5,7 @@
 
 #include <cmath>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 DriverResult RdmftDriver::solve(RdmftBackend& backend, const RdmftParams& params,
@@ -86,4 +86,4 @@ DriverResult RdmftDriver::solve(RdmftBackend& backend, const RdmftParams& params
     return res;
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

@@ -12,7 +12,7 @@
 //! the occupation (SPG2 straight chord, EBI x-space) and orbital (Stiefel
 //! retraction) inner blocks.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 //! Evaluator signature: given a step alpha it must set the trial energy f,
@@ -64,6 +64,6 @@ class BarzilaiBorwein
     std::vector<double> g_prev_;
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_LINE_SEARCH_H

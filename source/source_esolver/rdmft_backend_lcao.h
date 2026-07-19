@@ -67,7 +67,7 @@ inline void flat_to_psi(const std::vector<double>& f, psi::Psi<std::complex<doub
 } // namespace rdmft_detail
 
 template <typename TK, typename TR>
-class RdmftBackendLCAO : public rdmft::RdmftBackend
+class RdmftBackendLCAO : public rdmft_core::RdmftBackend
 {
   public:
     //! eg must already be init()'d and update_ion()'d.  psi holds the KS
@@ -104,7 +104,7 @@ class RdmftBackendLCAO : public rdmft::RdmftBackend
         grad_scratch_.assign(con_.size(), 0.0);
     }
 
-    const rdmft::OccConstraints& occ_constraints() const override { return con_; }
+    const rdmft_core::OccConstraints& occ_constraints() const override { return con_; }
 
     double total_energy(const std::vector<double>& occ) override
     {
@@ -197,7 +197,7 @@ class RdmftBackendLCAO : public rdmft::RdmftBackend
     psi::Psi<TK> grad_wfc_;
     psi::Psi<TK> scratch_;
     psi::Psi<TK> saved_;
-    rdmft::OccConstraints con_;
+    rdmft_core::OccConstraints con_;
     double spin_deg_ = 1.0;
     std::vector<double> occ_scratch_;
     std::vector<double> grad_scratch_;

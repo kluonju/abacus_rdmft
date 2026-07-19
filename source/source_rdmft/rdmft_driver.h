@@ -15,7 +15,7 @@
 //! plane-wave and LCAO ESolver_RDMFT backends for gamma-only, collinear and
 //! non-collinear spin.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 struct DriverResult
@@ -34,6 +34,6 @@ class RdmftDriver
                        std::vector<double>& occ, double& etot);
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_DRIVER_H

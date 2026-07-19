@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 LineSearchResult armijo_line_search(const LineSearchEval& eval, double f0, double phi0,
@@ -218,4 +218,4 @@ double BarzilaiBorwein::spectral_step(const std::vector<double>& x, const std::v
     return std::min(alpha_max_, std::max(alpha_min_, ss / sy));
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

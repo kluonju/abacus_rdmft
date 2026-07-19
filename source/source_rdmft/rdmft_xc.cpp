@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 namespace
@@ -262,4 +262,4 @@ double RdmftXC::binary_entropy_deriv(double n)
     return std::log(nc / (1.0 - nc));
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

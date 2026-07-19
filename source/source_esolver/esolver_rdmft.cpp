@@ -37,31 +37,31 @@ ESolver_RDMFT<TK, TR>::~ESolver_RDMFT()
 #ifdef __RDMFT
 namespace
 {
-rdmft::OccOptimizerType map_occ_optimizer(const std::string& s)
+rdmft_core::OccOptimizerType map_occ_optimizer(const std::string& s)
 {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
     if (lower.find("ebi") != std::string::npos)
     {
-        return rdmft::OccOptimizerType::EBI;
+        return rdmft_core::OccOptimizerType::EBI;
     }
     // sd / cg / lbfgs / spg2 all use the canonical SPG2 occupation block.
-    return rdmft::OccOptimizerType::SPG2;
+    return rdmft_core::OccOptimizerType::SPG2;
 }
 
-rdmft::OrbOptimizerType map_orb_optimizer(const std::string& s)
+rdmft_core::OrbOptimizerType map_orb_optimizer(const std::string& s)
 {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
     if (lower == "sd")
     {
-        return rdmft::OrbOptimizerType::SD;
+        return rdmft_core::OrbOptimizerType::SD;
     }
     if (lower.find("lbfgs") != std::string::npos || lower.find("bfgs") != std::string::npos)
     {
-        return rdmft::OrbOptimizerType::LBFGS;
+        return rdmft_core::OrbOptimizerType::LBFGS;
     }
-    return rdmft::OrbOptimizerType::CG;
+    return rdmft_core::OrbOptimizerType::CG;
 }
 } // namespace
 #endif
@@ -107,7 +107,7 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     // --- LCAO backend around the validated energy/gradient engine ----------
     ModuleESolver::RdmftBackendLCAO<TK, TR> backend(this->eg_, *(this->psi), this->kv, nspin, nelec,
                                                     fix_mag, nelec_up, nelec_down);
-    const rdmft::OccConstraints& con = backend.occ_constraints();
+    const rdmft_core::OccConstraints& con = backend.occ_constraints();
 
     // --- initial occupations n_ik = wg / (spin_deg * wk) -------------------
     const int nk = this->pelec->wg.nr;
@@ -123,26 +123,26 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     }
 
     // --- configuration ----------------------------------------------------
-    rdmft::RdmftParams params;
-    params.xc = xc_type == rdmft::XCFunctionalType::HF ? rdmft::XcType::HF : rdmft::XcType::Power;
+    rdmft_core::RdmftParams params;
+    params.xc = xc_type == rdmft::XCFunctionalType::HF ? rdmft_core::XcType::HF : rdmft_core::XcType::Power;
     params.power_alpha = inp.rdmft_power_alpha;
     params.occ_optimizer = map_occ_optimizer(inp.rdmft_occ_optimizer);
     params.orb_optimizer = map_orb_optimizer(inp.rdmft_orb_optimizer);
     if (inp.rdmft_occ_init_mode == "perturbed")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Perturbed;
+        params.occ_init_mode = rdmft_core::OccInitMode::Perturbed;
     }
     else if (inp.rdmft_occ_init_mode == "binary")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Binary;
+        params.occ_init_mode = rdmft_core::OccInitMode::Binary;
     }
     else if (inp.rdmft_occ_init_mode == "uniform")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Uniform;
+        params.occ_init_mode = rdmft_core::OccInitMode::Uniform;
     }
     else
     {
-        params.occ_init_mode = rdmft::OccInitMode::KS;
+        params.occ_init_mode = rdmft_core::OccInitMode::KS;
     }
     params.occ_init_perturb = inp.rdmft_occ_init_perturb;
     params.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
@@ -162,21 +162,21 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     params.nelec_down = nelec_down;
     if (inp.rdmft_occ_maxiter <= 0)
     {
-        params.strategy = rdmft::SolverStrategy::OrbOnly;
+        params.strategy = rdmft_core::SolverStrategy::OrbOnly;
     }
     else if (inp.rdmft_orb_maxiter <= 0)
     {
-        params.strategy = rdmft::SolverStrategy::OccOnly;
+        params.strategy = rdmft_core::SolverStrategy::OccOnly;
     }
     else
     {
-        params.strategy = rdmft::SolverStrategy::Alternating;
+        params.strategy = rdmft_core::SolverStrategy::Alternating;
     }
 
     // --- solve ------------------------------------------------------------
     double etot = 0.0;
-    rdmft::RdmftDriver driver;
-    rdmft::DriverResult result = driver.solve(backend, params, occ, etot);
+    rdmft_core::RdmftDriver driver;
+    rdmft_core::DriverResult result = driver.solve(backend, params, occ, etot);
     backend.finalize_orbitals(); // X-space -> C-space natural orbitals
 
     // --- write back optimised occupations and energy ----------------------

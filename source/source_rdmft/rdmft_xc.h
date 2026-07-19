@@ -18,7 +18,7 @@
 //! consume exactly this interface, which is what makes the functional layer
 //! basis independent.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 //! Channel descriptor: E contribution is coef * 0.5 * sum_ik wk*w * <psi|Vx[gamma_t]|psi>,
@@ -73,6 +73,6 @@ class RdmftXC
     double reg_eps_ = 1.0e-8;
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_XC_H

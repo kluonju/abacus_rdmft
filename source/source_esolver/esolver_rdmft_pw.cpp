@@ -47,12 +47,12 @@ namespace
 //! the modified occupation weights w_t(n).  The double-counting bookkeeping
 //! follows E_one + E_H = E_bandlike - E_H (since <psi|V_H|psi> summed = 2 E_H).
 template <typename T, typename Device>
-class RdmftBackendPW : public rdmft::RdmftBackend
+class RdmftBackendPW : public rdmft_core::RdmftBackend
 {
   public:
     RdmftBackendPW(hamilt::Hamilt<T, Device>* p_hamilt, Exx_HelperBase* exx_helper,
                    psi::Psi<T, Device>* psi, elecstate::ElecState* pelec, const K_Vectors& kv,
-                   UnitCell& ucell, const rdmft::RdmftXC& xc, double hybrid_alpha, int nspin,
+                   UnitCell& ucell, const rdmft_core::RdmftXC& xc, double hybrid_alpha, int nspin,
                    double nelec, bool fix_mag, double nelec_up, double nelec_down)
         : p_hamilt_(p_hamilt), exx_helper_(exx_helper), psi_(psi), pelec_(pelec), kv_(kv),
           ucell_(ucell), xc_(xc), hybrid_alpha_(hybrid_alpha)
@@ -82,7 +82,7 @@ class RdmftBackendPW : public rdmft::RdmftBackend
         vx_diag_.assign(nks_ * nbands_, 0.0);
     }
 
-    const rdmft::OccConstraints& occ_constraints() const override { return con_; }
+    const rdmft_core::OccConstraints& occ_constraints() const override { return con_; }
 
     double total_energy(const std::vector<double>& occ) override
     {
@@ -117,7 +117,7 @@ class RdmftBackendPW : public rdmft::RdmftBackend
                 double gx = 0.0;
                 for (int it = 1; it <= nch; ++it)
                 {
-                    const rdmft::XcChannel ch = xc_.channel(it, occ[i]);
+                    const rdmft_core::XcChannel ch = xc_.channel(it, occ[i]);
                     gx += ch.coef * ch.dw;
                 }
                 grad[i] = wk * (diag_[i] + gx * vx_diag_[i]);
@@ -253,31 +253,31 @@ class RdmftBackendPW : public rdmft::RdmftBackend
     elecstate::ElecState* pelec_;
     const K_Vectors& kv_;
     UnitCell& ucell_;
-    rdmft::RdmftXC xc_;
+    rdmft_core::RdmftXC xc_;
     double hybrid_alpha_;
     double spin_deg_ = 1.0;
     int nbands_ = 0;
     int nks_ = 0;
-    rdmft::OccConstraints con_;
+    rdmft_core::OccConstraints con_;
     ModuleBase::matrix wg_;
     ModuleBase::matrix wg_x_;
     std::vector<double> diag_;
     std::vector<double> vx_diag_;
 };
 
-rdmft::OccOptimizerType map_occ_optimizer_pw(const std::string& s)
+rdmft_core::OccOptimizerType map_occ_optimizer_pw(const std::string& s)
 {
     std::string lower = s;
     std::transform(lower.begin(), lower.end(), lower.begin(), [](unsigned char c) { return std::tolower(c); });
     if (lower.find("ebi") != std::string::npos)
     {
-        return rdmft::OccOptimizerType::EBI;
+        return rdmft_core::OccOptimizerType::EBI;
     }
     if (lower.find("bgd") != std::string::npos || lower == "gd")
     {
-        return rdmft::OccOptimizerType::BGD;
+        return rdmft_core::OccOptimizerType::BGD;
     }
-    return rdmft::OccOptimizerType::SPG2;
+    return rdmft_core::OccOptimizerType::SPG2;
 }
 } // namespace
 #endif
@@ -301,10 +301,10 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
         return;
     }
 
-    rdmft::XcType xc_type = rdmft::XcType::HF;
+    rdmft_core::XcType xc_type = rdmft_core::XcType::HF;
     double alpha = inp.rdmft_power_alpha;
-    rdmft::parse_xc_type(inp.rdmft_functional, xc_type, alpha);
-    const rdmft::RdmftXC xc(xc_type, alpha, 1.0e-8);
+    rdmft_core::parse_xc_type(inp.rdmft_functional, xc_type, alpha);
+    const rdmft_core::RdmftXC xc(xc_type, alpha, 1.0e-8);
 
     const int nspin = PARAM.inp.nspin;
     const bool fix_mag = (nspin == 2) && (std::fabs(inp.nupdown) > 1.0e-12);
@@ -316,7 +316,7 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
     RdmftBackendPW<T, Device> backend(static_cast<hamilt::Hamilt<T, Device>*>(this->p_hamilt),
                                       this->exx_helper, psi, this->pelec, this->kv, ucell, xc,
                                       hybrid_alpha, nspin, nelec, fix_mag, nelec_up, nelec_down);
-    const rdmft::OccConstraints& con = backend.occ_constraints();
+    const rdmft_core::OccConstraints& con = backend.occ_constraints();
 
     const int nk = this->pelec->wg.nr;
     const int nbands = this->pelec->wg.nc;
@@ -330,11 +330,11 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
         }
     }
 
-    rdmft::RdmftParams params;
+    rdmft_core::RdmftParams params;
     params.xc = xc_type;
     params.power_alpha = alpha;
     params.occ_optimizer = map_occ_optimizer_pw(inp.rdmft_occ_optimizer);
-    params.strategy = rdmft::SolverStrategy::OccOnly; // orbitals frozen at hybrid-KS
+    params.strategy = rdmft_core::SolverStrategy::OccOnly; // orbitals frozen at hybrid-KS
     params.outer_maxiter = inp.rdmft_outer_maxiter;
     params.occ_maxiter = std::max(1, inp.rdmft_occ_maxiter);
     params.orb_maxiter = 0;
@@ -349,22 +349,22 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
     params.nelec_down = nelec_down;
     if (inp.rdmft_occ_init_mode == "perturbed")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Perturbed;
+        params.occ_init_mode = rdmft_core::OccInitMode::Perturbed;
     }
     else if (inp.rdmft_occ_init_mode == "binary")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Binary;
+        params.occ_init_mode = rdmft_core::OccInitMode::Binary;
     }
     else if (inp.rdmft_occ_init_mode == "uniform")
     {
-        params.occ_init_mode = rdmft::OccInitMode::Uniform;
+        params.occ_init_mode = rdmft_core::OccInitMode::Uniform;
     }
     params.occ_init_perturb = inp.rdmft_occ_init_perturb;
     params.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
 
     double etot = 0.0;
-    rdmft::RdmftDriver driver;
-    rdmft::DriverResult result = driver.solve(backend, params, occ, etot);
+    rdmft_core::RdmftDriver driver;
+    rdmft_core::DriverResult result = driver.solve(backend, params, occ, etot);
 
     for (int ik = 0; ik < nk; ++ik)
     {

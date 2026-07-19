@@ -18,7 +18,7 @@
 //! that the same natural-orbital functionals can be driven from either the
 //! plane-wave or the LCAO ESolver_RDMFT backends.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 //! Natural-orbital exchange-correlation functional.
@@ -236,6 +236,6 @@ inline bool parse_orb_optimizer(const std::string& name_in, OrbOptimizerType& ou
     return true;
 }
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_PARAMS_H

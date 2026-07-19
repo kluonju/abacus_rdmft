@@ -4,7 +4,7 @@
 
 #include "gtest/gtest.h"
 
-using namespace rdmft;
+using namespace rdmft_core;
 
 namespace
 {

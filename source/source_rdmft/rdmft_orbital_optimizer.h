@@ -18,7 +18,7 @@
 //! delegated to the backend, so the same SD / CG / L-BFGS driver serves both
 //! bases and every spin case.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 struct OrbBlockResult
@@ -37,6 +37,6 @@ class OrbitalOptimizer
                        const std::vector<double>& occ, double& etot);
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_ORBITAL_OPTIMIZER_H

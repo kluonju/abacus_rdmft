@@ -28,7 +28,7 @@
 //! (double), collinear (nspin=2) and non-collinear (nspin=4) runs and for
 //! both the plane-wave and LCAO bases.
 
-namespace rdmft
+namespace rdmft_core
 {
 
 class RdmftBackend
@@ -94,6 +94,6 @@ class RdmftBackend
     virtual void orb_restore() {}
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_BACKEND_H

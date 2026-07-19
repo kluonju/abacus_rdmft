@@ -4,7 +4,7 @@
 #include <cmath>
 #include <limits>
 
-namespace rdmft
+namespace rdmft_core
 {
 
 namespace
@@ -785,4 +785,4 @@ void OccConstraints::ebi_sync_occ_from_x(const std::vector<double>& x, std::vect
     ebi_params_to_occ(x, mu_up, mu_dw, occ);
 }
 
-} // namespace rdmft
+} // namespace rdmft_core

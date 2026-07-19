@@ -23,7 +23,7 @@
 //!     potential mu enforcing the electron count, optimised by steepest
 //!     descent in x-space (EBI@GD).
 
-namespace rdmft
+namespace rdmft_core
 {
 
 //! Result of one occupation block.
@@ -52,6 +52,6 @@ class OccOptimizer
                            std::vector<double>& occ, double& etot);
 };
 
-} // namespace rdmft
+} // namespace rdmft_core
 
 #endif // RDMFT_OCC_OPTIMIZER_H
