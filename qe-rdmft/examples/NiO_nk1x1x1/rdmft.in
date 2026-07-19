@@ -1,0 +1,62 @@
+ &CONTROL
+    calculation = 'scf'
+    restart_mode = 'from_scratch'
+    prefix = 'nio'
+    outdir = './tmp/'
+    pseudo_dir = './'
+ /
+ &SYSTEM
+    ibrav     = 1
+    celldm(1) = 7.893386
+    nat       = 4
+    ntyp      = 3
+    nspin     = 2
+    starting_magnetization(1) = 2.0
+    starting_magnetization(2) = -2.0
+    starting_magnetization(3) = 0.0
+    ecutwfc   = 70.0
+    occupations = 'smearing'
+    smearing = 'gaussian'
+    degauss = 0.01
+    input_dft = 'pbe'
+ /
+ &ELECTRONS
+    conv_thr    = 1.0d-6
+    mixing_beta = 0.25
+    electron_maxstep = 3
+ /
+ATOMIC_SPECIES
+ Ni1  58.6934  Ni.upf
+ Ni2  58.6934  Ni.upf
+ O   15.999   O.upf
+ATOMIC_POSITIONS crystal
+ Ni1  0.000  0.000  0.000
+ Ni2 0.500  0.500  0.000
+ O   0.500  0.000  0.000
+ O   0.000  0.500  0.500
+K_POINTS automatic
+ 1 1 1 0 0 0
+
+&rdmft
+  do_rdmft = .true.
+  rdmft_functional = 'power'
+  rdmft_power_alpha = 0.656
+  rdmft_solver_strategy = 'alternating'
+  rdmft_orb_optimizer = 'cg'
+  rdmft_orb_strategy = 'joint'
+  rdmft_outer_maxiter = 20
+  rdmft_occ_maxiter = 10 
+  rdmft_orb_maxiter = 10
+  rdmft_energy_tol      = 1.0d-6
+  rdmft_occ_grad_tol    = 1.0d-4
+  rdmft_orb_grad_tol    = 1.0d-4
+  rdmft_occ_tol         = 1.0d-7
+  rdmft_orb_precond_shift = 0.5
+  rdmft_occ_ls_init_step = 'fixed'
+  rdmft_occ_ls_stepsize  = 0.1d0
+  !rdmft_occ_init_mode = 'perturbed'
+  !rdmft_occ_init_perturb = 5.0d-3
+  !rdmft_occ_init_nbands_top = 4
+  rdmft_verbose = 2
+  rdmft_occ_init_mode = 'ks'
+/

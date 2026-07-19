@@ -1,0 +1,8 @@
+! LiH fractional total-charge scan (qe-rdmft pw.x + RDMFT-HF), nspin=2, Martyna–Tuckerman
+! Case directory: d_-0.2
+! tot_charge = -0.2  (set in lih.scf.in &SYSTEM)
+! Non-neutral cases use Gaussian smearing (fractional electron number); q=0 uses fixed occupations.
+! UPF files live in ../upf/ (see pseudo_dir in lih.scf.in).
+ATOMIC_SPECIES
+ Li  6.941   Li_ONCV_PBE-1.0.upf
+ H   1.008   H_ONCV_PBE-1.0.upf

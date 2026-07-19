@@ -1,0 +1,14 @@
+&inputpp
+  prefix             = 'h2'
+  outdir             = './tmp/'
+  plot_num           = 126
+  filplot            = 'h2.rdmft.rho.pp'
+  rdmft_functional   = 'muller'
+  rdmft_xhole_origin = -1.0 -1.0 -1.0
+  rdmft_update_save  = .false.
+/
+&plot
+  iflag          = 3
+  output_format  = 6
+  fileout        = 'h2.rdmft.rho.cube'
+/

@@ -1,0 +1,62 @@
+! Minimal BCC Fe / RDMFT-Power(0.65) + DOS demonstration
+!
+! Goal: end-to-end smoke test for the ELK-style RDMFT density-of-states
+! and per-atom magnetisation post-processor.  This is **not** a publication-
+! quality reproduction of the spectra in
+!   Sharma, Dewhurst, Shallcross, Gross, PRL 110, 116403 (2013) ;
+!   Sharma, Dewhurst, Lathiotakis, Gross, arXiv:0912.1118
+! - those used the ELK all-electron code with an LAPW basis and dense
+!   k meshes.  Here we use a small norm-conserving pseudopotential and a
+!   coarse k mesh so the run completes in a minute or two for QA.  The DOS
+!   should still display the characteristic majority-/minority-spin d-band
+!   splitting of bcc Fe at the Power(0.65) level.
+&CONTROL
+  calculation     = 'scf'
+  restart_mode    = 'from_scratch'
+  prefix          = 'fe'
+  outdir          = './tmp/'
+  pseudo_dir      = './'
+  verbosity       = 'low'
+/
+&SYSTEM
+  ibrav           = 3              ! bcc primitive
+  celldm(1)       = 5.42d0
+  nat             = 1
+  ntyp            = 1
+  nspin           = 2
+  starting_magnetization(1) = 0.4d0
+  ecutwfc         = 35.0
+  ecutrho         = 280.0
+  occupations     = 'smearing'
+  smearing        = 'gaussian'
+  degauss         = 0.02
+  nbnd            = 10
+/
+&ELECTRONS
+  conv_thr        = 1.0d-7
+  mixing_beta     = 0.4d0
+  electron_maxstep = 60
+/
+ATOMIC_SPECIES
+ Fe  55.845  Fe.pz-n-nc.UPF
+ATOMIC_POSITIONS crystal
+ Fe  0.0  0.0  0.0
+K_POINTS automatic
+ 2 2 2 0 0 0
+
+&rdmft
+  do_rdmft              = .true.
+  rdmft_functional      = 'hf'
+  rdmft_solver_strategy = 'alternating'
+  rdmft_orb_optimizer   = 'cg'
+  rdmft_orb_strategy    = 'joint'
+  rdmft_outer_maxiter   = 0     ! DOS-from-SCF demo: skip the RDMFT update
+  rdmft_occ_maxiter     = 0
+  rdmft_orb_maxiter     = 0
+  rdmft_energy_tol      = 1.0d-4
+  rdmft_occ_grad_tol    = 1.0d-3
+  rdmft_orb_grad_tol    = 1.0d-3
+  rdmft_occ_tol         = 1.0d-6
+  rdmft_occ_init_mode       = 'ks'
+  rdmft_verbose             = 1
+/

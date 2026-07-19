@@ -1,0 +1,11 @@
+&inputrdmftdos
+  prefix                  = 'h2'
+  outdir                  = './tmp/'
+  functional              = 'muller'
+  emin                    = -1.10        ! Ry; omit (= +-1e6) for auto window
+  emax                    =  0.37        ! Ry
+  deltae                  = 0.00147       ! Ry grid step
+  degauss                 = 0.00368       ! Ry Gaussian broadening
+  pdos                    = .true.
+  occ_weighted            = .false.
+/

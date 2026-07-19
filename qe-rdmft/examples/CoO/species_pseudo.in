@@ -1,0 +1,6 @@
+! CoO rocksalt primitive cell (ibrav=2, nat=2), qe-rdmft pw.x + RDMFT-HF (power)
+! Experimental conventional cubic a = 4.261 Angstrom; tot_charge = -0.2 (in rdmft.in)
+! SG15 ONCV PBE pseudopotentials copied locally (pseudo_dir = './' in rdmft.in).
+ATOMIC_SPECIES
+ Co  58.933195  Co_ONCV_PBE-1.0.upf
+ O         15.999   O_ONCV_PBE-1.0.upf

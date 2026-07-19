@@ -1,0 +1,15 @@
+&inputrdmftdos
+  prefix = 'fe'
+  outdir = './tmp/'
+  functional = 'hf'
+  spectral = 'elk'
+  pdos = .true.
+  emin = -0.882
+  emax =   0.588
+  deltae = 0.00368
+  degauss = 0.00735
+  occ_weighted = .false.
+  integration = 'brzint'
+  nwplot = 500
+  ngrkf = 100
+/

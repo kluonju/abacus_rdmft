@@ -1,0 +1,4 @@
+! Na bcc: ibrav=3, celldm(1)=8.10806 bohr (a_exp=4.2906 A at 298 K)
+! k-grid: 4x4x4 with vkloff=(0.25,0.5,0.625) matching NiO_nk4x4x4
+ATOMIC_SPECIES
+ Na  22.989769  Na_ONCV_PBE-1.0.upf

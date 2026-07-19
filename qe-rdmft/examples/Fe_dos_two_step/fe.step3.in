@@ -1,0 +1,11 @@
+&inputrdmftdos
+  prefix             = 'fe'
+  outdir             = './tmp/'
+  functional         = 'muller'
+  emin               = -0.882
+  emax               =  0.882
+  deltae             = 0.00368
+  degauss            = 0.00735
+  pdos               = .true.
+  occ_weighted       = .false.
+/

@@ -1,0 +1,58 @@
+&CONTROL
+  calculation = 'scf'
+  prefix      = 'h4chain'
+  outdir      = './tmp_h4'
+  pseudo_dir  = './'
+  verbosity   = 'low'
+/
+&SYSTEM
+  ibrav     = 8
+  celldm(1) = 12.0
+  celldm(2) = 1.0
+  celldm(3) = 0.6
+  occupations = 'smearing'
+  smearing = 'gaussian'
+  degauss = 0.01
+  nat       = 4
+  ntyp      = 1
+  ecutwfc   = 25.0
+  ecutrho   = 100.0
+  nbnd      = 6
+  input_dft = 'hf'
+  ace       = .true.
+  exxdiv_treatment = 'gygi-baldereschi'
+  x_gamma_extrapolation = .false.
+  nqx1 = 1
+  nqx2 = 1
+  nqx3 = 1
+/
+&ELECTRONS
+  conv_thr    = 1.0d-6
+  mixing_beta = 0.3d0
+  electron_maxstep = 200
+  diagonalization = 'cg'
+/
+ATOMIC_SPECIES
+H 1.00 H_HSCV_PBE-1.0.UPF
+ATOMIC_POSITIONS {alat}
+H 0.0 0.0 0.000
+H 0.0 0.0 0.125
+H 0.0 0.0 0.250
+H 0.0 0.0 0.375
+K_POINTS Gamma
+
+&rdmft
+  do_rdmft               = .true.
+  rdmft_functional       = 'muller'
+  rdmft_constraint       = 'projected_gradient'
+  rdmft_outer_maxiter    = 6
+  rdmft_occ_maxiter      = 8
+  rdmft_orb_maxiter      = 0
+  rdmft_energy_tol       = 1.0d-5
+  rdmft_occ_grad_tol     = 1.0d-3
+  rdmft_orb_grad_tol     = 1.0d-3
+  rdmft_occ_init_mode    = 'perturbed'
+  rdmft_occ_init_perturb = 0.05d0
+  rdmft_occ_ls_stepsize  = 0.05d0
+  rdmft_verbose          = 1
+/

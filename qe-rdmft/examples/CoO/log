@@ -1,0 +1,805 @@
+
+     Program PWSCF v.7.5 starts on  1Jun2026 at 11:40:10 
+
+     This program is part of the open-source Quantum ESPRESSO suite
+     for quantum simulation of materials; please cite
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 21 395502 (2009);
+         "P. Giannozzi et al., J. Phys.:Condens. Matter 29 465901 (2017);
+         "P. Giannozzi et al., J. Chem. Phys. 152 154105 (2020);
+          URL http://www.quantum-espresso.org", 
+     in publications or presentations arising from this work. More details at
+     http://www.quantum-espresso.org/quote
+
+     Parallel version (MPI & OpenMP), running on       4 processor cores
+     Number of MPI processes:                 2
+     Threads/MPI process:                     2
+
+     MPI processes distributed on     1 nodes
+     69672 MiB available memory on the printing compute node when the environment starts
+ 
+     Reading input from rdmft.in
+
+     Current dimensions of program PWSCF are:
+     Max number of different atomic species (ntypx) = 10
+     Max number of k-points (npk) =  40000
+     Max angular momentum in pseudopotentials (lmaxx) =  4
+
+     IMPORTANT: XC functional enforced from input :
+     Exchange-correlation= HF
+                           (   5   0   0   0   0   0   0)
+     EXX-fraction              =        1.00
+     Any further DFT definition will be discarded
+     Please, verify this is what you really want
+
+
+     &rdmft namelist found: post-SCF RDMFT optimisation enabled.
+        rdmft_functional      = power
+        rdmft_solver_strategy = alternating
+        rdmft_constraint      = projected_gradie
+        rdmft_occ_ls_type     = auto
+        rdmft_orb_ls_type     = auto
+        rdmft_orb_optimizer   = cg
+        rdmft_occ_precond     = F
+
+     Exact exchange band parallelism type set to band_pairs
+
+ 
+     K-points division:     npool     =       2
+     Subspace diagonalization in iterative solution of the eigenvalue problem:
+     a serial algorithm will be used
+
+     EXX: q-point mesh:     2    2    2
+     EXX: setup a grid of 8 q-points centered on each k-point
+     (k+q)-points:
+   0.0000000   0.0000000   0.0000000         1    1
+   0.5000000  -0.5000000   0.5000000         2    1
+  -0.5000000  -0.5000000  -0.5000000         2    3
+   0.0000000  -1.0000000   0.0000000         3    1
+   0.5000000   0.5000000  -0.5000000         2    4
+  -1.0000000   0.0000000   0.0000000         3    5
+   0.0000000   0.0000000  -1.0000000         3   13
+  -0.5000000   0.5000000   0.5000000         2    2
+ 
+     G-vector sticks info
+     --------------------
+     sticks:   dense  smooth     PW     G-vecs:    dense   smooth      PW
+     Sum         721     721    211                12627    12627    2085
+ 
+     Using Slab Decomposition
+ 
+
+
+     bravais-lattice index     =            2
+     lattice parameter (alat)  =       8.0521  a.u.
+     unit-cell volume          =     130.5182 (a.u.)^3
+     number of atoms/cell      =            2
+     number of atomic types    =            2
+     number of electrons       =        23.20
+     number of Kohn-Sham states=           16
+     kinetic-energy cutoff     =      80.0000  Ry
+     charge density cutoff     =     320.0000  Ry
+     cutoff for Fock operator  =     320.0000  Ry
+     scf convergence threshold =      1.0E-06
+     mixing beta               =       0.2500
+     number of iterations used =            8  plain     mixing
+     Exchange-correlation= HF
+                           (   5   0   0   0   0   0   0)
+     EXX-fraction              =        1.00
+
+     celldm(1)=   8.052123  celldm(2)=   0.000000  celldm(3)=   0.000000
+     celldm(4)=   0.000000  celldm(5)=   0.000000  celldm(6)=   0.000000
+
+     crystal axes: (cart. coord. in units of alat)
+               a(1) = (  -0.500000   0.000000   0.500000 )  
+               a(2) = (   0.000000   0.500000   0.500000 )  
+               a(3) = (  -0.500000   0.500000   0.000000 )  
+
+     reciprocal axes: (cart. coord. in units 2 pi/alat)
+               b(1) = ( -1.000000 -1.000000  1.000000 )  
+               b(2) = (  1.000000  1.000000  1.000000 )  
+               b(3) = ( -1.000000  1.000000 -1.000000 )  
+
+
+     PseudoPot. # 1 for Co read from file:
+     ./Co_ONCV_PBE-1.0.upf
+     MD5 check sum: d63ce2b87bb12cf760a326013559dfba
+     Pseudo is Norm-conserving, Zval = 17.0
+     Generated using ONCVPSP code by D. R. Hamann
+     Using radial grid of  602 points,  6 beta functions with: 
+                l(1) =   0
+                l(2) =   0
+                l(3) =   1
+                l(4) =   1
+                l(5) =   2
+                l(6) =   2
+
+     PseudoPot. # 2 for O  read from file:
+     ./O_ONCV_PBE-1.0.upf
+     MD5 check sum: 80a85145cbbb6f60b39549a50e3ff56c
+     Pseudo is Norm-conserving, Zval =  6.0
+     Generated using ONCVPSP code by D. R. Hamann
+     Using radial grid of  602 points,  4 beta functions with: 
+                l(1) =   0
+                l(2) =   0
+                l(3) =   1
+                l(4) =   1
+
+     atomic species   valence    mass     pseudopotential
+     Co               17.00    58.93319     Co( 1.00)
+     O                 6.00    15.99900     O ( 1.00)
+
+     Starting magnetic structure 
+     atomic species   magnetization
+     Co              0.176
+     O               0.000
+
+     48 Sym. Ops., with inversion, found
+
+
+
+   Cartesian axes
+
+     site n.     atom                  positions (alat units)
+         1        Co     tau(   1) = (   0.0000000   0.0000000   0.0000000  )
+         2        O      tau(   2) = (  -0.5000000   0.5000000   0.5000000  )
+
+     number of k points=     3  Gaussian smearing, width (Ry)=  0.0100
+                       cart. coord. in units 2pi/alat
+        k(    1) = (   0.0000000   0.0000000   0.0000000), wk =   0.1250000
+        k(    2) = (   0.5000000  -0.5000000   0.5000000), wk =   0.5000000
+        k(    3) = (   0.0000000  -1.0000000   0.0000000), wk =   0.3750000
+
+     Dense  grid:    12627 G-vectors     FFT dimensions: (  36,  36,  36)
+
+     Estimated max dynamical RAM per process >     122.58 MB
+
+     Estimated total dynamical RAM >     238.99 MB
+     EXX: ACE will be initialized later
+     Generating pointlists ...
+     new r_m :   0.2063 (alat units)  1.6608 (a.u.) for type    1
+     new r_m :   0.2063 (alat units)  1.6608 (a.u.) for type    2
+
+     Initial potential from superposition of free atoms
+
+     starting charge      22.9616, renormalised to      23.2000
+     Starting wfcs are random
+
+     total cpu time spent up to now is        0.1 secs
+
+     Self-consistent Calculation
+
+     iteration #  1     ecut=    80.00 Ry     beta= 0.25
+     Davidson diagonalization with overlap
+     ethr =  1.00E-02,  avg # of iterations =  9.5
+
+     total cpu time spent up to now is        0.2 secs
+
+     total energy              =    -298.89308571 Ry
+     estimated scf accuracy    <       0.40236982 Ry
+
+     total magnetization       =     3.05 Bohr mag/cell
+     absolute magnetization    =     3.06 Bohr mag/cell
+
+     iteration #  2     ecut=    80.00 Ry     beta= 0.25
+     Davidson diagonalization with overlap
+     ethr =  1.73E-03,  avg # of iterations =  2.0
+
+     total cpu time spent up to now is        0.2 secs
+
+     total energy              =    -298.96005483 Ry
+     estimated scf accuracy    <       0.08273922 Ry
+
+     total magnetization       =     2.02 Bohr mag/cell
+     absolute magnetization    =     2.02 Bohr mag/cell
+
+     iteration #  3     ecut=    80.00 Ry     beta= 0.25
+     Davidson diagonalization with overlap
+     ethr =  3.57E-04,  avg # of iterations =  1.0
+
+     total cpu time spent up to now is        0.3 secs
+
+     total energy              =    -298.97082899 Ry
+     estimated scf accuracy    <       0.02156304 Ry
+
+     total magnetization       =     2.60 Bohr mag/cell
+     absolute magnetization    =     2.60 Bohr mag/cell
+
+     End of self-consistent calculation
+
+     convergence NOT achieved after   3 iterations: stopping
+
+     ============================================================
+     RDMFT alternating optimisation
+     ============================================================
+     rdmft_functional      = power
+     rdmft_power_alpha     =   0.6500
+     rdmft_solver_strategy = alternating
+     rdmft_constraint      = projected_gradie
+     rdmft_occ_optimizer   = cg
+     rdmft_orb_optimizer   = cg
+     rdmft_outer_maxiter   =     80
+     rdmft_occ_maxiter     =      5
+     rdmft_orb_maxiter     =     10
+     rdmft_energy_tol      =   1.00E-06
+     rdmft_occ_tol         =   1.00E-07
+     rdmft_line_search     = zhang_hager
+     rdmft_zhang_hager_eta =   0.8500
+     rdmft_occ_ls_type     = auto
+     rdmft_orb_ls_type     = auto
+     rdmft_occ_ls_init_step = fixed
+     occ ELK precond.      = F
+     occ reuse orbitals    = F
+     orb level-shift prec. = F  shift =   0.5000
+
+     ** WARNING: OMP_NUM_THREADS = 2 detected.
+        Threaded BLAS / FFTW reorder summations across runs and
+        may produce thread-count-dependent !RDMFT_ETOTAL values
+        (typically ~1e-4 Ry on long alternating runs).  For
+        bit-reproducible energies, set OMP_NUM_THREADS=1 and
+        parallelise with MPI -- see PW/src/rdmft/README.md.
+     EXX fraction changed:   1.00
+
+     EXX grid:    12627 G-vectors     FFT dimensions: (  36,  36,  36)
+     occupation constraints: total Ne only
+
+       Initial RDMFT total energy =    -295.2076605142 Ry
+       E_one (T+V_loc+V_NL)       =    -133.7935515494
+       E_Hartree                  =      78.4729294499
+       E_xc_RDMFT                 =     -27.2244048961
+       E_Ewald                    =    -212.6626335186
+
+     --- RDMFT alternating outer    1 (SPG occ / cg orb) ---
+       occ block (SPG / strong_wolfe, max 5 inner iters)
+         [occ inner   1] KKT_resid=  5.57E+00 ||g_proj||_inf=  4.44E-02 Ne=   23.292074
+         [occ inner   1] occupations (ik, spin, ib, n_ik):
+           ik=  1  spin up    ib=  1  n=   1.0000000
+           ik=  1  spin up    ib=  2  n=   1.0000000
+           ik=  1  spin up    ib=  3  n=   1.0000000
+           ik=  1  spin up    ib=  4  n=   1.0000000
+           ik=  1  spin up    ib=  5  n=   1.0000000
+           ik=  1  spin up    ib=  6  n=   1.0000000
+           ik=  1  spin up    ib=  7  n=   1.0000000
+           ik=  1  spin up    ib=  8  n=   1.0000000
+           ik=  1  spin up    ib=  9  n=   1.0000000
+           ik=  1  spin up    ib= 10  n=   1.0000000
+           ik=  1  spin up    ib= 11  n=   0.9990228
+           ik=  1  spin up    ib= 12  n=   0.9990228
+           ik=  1  spin up    ib= 13  n=   0.9990228
+           ik=  1  spin up    ib= 14  n=   0.9989951
+           ik=  1  spin up    ib= 15  n=   0.0010228
+           ik=  1  spin up    ib= 16  n=   0.0010228
+           ik=  2  spin up    ib=  1  n=   1.0000000
+           ik=  2  spin up    ib=  2  n=   1.0000000
+           ik=  2  spin up    ib=  3  n=   1.0000000
+           ik=  2  spin up    ib=  4  n=   1.0000000
+           ik=  2  spin up    ib=  5  n=   1.0000000
+           ik=  2  spin up    ib=  6  n=   1.0000000
+           ik=  2  spin up    ib=  7  n=   1.0000000
+           ik=  2  spin up    ib=  8  n=   1.0000000
+           ik=  2  spin up    ib=  9  n=   1.0000000
+           ik=  2  spin up    ib= 10  n=   0.9990913
+           ik=  2  spin up    ib= 11  n=   0.9990913
+           ik=  2  spin up    ib= 12  n=   0.7763612
+           ik=  2  spin up    ib= 13  n=   0.7763337
+           ik=  2  spin up    ib= 14  n=   0.0010913
+           ik=  2  spin up    ib= 15  n=   0.0010913
+           ik=  2  spin up    ib= 16  n=   0.0010913
+           ik=  3  spin up    ib=  1  n=   1.0000000
+           ik=  3  spin up    ib=  2  n=   1.0000000
+           ik=  3  spin up    ib=  3  n=   1.0000000
+           ik=  3  spin up    ib=  4  n=   1.0000000
+           ik=  3  spin up    ib=  5  n=   1.0000000
+           ik=  3  spin up    ib=  6  n=   1.0000000
+           ik=  3  spin up    ib=  7  n=   1.0000000
+           ik=  3  spin up    ib=  8  n=   1.0000000
+           ik=  3  spin up    ib=  9  n=   1.0000000
+           ik=  3  spin up    ib= 10  n=   0.9990685
+           ik=  3  spin up    ib= 11  n=   0.9990685
+           ik=  3  spin up    ib= 12  n=   0.9990685
+           ik=  3  spin up    ib= 13  n=   0.9990685
+           ik=  3  spin up    ib= 14  n=   0.0010685
+           ik=  3  spin up    ib= 15  n=   0.0010685
+           ik=  3  spin up    ib= 16  n=   0.0010685
+           Wolfe bracket 1: alpha=  1.00E-02  E=   -294.1753525756  phi'=  5.64E+02  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  1.00E-02 f_lo=   -295.2076605142 f_hi=   -294.1753525756
+           Wolfe zoom 1: alpha=  4.57E-03  E=   -303.0381531013  phi'=  2.73E+01  curv_ok
+       Wolfe LS: alpha_init=  1.00E-02 step=  4.57E-03 n_feval=2 f0=   -295.2076605142 f1=   -303.0381531013 phi0= -4.13E+01 c1=  0.0001 c2=  0.9500  ok  
+         [occ inner   1] step accepted (alpha=  4.57E-03). occ change (ik, spin, ib, n_new, dn):
+           ik=  1  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  2  n_new=   0.9996309  dn= -3.691E-04
+           ik=  1  spin up    ib=  3  n_new=   0.9996309  dn= -3.691E-04
+           ik=  1  spin up    ib=  4  n_new=   0.9996309  dn= -3.691E-04
+           ik=  1  spin up    ib=  5  n_new=   0.9979533  dn= -2.047E-03
+           ik=  1  spin up    ib=  6  n_new=   0.9970510  dn= -2.949E-03
+           ik=  1  spin up    ib=  7  n_new=   0.9970510  dn= -2.949E-03
+           ik=  1  spin up    ib=  8  n_new=   0.9970510  dn= -2.949E-03
+           ik=  1  spin up    ib=  9  n_new=   0.9970398  dn= -2.960E-03
+           ik=  1  spin up    ib= 10  n_new=   0.9970396  dn= -2.960E-03
+           ik=  1  spin up    ib= 11  n_new=   0.9960627  dn= -2.960E-03
+           ik=  1  spin up    ib= 12  n_new=   0.9960363  dn= -2.987E-03
+           ik=  1  spin up    ib= 13  n_new=   0.9960364  dn= -2.986E-03
+           ik=  1  spin up    ib= 14  n_new=   0.9958423  dn= -3.153E-03
+           ik=  1  spin up    ib= 15  n_new=   0.0000000  dn= -1.023E-03
+           ik=  1  spin up    ib= 16  n_new=   0.0000000  dn= -1.023E-03
+           ik=  2  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  5  n_new=   0.9985685  dn= -1.432E-03
+           ik=  2  spin up    ib=  6  n_new=   0.9964059  dn= -3.594E-03
+           ik=  2  spin up    ib=  7  n_new=   0.9958477  dn= -4.152E-03
+           ik=  2  spin up    ib=  8  n_new=   0.9958478  dn= -4.152E-03
+           ik=  2  spin up    ib=  9  n_new=   0.9949818  dn= -5.018E-03
+           ik=  2  spin up    ib= 10  n_new=   0.9940739  dn= -5.017E-03
+           ik=  2  spin up    ib= 11  n_new=   0.9939554  dn= -5.136E-03
+           ik=  2  spin up    ib= 12  n_new=   0.7709321  dn= -5.429E-03
+           ik=  2  spin up    ib= 13  n_new=   0.7709046  dn= -5.429E-03
+           ik=  2  spin up    ib= 14  n_new=   0.0022757  dn=  1.184E-03
+           ik=  2  spin up    ib= 15  n_new=   0.0064712  dn=  5.380E-03
+           ik=  2  spin up    ib= 16  n_new=   0.0000000  dn= -1.091E-03
+           ik=  3  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  5  n_new=   0.9983390  dn= -1.661E-03
+           ik=  3  spin up    ib=  6  n_new=   0.9964988  dn= -3.501E-03
+           ik=  3  spin up    ib=  7  n_new=   0.9960655  dn= -3.935E-03
+           ik=  3  spin up    ib=  8  n_new=   0.9960655  dn= -3.935E-03
+           ik=  3  spin up    ib=  9  n_new=   0.9959953  dn= -4.005E-03
+           ik=  3  spin up    ib= 10  n_new=   0.9947274  dn= -4.341E-03
+           ik=  3  spin up    ib= 11  n_new=   0.9946723  dn= -4.396E-03
+           ik=  3  spin up    ib= 12  n_new=   0.9946725  dn= -4.396E-03
+           ik=  3  spin up    ib= 13  n_new=   0.9946340  dn= -4.435E-03
+           ik=  3  spin up    ib= 14  n_new=   0.0019877  dn=  9.192E-04
+           ik=  3  spin up    ib= 15  n_new=   0.0031752  dn=  2.107E-03
+           ik=  3  spin up    ib= 16  n_new=   0.0034556  dn=  2.387E-03
+       occ inner    1 E=   -303.0381531013 KKT=  2.59E+02 alpha=  4.57E-03 sum|dn|=  3.56E-01
+         [occ inner   2] KKT_resid=  1.31E+02 ||g_proj||_inf=  9.21E-01 Ne=   22.829417
+         [occ inner   2] occupations (ik, spin, ib, n_ik):
+           ik=  1  spin up    ib=  1  n=   1.0000000
+           ik=  1  spin up    ib=  2  n=   0.9996309
+           ik=  1  spin up    ib=  3  n=   0.9996309
+           ik=  1  spin up    ib=  4  n=   0.9996309
+           ik=  1  spin up    ib=  5  n=   0.9979533
+           ik=  1  spin up    ib=  6  n=   0.9970510
+           ik=  1  spin up    ib=  7  n=   0.9970510
+           ik=  1  spin up    ib=  8  n=   0.9970510
+           ik=  1  spin up    ib=  9  n=   0.9970398
+           ik=  1  spin up    ib= 10  n=   0.9970396
+           ik=  1  spin up    ib= 11  n=   0.9960627
+           ik=  1  spin up    ib= 12  n=   0.9960363
+           ik=  1  spin up    ib= 13  n=   0.9960364
+           ik=  1  spin up    ib= 14  n=   0.9958423
+           ik=  1  spin up    ib= 15  n=   0.0000000
+           ik=  1  spin up    ib= 16  n=   0.0000000
+           ik=  2  spin up    ib=  1  n=   1.0000000
+           ik=  2  spin up    ib=  2  n=   1.0000000
+           ik=  2  spin up    ib=  3  n=   1.0000000
+           ik=  2  spin up    ib=  4  n=   1.0000000
+           ik=  2  spin up    ib=  5  n=   0.9985685
+           ik=  2  spin up    ib=  6  n=   0.9964059
+           ik=  2  spin up    ib=  7  n=   0.9958477
+           ik=  2  spin up    ib=  8  n=   0.9958478
+           ik=  2  spin up    ib=  9  n=   0.9949818
+           ik=  2  spin up    ib= 10  n=   0.9940739
+           ik=  2  spin up    ib= 11  n=   0.9939554
+           ik=  2  spin up    ib= 12  n=   0.7709321
+           ik=  2  spin up    ib= 13  n=   0.7709046
+           ik=  2  spin up    ib= 14  n=   0.0022757
+           ik=  2  spin up    ib= 15  n=   0.0064712
+           ik=  2  spin up    ib= 16  n=   0.0000000
+           ik=  3  spin up    ib=  1  n=   1.0000000
+           ik=  3  spin up    ib=  2  n=   1.0000000
+           ik=  3  spin up    ib=  3  n=   1.0000000
+           ik=  3  spin up    ib=  4  n=   1.0000000
+           ik=  3  spin up    ib=  5  n=   0.9983390
+           ik=  3  spin up    ib=  6  n=   0.9964988
+           ik=  3  spin up    ib=  7  n=   0.9960655
+           ik=  3  spin up    ib=  8  n=   0.9960655
+           ik=  3  spin up    ib=  9  n=   0.9959953
+           ik=  3  spin up    ib= 10  n=   0.9947274
+           ik=  3  spin up    ib= 11  n=   0.9946723
+           ik=  3  spin up    ib= 12  n=   0.9946725
+           ik=  3  spin up    ib= 13  n=   0.9946340
+           ik=  3  spin up    ib= 14  n=   0.0019877
+           ik=  3  spin up    ib= 15  n=   0.0031752
+           ik=  3  spin up    ib= 16  n=   0.0034556
+           Wolfe bracket 1: alpha=  1.00E-02  E=   -294.2577642591  phi'=  4.30E+02  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  1.00E-02 f_lo=   -303.0381531013 f_hi=   -294.2577642591
+           Wolfe zoom 1: alpha=  2.88E-03  E=   -302.4102474256  phi'=  1.11E+02  shrink_hi
+           Wolfe zoom 2: alpha=  9.25E-04  E=   -302.7695918389  phi'=  1.17E+02  shrink_hi
+           Wolfe zoom 3: alpha=  2.93E-04  E=   -302.9731751696  phi'=  1.02E+02  shrink_hi
+           Wolfe zoom 4: alpha=  9.38E-05  E=   -303.0309273388  phi'=  6.54E+01  shrink_hi
+           Wolfe zoom 5: alpha=  3.09E-05  E=   -303.0417111328  phi'=  2.25E+01  curv_ok
+       Wolfe LS: alpha_init=  1.00E-02 step=  3.09E-05 n_feval=6 f0=   -303.0381531013 f1=   -303.0417111328 phi0= -9.77E+03 c1=  0.0001 c2=  0.9500  ok  
+         [occ inner   2] step accepted (alpha=  3.09E-05). occ change (ik, spin, ib, n_new, dn):
+           ik=  1  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  2  n_new=   0.9996590  dn=  2.808E-05
+           ik=  1  spin up    ib=  3  n_new=   0.9996590  dn=  2.808E-05
+           ik=  1  spin up    ib=  4  n_new=   0.9996590  dn=  2.808E-05
+           ik=  1  spin up    ib=  5  n_new=   0.9979700  dn=  1.673E-05
+           ik=  1  spin up    ib=  6  n_new=   0.9970617  dn=  1.063E-05
+           ik=  1  spin up    ib=  7  n_new=   0.9970616  dn=  1.063E-05
+           ik=  1  spin up    ib=  8  n_new=   0.9970616  dn=  1.063E-05
+           ik=  1  spin up    ib=  9  n_new=   0.9970504  dn=  1.057E-05
+           ik=  1  spin up    ib= 10  n_new=   0.9970502  dn=  1.056E-05
+           ik=  1  spin up    ib= 11  n_new=   0.9960732  dn=  1.057E-05
+           ik=  1  spin up    ib= 12  n_new=   0.9960467  dn=  1.038E-05
+           ik=  1  spin up    ib= 13  n_new=   0.9960468  dn=  1.038E-05
+           ik=  1  spin up    ib= 14  n_new=   0.9958516  dn=  9.265E-06
+           ik=  1  spin up    ib= 15  n_new=   0.0003224  dn=  3.224E-04
+           ik=  1  spin up    ib= 16  n_new=   0.0010084  dn=  1.008E-03
+           ik=  2  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  5  n_new=   0.9985894  dn=  2.088E-05
+           ik=  2  spin up    ib=  6  n_new=   0.9964122  dn=  6.277E-06
+           ik=  2  spin up    ib=  7  n_new=   0.9958502  dn=  2.514E-06
+           ik=  2  spin up    ib=  8  n_new=   0.9958503  dn=  2.515E-06
+           ik=  2  spin up    ib=  9  n_new=   0.9949785  dn= -3.294E-06
+           ik=  2  spin up    ib= 10  n_new=   0.9940706  dn= -3.287E-06
+           ik=  2  spin up    ib= 11  n_new=   0.9939513  dn= -4.091E-06
+           ik=  2  spin up    ib= 12  n_new=   0.7709261  dn= -6.079E-06
+           ik=  2  spin up    ib= 13  n_new=   0.7708986  dn= -6.079E-06
+           ik=  2  spin up    ib= 14  n_new=   0.0023011  dn=  2.544E-05
+           ik=  2  spin up    ib= 15  n_new=   0.0064925  dn=  2.125E-05
+           ik=  2  spin up    ib= 16  n_new=   0.0028798  dn=  2.880E-03
+           ik=  3  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  5  n_new=   0.9983583  dn=  1.933E-05
+           ik=  3  spin up    ib=  6  n_new=   0.9965057  dn=  6.898E-06
+           ik=  3  spin up    ib=  7  n_new=   0.9960695  dn=  3.973E-06
+           ik=  3  spin up    ib=  8  n_new=   0.9960695  dn=  3.972E-06
+           ik=  3  spin up    ib=  9  n_new=   0.9959988  dn=  3.526E-06
+           ik=  3  spin up    ib= 10  n_new=   0.9947287  dn=  1.252E-06
+           ik=  3  spin up    ib= 11  n_new=   0.9946732  dn=  8.957E-07
+           ik=  3  spin up    ib= 12  n_new=   0.9946734  dn=  8.959E-07
+           ik=  3  spin up    ib= 13  n_new=   0.9946346  dn=  6.215E-07
+           ik=  3  spin up    ib= 14  n_new=   0.0020147  dn=  2.702E-05
+           ik=  3  spin up    ib= 15  n_new=   0.0031999  dn=  2.469E-05
+           ik=  3  spin up    ib= 16  n_new=   0.0034797  dn=  2.413E-05
+       occ inner    2 E=   -303.0417111328 KKT=  7.80E+00 alpha=  3.09E-05 sum|dn|=  1.14E-02
+         [occ inner   3] KKT_resid=  3.88E+00 ||g_proj||_inf=  8.87E-03 Ne=   23.181026
+         [occ inner   3] occupations (ik, spin, ib, n_ik):
+           ik=  1  spin up    ib=  1  n=   1.0000000
+           ik=  1  spin up    ib=  2  n=   0.9996590
+           ik=  1  spin up    ib=  3  n=   0.9996590
+           ik=  1  spin up    ib=  4  n=   0.9996590
+           ik=  1  spin up    ib=  5  n=   0.9979700
+           ik=  1  spin up    ib=  6  n=   0.9970617
+           ik=  1  spin up    ib=  7  n=   0.9970616
+           ik=  1  spin up    ib=  8  n=   0.9970616
+           ik=  1  spin up    ib=  9  n=   0.9970504
+           ik=  1  spin up    ib= 10  n=   0.9970502
+           ik=  1  spin up    ib= 11  n=   0.9960732
+           ik=  1  spin up    ib= 12  n=   0.9960467
+           ik=  1  spin up    ib= 13  n=   0.9960468
+           ik=  1  spin up    ib= 14  n=   0.9958516
+           ik=  1  spin up    ib= 15  n=   0.0003224
+           ik=  1  spin up    ib= 16  n=   0.0010084
+           ik=  2  spin up    ib=  1  n=   1.0000000
+           ik=  2  spin up    ib=  2  n=   1.0000000
+           ik=  2  spin up    ib=  3  n=   1.0000000
+           ik=  2  spin up    ib=  4  n=   1.0000000
+           ik=  2  spin up    ib=  5  n=   0.9985894
+           ik=  2  spin up    ib=  6  n=   0.9964122
+           ik=  2  spin up    ib=  7  n=   0.9958502
+           ik=  2  spin up    ib=  8  n=   0.9958503
+           ik=  2  spin up    ib=  9  n=   0.9949785
+           ik=  2  spin up    ib= 10  n=   0.9940706
+           ik=  2  spin up    ib= 11  n=   0.9939513
+           ik=  2  spin up    ib= 12  n=   0.7709261
+           ik=  2  spin up    ib= 13  n=   0.7708986
+           ik=  2  spin up    ib= 14  n=   0.0023011
+           ik=  2  spin up    ib= 15  n=   0.0064925
+           ik=  2  spin up    ib= 16  n=   0.0028798
+           ik=  3  spin up    ib=  1  n=   1.0000000
+           ik=  3  spin up    ib=  2  n=   1.0000000
+           ik=  3  spin up    ib=  3  n=   1.0000000
+           ik=  3  spin up    ib=  4  n=   1.0000000
+           ik=  3  spin up    ib=  5  n=   0.9983583
+           ik=  3  spin up    ib=  6  n=   0.9965057
+           ik=  3  spin up    ib=  7  n=   0.9960695
+           ik=  3  spin up    ib=  8  n=   0.9960695
+           ik=  3  spin up    ib=  9  n=   0.9959988
+           ik=  3  spin up    ib= 10  n=   0.9947287
+           ik=  3  spin up    ib= 11  n=   0.9946732
+           ik=  3  spin up    ib= 12  n=   0.9946734
+           ik=  3  spin up    ib= 13  n=   0.9946346
+           ik=  3  spin up    ib= 14  n=   0.0020147
+           ik=  3  spin up    ib= 15  n=   0.0031999
+           ik=  3  spin up    ib= 16  n=   0.0034797
+           Wolfe bracket 1: alpha=  1.00E-02  E=   -293.4847310961  phi'=  3.70E+02  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  1.00E-02 f_lo=   -303.0417111328 f_hi=   -293.4847310961
+           Wolfe zoom 1: alpha=  1.00E-03  E=   -303.0554219099  phi'= -2.79E+00  curv_ok
+       Wolfe LS: alpha_init=  1.00E-02 step=  1.00E-03 n_feval=2 f0=   -303.0417111328 f1=   -303.0554219099 phi0= -3.59E+01 c1=  0.0001 c2=  0.9500  ok  
+         [occ inner   3] step accepted (alpha=  1.00E-03). occ change (ik, spin, ib, n_new, dn):
+           ik=  1  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  2  n_new=   1.0000000  dn=  3.410E-04
+           ik=  1  spin up    ib=  3  n_new=   1.0000000  dn=  3.410E-04
+           ik=  1  spin up    ib=  4  n_new=   1.0000000  dn=  3.410E-04
+           ik=  1  spin up    ib=  5  n_new=   0.9982018  dn=  2.318E-04
+           ik=  1  spin up    ib=  6  n_new=   0.9970966  dn=  3.492E-05
+           ik=  1  spin up    ib=  7  n_new=   0.9970966  dn=  3.492E-05
+           ik=  1  spin up    ib=  8  n_new=   0.9970966  dn=  3.492E-05
+           ik=  1  spin up    ib=  9  n_new=   0.9970832  dn=  3.286E-05
+           ik=  1  spin up    ib= 10  n_new=   0.9970830  dn=  3.283E-05
+           ik=  1  spin up    ib= 11  n_new=   0.9961061  dn=  3.287E-05
+           ik=  1  spin up    ib= 12  n_new=   0.9960737  dn=  2.701E-05
+           ik=  1  spin up    ib= 13  n_new=   0.9960738  dn=  2.702E-05
+           ik=  1  spin up    ib= 14  n_new=   0.9958424  dn= -9.153E-06
+           ik=  1  spin up    ib= 15  n_new=   0.0003717  dn=  4.925E-05
+           ik=  1  spin up    ib= 16  n_new=   0.0012386  dn=  2.302E-04
+           ik=  2  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  5  n_new=   0.9989554  dn=  3.661E-04
+           ik=  2  spin up    ib=  6  n_new=   0.9963069  dn= -1.053E-04
+           ik=  2  spin up    ib=  7  n_new=   0.9956232  dn= -2.270E-04
+           ik=  2  spin up    ib=  8  n_new=   0.9956234  dn= -2.269E-04
+           ik=  2  spin up    ib=  9  n_new=   0.9945642  dn= -4.143E-04
+           ik=  2  spin up    ib= 10  n_new=   0.9936565  dn= -4.141E-04
+           ik=  2  spin up    ib= 11  n_new=   0.9935112  dn= -4.401E-04
+           ik=  2  spin up    ib= 12  n_new=   0.7704216  dn= -5.044E-04
+           ik=  2  spin up    ib= 13  n_new=   0.7703941  dn= -5.044E-04
+           ik=  2  spin up    ib= 14  n_new=   0.0028125  dn=  5.113E-04
+           ik=  2  spin up    ib= 15  n_new=   0.0068697  dn=  3.772E-04
+           ik=  2  spin up    ib= 16  n_new=   0.0025020  dn= -3.778E-04
+           ik=  3  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  5  n_new=   0.9986743  dn=  3.160E-04
+           ik=  3  spin up    ib=  6  n_new=   0.9964204  dn= -8.535E-05
+           ik=  3  spin up    ib=  7  n_new=   0.9958895  dn= -1.800E-04
+           ik=  3  spin up    ib=  8  n_new=   0.9958895  dn= -1.800E-04
+           ik=  3  spin up    ib=  9  n_new=   0.9958046  dn= -1.942E-04
+           ik=  3  spin up    ib= 10  n_new=   0.9944610  dn= -2.677E-04
+           ik=  3  spin up    ib= 11  n_new=   0.9943940  dn= -2.792E-04
+           ik=  3  spin up    ib= 12  n_new=   0.9943942  dn= -2.791E-04
+           ik=  3  spin up    ib= 13  n_new=   0.9943465  dn= -2.881E-04
+           ik=  3  spin up    ib= 14  n_new=   0.0025779  dn=  5.632E-04
+           ik=  3  spin up    ib= 15  n_new=   0.0036865  dn=  4.866E-04
+           ik=  3  spin up    ib= 16  n_new=   0.0039491  dn=  4.694E-04
+       occ inner    3 E=   -303.0554219099 KKT=  3.94E+00 alpha=  1.00E-03 sum|dn|=  2.29E-02
+         [occ inner   4] KKT_resid=  1.40E+00 ||g_proj||_inf=  8.69E-03 Ne=   23.178443
+         [occ inner   4] occupations (ik, spin, ib, n_ik):
+           ik=  1  spin up    ib=  1  n=   1.0000000
+           ik=  1  spin up    ib=  2  n=   1.0000000
+           ik=  1  spin up    ib=  3  n=   1.0000000
+           ik=  1  spin up    ib=  4  n=   1.0000000
+           ik=  1  spin up    ib=  5  n=   0.9982018
+           ik=  1  spin up    ib=  6  n=   0.9970966
+           ik=  1  spin up    ib=  7  n=   0.9970966
+           ik=  1  spin up    ib=  8  n=   0.9970966
+           ik=  1  spin up    ib=  9  n=   0.9970832
+           ik=  1  spin up    ib= 10  n=   0.9970830
+           ik=  1  spin up    ib= 11  n=   0.9961061
+           ik=  1  spin up    ib= 12  n=   0.9960737
+           ik=  1  spin up    ib= 13  n=   0.9960738
+           ik=  1  spin up    ib= 14  n=   0.9958424
+           ik=  1  spin up    ib= 15  n=   0.0003717
+           ik=  1  spin up    ib= 16  n=   0.0012386
+           ik=  2  spin up    ib=  1  n=   1.0000000
+           ik=  2  spin up    ib=  2  n=   1.0000000
+           ik=  2  spin up    ib=  3  n=   1.0000000
+           ik=  2  spin up    ib=  4  n=   1.0000000
+           ik=  2  spin up    ib=  5  n=   0.9989554
+           ik=  2  spin up    ib=  6  n=   0.9963069
+           ik=  2  spin up    ib=  7  n=   0.9956232
+           ik=  2  spin up    ib=  8  n=   0.9956234
+           ik=  2  spin up    ib=  9  n=   0.9945642
+           ik=  2  spin up    ib= 10  n=   0.9936565
+           ik=  2  spin up    ib= 11  n=   0.9935112
+           ik=  2  spin up    ib= 12  n=   0.7704216
+           ik=  2  spin up    ib= 13  n=   0.7703941
+           ik=  2  spin up    ib= 14  n=   0.0028125
+           ik=  2  spin up    ib= 15  n=   0.0068697
+           ik=  2  spin up    ib= 16  n=   0.0025020
+           ik=  3  spin up    ib=  1  n=   1.0000000
+           ik=  3  spin up    ib=  2  n=   1.0000000
+           ik=  3  spin up    ib=  3  n=   1.0000000
+           ik=  3  spin up    ib=  4  n=   1.0000000
+           ik=  3  spin up    ib=  5  n=   0.9986743
+           ik=  3  spin up    ib=  6  n=   0.9964204
+           ik=  3  spin up    ib=  7  n=   0.9958895
+           ik=  3  spin up    ib=  8  n=   0.9958895
+           ik=  3  spin up    ib=  9  n=   0.9958046
+           ik=  3  spin up    ib= 10  n=   0.9944610
+           ik=  3  spin up    ib= 11  n=   0.9943940
+           ik=  3  spin up    ib= 12  n=   0.9943942
+           ik=  3  spin up    ib= 13  n=   0.9943465
+           ik=  3  spin up    ib= 14  n=   0.0025779
+           ik=  3  spin up    ib= 15  n=   0.0036865
+           ik=  3  spin up    ib= 16  n=   0.0039491
+           Wolfe bracket 1: alpha=  1.00E-02  E=   -293.4914242098  phi'=  3.90E+02  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  1.00E-02 f_lo=   -303.0554219099 f_hi=   -293.4914242098
+           Wolfe zoom 1: alpha=  1.00E-03  E=   -303.0627287320  phi'= -1.78E+00  curv_ok
+       Wolfe LS: alpha_init=  1.00E-02 step=  1.00E-03 n_feval=2 f0=   -303.0554219099 f1=   -303.0627287320 phi0= -3.57E+01 c1=  0.0001 c2=  0.9500  ok  
+         [occ inner   4] step accepted (alpha=  1.00E-03). occ change (ik, spin, ib, n_new, dn):
+           ik=  1  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  5  n_new=   0.9984751  dn=  2.733E-04
+           ik=  1  spin up    ib=  6  n_new=   0.9971725  dn=  7.589E-05
+           ik=  1  spin up    ib=  7  n_new=   0.9971724  dn=  7.589E-05
+           ik=  1  spin up    ib=  8  n_new=   0.9971725  dn=  7.589E-05
+           ik=  1  spin up    ib=  9  n_new=   0.9971570  dn=  7.380E-05
+           ik=  1  spin up    ib= 10  n_new=   0.9971568  dn=  7.376E-05
+           ik=  1  spin up    ib= 11  n_new=   0.9961799  dn=  7.381E-05
+           ik=  1  spin up    ib= 12  n_new=   0.9961416  dn=  6.792E-05
+           ik=  1  spin up    ib= 13  n_new=   0.9961417  dn=  6.793E-05
+           ik=  1  spin up    ib= 14  n_new=   0.9958742  dn=  3.178E-05
+           ik=  1  spin up    ib= 15  n_new=   0.0004754  dn=  1.037E-04
+           ik=  1  spin up    ib= 16  n_new=   0.0015525  dn=  3.139E-04
+           ik=  2  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  5  n_new=   0.9993634  dn=  4.079E-04
+           ik=  2  spin up    ib=  6  n_new=   0.9962423  dn= -6.460E-05
+           ik=  2  spin up    ib=  7  n_new=   0.9954366  dn= -1.866E-04
+           ik=  2  spin up    ib=  8  n_new=   0.9954369  dn= -1.866E-04
+           ik=  2  spin up    ib=  9  n_new=   0.9941897  dn= -3.745E-04
+           ik=  2  spin up    ib= 10  n_new=   0.9932822  dn= -3.743E-04
+           ik=  2  spin up    ib= 11  n_new=   0.9931109  dn= -4.003E-04
+           ik=  2  spin up    ib= 12  n_new=   0.7699569  dn= -4.647E-04
+           ik=  2  spin up    ib= 13  n_new=   0.7699294  dn= -4.647E-04
+           ik=  2  spin up    ib= 14  n_new=   0.0032682  dn=  4.557E-04
+           ik=  2  spin up    ib= 15  n_new=   0.0072567  dn=  3.870E-04
+           ik=  2  spin up    ib= 16  n_new=   0.0024602  dn= -4.177E-05
+           ik=  3  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  5  n_new=   0.9990321  dn=  3.577E-04
+           ik=  3  spin up    ib=  6  n_new=   0.9963758  dn= -4.461E-05
+           ik=  3  spin up    ib=  7  n_new=   0.9957500  dn= -1.395E-04
+           ik=  3  spin up    ib=  8  n_new=   0.9957500  dn= -1.395E-04
+           ik=  3  spin up    ib=  9  n_new=   0.9956508  dn= -1.538E-04
+           ik=  3  spin up    ib= 10  n_new=   0.9942334  dn= -2.275E-04
+           ik=  3  spin up    ib= 11  n_new=   0.9941550  dn= -2.390E-04
+           ik=  3  spin up    ib= 12  n_new=   0.9941552  dn= -2.390E-04
+           ik=  3  spin up    ib= 13  n_new=   0.9940986  dn= -2.479E-04
+           ik=  3  spin up    ib= 14  n_new=   0.0030757  dn=  4.978E-04
+           ik=  3  spin up    ib= 15  n_new=   0.0041480  dn=  4.616E-04
+           ik=  3  spin up    ib= 16  n_new=   0.0043993  dn=  4.502E-04
+       occ inner    4 E=   -303.0627287320 KKT=  3.41E+00 alpha=  1.00E-03 sum|dn|=  1.91E-02
+         [occ inner   5] KKT_resid=  1.37E+00 ||g_proj||_inf=  8.51E-03 Ne=   23.177015
+         [occ inner   5] occupations (ik, spin, ib, n_ik):
+           ik=  1  spin up    ib=  1  n=   1.0000000
+           ik=  1  spin up    ib=  2  n=   1.0000000
+           ik=  1  spin up    ib=  3  n=   1.0000000
+           ik=  1  spin up    ib=  4  n=   1.0000000
+           ik=  1  spin up    ib=  5  n=   0.9984751
+           ik=  1  spin up    ib=  6  n=   0.9971725
+           ik=  1  spin up    ib=  7  n=   0.9971724
+           ik=  1  spin up    ib=  8  n=   0.9971725
+           ik=  1  spin up    ib=  9  n=   0.9971570
+           ik=  1  spin up    ib= 10  n=   0.9971568
+           ik=  1  spin up    ib= 11  n=   0.9961799
+           ik=  1  spin up    ib= 12  n=   0.9961416
+           ik=  1  spin up    ib= 13  n=   0.9961417
+           ik=  1  spin up    ib= 14  n=   0.9958742
+           ik=  1  spin up    ib= 15  n=   0.0004754
+           ik=  1  spin up    ib= 16  n=   0.0015525
+           ik=  2  spin up    ib=  1  n=   1.0000000
+           ik=  2  spin up    ib=  2  n=   1.0000000
+           ik=  2  spin up    ib=  3  n=   1.0000000
+           ik=  2  spin up    ib=  4  n=   1.0000000
+           ik=  2  spin up    ib=  5  n=   0.9993634
+           ik=  2  spin up    ib=  6  n=   0.9962423
+           ik=  2  spin up    ib=  7  n=   0.9954366
+           ik=  2  spin up    ib=  8  n=   0.9954369
+           ik=  2  spin up    ib=  9  n=   0.9941897
+           ik=  2  spin up    ib= 10  n=   0.9932822
+           ik=  2  spin up    ib= 11  n=   0.9931109
+           ik=  2  spin up    ib= 12  n=   0.7699569
+           ik=  2  spin up    ib= 13  n=   0.7699294
+           ik=  2  spin up    ib= 14  n=   0.0032682
+           ik=  2  spin up    ib= 15  n=   0.0072567
+           ik=  2  spin up    ib= 16  n=   0.0024602
+           ik=  3  spin up    ib=  1  n=   1.0000000
+           ik=  3  spin up    ib=  2  n=   1.0000000
+           ik=  3  spin up    ib=  3  n=   1.0000000
+           ik=  3  spin up    ib=  4  n=   1.0000000
+           ik=  3  spin up    ib=  5  n=   0.9990321
+           ik=  3  spin up    ib=  6  n=   0.9963758
+           ik=  3  spin up    ib=  7  n=   0.9957500
+           ik=  3  spin up    ib=  8  n=   0.9957500
+           ik=  3  spin up    ib=  9  n=   0.9956508
+           ik=  3  spin up    ib= 10  n=   0.9942334
+           ik=  3  spin up    ib= 11  n=   0.9941550
+           ik=  3  spin up    ib= 12  n=   0.9941552
+           ik=  3  spin up    ib= 13  n=   0.9940986
+           ik=  3  spin up    ib= 14  n=   0.0030757
+           ik=  3  spin up    ib= 15  n=   0.0041480
+           ik=  3  spin up    ib= 16  n=   0.0043993
+           Wolfe bracket 1: alpha=  1.00E-02  E=   -293.4955202428  phi'=  4.11E+02  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  1.00E-02 f_lo=   -303.0627287320 f_hi=   -293.4955202428
+           Wolfe zoom 1: alpha=  1.00E-03  E=   -303.0700906717  phi'= -1.58E+00  curv_ok
+       Wolfe LS: alpha_init=  1.00E-02 step=  1.00E-03 n_feval=2 f0=   -303.0627287320 f1=   -303.0700906717 phi0= -3.55E+01 c1=  0.0001 c2=  0.9500  ok  
+         [occ inner   5] step accepted (alpha=  1.00E-03). occ change (ik, spin, ib, n_new, dn):
+           ik=  1  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  1  spin up    ib=  5  n_new=   0.9987580  dn=  2.829E-04
+           ik=  1  spin up    ib=  6  n_new=   0.9972580  dn=  8.552E-05
+           ik=  1  spin up    ib=  7  n_new=   0.9972580  dn=  8.552E-05
+           ik=  1  spin up    ib=  8  n_new=   0.9972580  dn=  8.552E-05
+           ik=  1  spin up    ib=  9  n_new=   0.9972405  dn=  8.348E-05
+           ik=  1  spin up    ib= 10  n_new=   0.9972402  dn=  8.344E-05
+           ik=  1  spin up    ib= 11  n_new=   0.9962634  dn=  8.349E-05
+           ik=  1  spin up    ib= 12  n_new=   0.9962192  dn=  7.759E-05
+           ik=  1  spin up    ib= 13  n_new=   0.9962193  dn=  7.760E-05
+           ik=  1  spin up    ib= 14  n_new=   0.9959157  dn=  4.150E-05
+           ik=  1  spin up    ib= 15  n_new=   0.0005683  dn=  9.288E-05
+           ik=  1  spin up    ib= 16  n_new=   0.0018356  dn=  2.832E-04
+           ik=  2  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  2  spin up    ib=  5  n_new=   0.9997809  dn=  4.176E-04
+           ik=  2  spin up    ib=  6  n_new=   0.9961875  dn= -5.483E-05
+           ik=  2  spin up    ib=  7  n_new=   0.9952597  dn= -1.769E-04
+           ik=  2  spin up    ib=  8  n_new=   0.9952600  dn= -1.768E-04
+           ik=  2  spin up    ib=  9  n_new=   0.9938252  dn= -3.645E-04
+           ik=  2  spin up    ib= 10  n_new=   0.9929178  dn= -3.644E-04
+           ik=  2  spin up    ib= 11  n_new=   0.9927205  dn= -3.904E-04
+           ik=  2  spin up    ib= 12  n_new=   0.7695021  dn= -4.549E-04
+           ik=  2  spin up    ib= 13  n_new=   0.7694746  dn= -4.549E-04
+           ik=  2  spin up    ib= 14  n_new=   0.0036653  dn=  3.971E-04
+           ik=  2  spin up    ib= 15  n_new=   0.0076229  dn=  3.662E-04
+           ik=  2  spin up    ib= 16  n_new=   0.0024363  dn= -2.388E-05
+           ik=  3  spin up    ib=  1  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  2  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  3  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  4  n_new=   1.0000000  dn=  0.000E+00
+           ik=  3  spin up    ib=  5  n_new=   0.9993995  dn=  3.674E-04
+           ik=  3  spin up    ib=  6  n_new=   0.9963409  dn= -3.491E-05
+           ik=  3  spin up    ib=  7  n_new=   0.9956201  dn= -1.298E-04
+           ik=  3  spin up    ib=  8  n_new=   0.9956202  dn= -1.298E-04
+           ik=  3  spin up    ib=  9  n_new=   0.9955068  dn= -1.440E-04
+           ik=  3  spin up    ib= 10  n_new=   0.9940157  dn= -2.177E-04
+           ik=  3  spin up    ib= 11  n_new=   0.9939258  dn= -2.292E-04
+           ik=  3  spin up    ib= 12  n_new=   0.9939261  dn= -2.292E-04
+           ik=  3  spin up    ib= 13  n_new=   0.9938604  dn= -2.381E-04
+           ik=  3  spin up    ib= 14  n_new=   0.0035122  dn=  4.365E-04
+           ik=  3  spin up    ib= 15  n_new=   0.0045659  dn=  4.179E-04
+           ik=  3  spin up    ib= 16  n_new=   0.0048092  dn=  4.099E-04
+       occ inner    5 E=   -303.0700906717 KKT=  3.13E+00 alpha=  1.00E-03 sum|dn|=  1.84E-02
+       ORB block (cg / Stiefel CG, strategy=joint, max 10 inner iters)
+           Wolfe bracket 1: alpha=  5.00E-01  E=   -295.2841696158  phi'=  2.72E-01  zoom
+           Wolfe zoom start: alpha_lo=  0.00E+00 alpha_hi=  5.00E-01 f_lo=   -303.0700906717 f_hi=   -295.2841696158
+           Wolfe zoom 1: alpha=  5.00E-02  E=   -295.4314003484  phi'= -5.89E-02  shrink_hi
+           Wolfe zoom 2: alpha=  5.00E-03  E=   -295.4218454672  phi'= -9.21E-02  shrink_hi
+           Wolfe zoom 3: alpha=  5.00E-04  E=   -295.4206466546  phi'= -9.54E-02  shrink_hi
+           Wolfe zoom 4: alpha=  5.00E-05  E=   -295.4205243401  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 5: alpha=  5.00E-06  E=   -295.4205120844  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 6: alpha=  5.00E-07  E=   -295.4205108586  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 7: alpha=  5.00E-08  E=   -295.4205107360  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 8: alpha=  5.00E-09  E=   -295.4205107237  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 9: alpha=  5.00E-10  E=   -295.4205107225  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 10: alpha=  5.00E-11  E=   -295.4205107224  phi'= -9.58E-02  shrink_hi
+           Wolfe zoom 11: alpha=  0.00E+00  E=   -303.0700906717  phi'= -9.58E-02  stagnated_no_armijo
+       Wolfe LS: alpha_init=  5.00E-01 step=  0.00E+00 n_feval=11 f0=   -303.0700906717 f1=   -303.0700906717 phi0= -9.58E-02 c1=  0.0001 c2=  0.9500  fail
+       ORB block stopped: Armijo line search failed at inner 1; ||G_R|| =   3.10E-01
+     RDMFT outer    1  E =    -295.4205107223  |dE| =   2.13E-01  Ne =    12.869994  sum|dn|_out =   3.77E-01  occ_conv = F  orb_conv = F
+
+     --- RDMFT alternating outer    2 (SPG occ / cg orb) ---
+       occ block (SPG / strong_wolfe, max 5 inner iters)
+ ZPOTRF exited with INFO=            1
+
+ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+     Error in routine ZPOTRF (1):
+     Cholesky failed in invchol.
+ %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+     stopping ...
+Abort(1) on node 0 (rank 0 in comm 0): application called MPI_Abort(MPI_COMM_WORLD, 1) - process 0

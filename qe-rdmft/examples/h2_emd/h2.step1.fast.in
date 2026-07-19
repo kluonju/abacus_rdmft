@@ -1,0 +1,39 @@
+&CONTROL
+  calculation = 'scf'
+  prefix      = 'h2'
+  outdir      = './tmp'
+  pseudo_dir  = './'
+/
+&SYSTEM
+  ibrav     = 1
+  celldm(1) = 12.0
+  nat       = 2
+  ntyp      = 1
+  ecutwfc   = 25.0
+  ecutrho   = 100.0
+  nbnd      = 4
+  assume_isolated = 'martyna-tuckerman'
+  input_dft = 'hf'
+  ace = .true.
+  exxdiv_treatment = 'gygi-baldereschi'
+  x_gamma_extrapolation = .false.
+/
+&ELECTRONS
+  conv_thr    = 1.0d-8
+  mixing_beta = 0.5d0
+/
+ATOMIC_SPECIES
+H 1.00 H_HSCV_PBE-1.0.UPF
+ATOMIC_POSITIONS {angstrom}
+H 0.0 0.0 0.0
+H 0.0 0.0 0.74
+K_POINTS automatic
+  1 1 1 0 0 0
+&rdmft
+  do_rdmft                 = .true.
+  rdmft_functional         = 'muller'
+  rdmft_outer_maxiter      = 2
+  rdmft_occ_maxiter        = 4
+  rdmft_orb_maxiter        = 2
+  rdmft_save_every         = 1
+/

@@ -1,0 +1,78 @@
+! ----------------------------------------------------------------------
+! Step 1 of the two-step RDMFT DOS workflow on H2 (12 Bohr cubic cell).
+!
+! THIS INPUT IS CONSUMED BY pw.x.  Step 2 (DOS calculation) is consumed
+! by the dedicated post-processor rdmft_dos.x; see h2.step2.in.
+!
+! This run performs the full RDMFT optimisation and persists exactly
+! the two pieces of state the DOS step needs, nothing else:
+!
+!   * natural occupations  n_ik       -> tmp/h2.rdmft.save
+!   * natural orbitals     C^k = evc  -> tmp/h2.save/wfc*.dat
+!                                        + tmp/h2.save/data-file-schema.xml
+!
+! No DOS files are written here; the (expensive) transition-state band
+! probe is left for rdmft_dos.x in step 2.
+!
+! Run with, e.g.:
+!     pw.x < h2.step1.in > h2.step1.out
+!
+! Copy the H_HSCV_PBE-1.0.UPF pseudopotential into the run directory
+! first (it ships with this repo at CPV/examples/EXX-wf-example/).
+! ----------------------------------------------------------------------
+&CONTROL
+  calculation = 'scf'
+  prefix      = 'h2'
+  outdir      = './tmp'
+  pseudo_dir  = './'
+  verbosity   = 'high'
+/
+&SYSTEM
+  ibrav     = 1
+  celldm(1) = 12.0
+  nat       = 2
+  ntyp      = 1
+  ecutwfc   = 25.0
+  ecutrho   = 100.0
+  nbnd      = 4
+  assume_isolated = 'martyna-tuckerman'
+  input_dft = 'hf'
+  ace = .true.
+  exxdiv_treatment = 'gygi-baldereschi'
+  x_gamma_extrapolation = .false.
+/
+&ELECTRONS
+  conv_thr    = 1.0d-8
+  mixing_beta = 0.5d0
+/
+ATOMIC_SPECIES
+H 1.00 H_HSCV_PBE-1.0.UPF
+ATOMIC_POSITIONS {angstrom}
+H 0.0 0.0 0.0
+H 0.0 0.0 0.74
+K_POINTS Gamma
+
+&rdmft
+  do_rdmft                 = .true.
+  rdmft_functional         = 'muller'
+  rdmft_constraint         = 'projected_gradient'
+  rdmft_outer_maxiter      = 8
+  rdmft_occ_maxiter        = 12
+  rdmft_orb_maxiter        = 4
+  rdmft_energy_tol         = 1.0d-7
+  rdmft_occ_grad_tol       = 1.0d-5
+  rdmft_orb_grad_tol       = 1.0d-5
+  rdmft_occ_init_mode      = 'perturbed'
+  rdmft_occ_init_perturb   = 0.05d0
+  rdmft_occ_ls_stepsize    = 0.05d0
+  rdmft_orb_ls_stepsize    = 0.2d0
+  rdmft_verbose            = 1
+
+  ! Restart bookkeeping: the natural occupations are checkpointed to
+  ! ``tmp/h2.rdmft.save`` after every outer iteration, and a final
+  ! unconditional save runs at the end of rdmft_run.  Combined with
+  ! the automatic ``punch('config')`` call inside rdmft_save_state
+  ! (which flushes the natural orbitals to ``tmp/h2.save/``), this
+  ! is everything the step-2 DOS run needs.
+  rdmft_save_every         = 1
+/

@@ -1,0 +1,65 @@
+ &CONTROL
+    calculation = 'scf'
+    restart_mode = 'from_scratch'
+    prefix = 'coo'
+    outdir = './tmp/'
+    pseudo_dir = './'
+ /
+ &SYSTEM
+    ibrav     = 2
+    celldm(1) = 8.052123
+    nat       = 2
+    ntyp      = 2
+    nspin     = 2
+    starting_magnetization(1) = 3.0
+    starting_magnetization(2) = 0.0
+    ecutwfc   = 80.0
+    occupations = 'smearing'
+    smearing = 'gaussian'
+    degauss = 0.01
+    input_dft = 'hf'
+    tot_charge = -0.2
+    ace = .true.
+    exxdiv_treatment = 'gygi-baldereschi'
+    x_gamma_extrapolation = .false.
+ /
+ &ELECTRONS
+    conv_thr    = 1.0d-6
+    mixing_beta = 0.25
+    electron_maxstep = 3
+ /
+ATOMIC_SPECIES
+ Co  58.933195  Co_ONCV_PBE-1.0.upf
+ O         15.999   O_ONCV_PBE-1.0.upf
+ATOMIC_POSITIONS crystal
+ Co  0.000  0.000  0.000
+ O         0.500  0.500  0.500
+K_POINTS automatic
+ 2 2 2 0 0 0
+
+&rdmft
+  do_rdmft = .true.
+  rdmft_functional = 'power'
+  rdmft_power_alpha = 0.65
+  rdmft_solver_strategy = 'alternating'
+  rdmft_orb_optimizer = 'cg'
+  rdmft_orb_strategy = 'joint'
+  !rdmft_line_search = 'armijo'
+  !rdmft_occ_ls_type = 'armijo'
+
+  rdmft_line_search_c2 = 0.95
+  rdmft_outer_maxiter = 80
+  rdmft_occ_maxiter = 5
+  rdmft_orb_maxiter = 10
+  rdmft_energy_tol      = 1.0d-6
+  rdmft_occ_grad_tol    = 1.0d-4
+  rdmft_orb_grad_tol    = 1.0d-4
+  rdmft_occ_tol         = 1.0d-7
+  rdmft_orb_precond_shift = 0.5
+  rdmft_occ_ls_init_step = 'fixed'
+  rdmft_occ_ls_stepsize  = 0.01d0
+  rdmft_occ_init_mode = 'perturbed'
+  rdmft_occ_init_perturb = 1.0d-3
+  rdmft_occ_init_nbands_top = 4
+  rdmft_verbose = 2
+/

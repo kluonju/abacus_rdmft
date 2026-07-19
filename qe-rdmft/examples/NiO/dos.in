@@ -1,0 +1,16 @@
+&inputrdmftdos
+  prefix             = 'nio'
+  outdir             = './tmp/'
+  functional   = 'power'
+  power_alpha = 0.65
+  spectral = 'elk'
+  pdos = .true.
+  emin = -1.0
+  emax =  1.0
+  deltae = 0.00368
+  degauss = 0.00735
+  occ_weighted = .false.
+  integration = 'brzint'
+  nwplot = 500
+  ngrkf = 100
+/

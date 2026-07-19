@@ -1,0 +1,11 @@
+&inputrdmftdos
+  prefix             = 'nio'
+  outdir             = './tmp/'
+  functional         = 'muller'
+  emin               = -1.10
+  emax               =  0.37
+  deltae             = 0.00368
+  degauss            = 0.00735
+  pdos               = .true.
+  occ_weighted       = .false.
+/

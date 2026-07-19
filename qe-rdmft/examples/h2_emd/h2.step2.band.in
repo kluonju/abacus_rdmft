@@ -1,0 +1,12 @@
+&inputrdmftemd
+  prefix        = 'h2'
+  outdir        = './tmp/'
+  functional    = 'muller'
+  do_emd_compton      = .true.
+  write_band_resolved = .true.
+  cp_nq         = 64
+  cp_qmax       = 0.0
+  line_start    = 0.0 0.0 0.0
+  line_end      = 1.0 0.0 0.0
+  spin_sum      = .true.
+/

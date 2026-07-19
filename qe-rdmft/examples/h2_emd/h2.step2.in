@@ -1,0 +1,21 @@
+&inputrdmftemd
+  prefix        = 'h2'
+  outdir        = './tmp/'
+  functional    = 'muller'
+  do_emd_compton  = .true.
+  do_emd_autocorr = .true.
+  cp_nq         = 128
+  cp_qmax       = 0.0
+  line_start    = 0.0 0.0 0.0
+  line_end      = 1.0 0.0 0.0
+  af_r_start    = 0.0
+  af_r_end      = 6.0
+  af_npt        = 50
+  spin_sum      = .true.
+  write_elk_fmt = .false.
+  ! optional sparse band-resolved n(p) on G+k sphere:
+  ! write_band_resolved = .true.
+  ! legacy parametric-line output (optional):
+  ! do_emd_plot1d = .true.
+  ! line_npt      = 50
+/

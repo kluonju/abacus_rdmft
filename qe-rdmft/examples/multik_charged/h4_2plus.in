@@ -1,0 +1,53 @@
+&CONTROL
+  calculation = 'scf'
+  prefix      = 'h4c'
+  outdir      = './tmp_h4c'
+  pseudo_dir  = './'
+  verbosity   = 'low'
+/
+&SYSTEM
+  ibrav     = 1
+  celldm(1) = 14.0
+  nat       = 4
+  ntyp      = 1
+  ecutwfc   = 25.0
+  ecutrho   = 100.0
+  nbnd      = 6
+  tot_charge = 2.0
+  assume_isolated = 'martyna-tuckerman'
+  input_dft = 'hf'
+  ace = .true.
+  exxdiv_treatment = 'gygi-baldereschi'
+  x_gamma_extrapolation = .false.
+/
+&ELECTRONS
+  conv_thr    = 1.0d-7
+  mixing_beta = 0.5d0
+/
+ATOMIC_SPECIES
+H 1.00 H_HSCV_PBE-1.0.UPF
+ATOMIC_POSITIONS {angstrom}
+H 0.0 0.0 0.0
+H 0.0 0.0 1.0
+H 0.0 0.0 2.0
+H 0.0 0.0 3.0
+K_POINTS Gamma
+
+&rdmft
+  do_rdmft               = .true.
+  rdmft_functional       = 'hf'
+  rdmft_solver_strategy  = 'alternating'
+  rdmft_occ_optimizer    = 'cg'
+  rdmft_orb_optimizer    = 'cg'
+  rdmft_constraint       = 'projected_gradient'
+  rdmft_outer_maxiter    = 4
+  rdmft_occ_maxiter      = 10
+  rdmft_orb_maxiter      = 0
+  rdmft_energy_tol       = 1.0d-8
+  rdmft_occ_grad_tol     = 1.0d-6
+  rdmft_occ_tol          = 1.0d-6
+  rdmft_occ_init_mode    = 'perturbed'
+  rdmft_occ_init_perturb = 0.05d0
+  rdmft_occ_ls_stepsize  = 0.5d0
+  rdmft_verbose          = 1
+/
