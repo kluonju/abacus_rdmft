@@ -337,7 +337,7 @@ void Veff_rdmft_local<TK, TR>::initialize_HR(const UnitCell* ucell_in, const Gri
             const int T2 = adjs.ntype[ad1];
             const int I2 = adjs.natom[ad1];
             const int iat2 = ucell_in->itia2iat(T2, I2);
-            if (paraV->get_row_size(iat1) <= 0 || paraV->get_col_size(iat2) <= 0)
+            if (paraV->get_nrow_atom(iat1) <= 0 || paraV->get_ncol_atom(iat2) <= 0)
                 continue;
             const ModuleBase::Vector3<int>& R_index2 = adjs.box[ad1];
             if (ucell_in->cal_dtau(iat1, iat2, R_index2).norm() * ucell_in->lat0

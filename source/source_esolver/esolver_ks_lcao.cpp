@@ -852,22 +852,13 @@ void ESolver_KS_LCAO<TK, TR>::after_scf(UnitCell& ucell, const int istep, const 
 #endif
 
     //! 2) output of lcao every few ionic steps
-#ifdef __RDMFT
     ModuleIO::ctrl_scf_lcao<TK, TR>(ucell,
             PARAM.inp, this->kv, this->pelec, this->dmat.dm, this->pv,
             this->gd, this->psi, hamilt_lcao, this->dftu, this->two_center_bundle_,
             this->orb_, this->pw_wfc, this->pw_rho, this->pw_big, this->sf,
             this->pw_rhod, this->locpp.vloc, this->solvent,
-            this->rdmft_solver, this->deepks, this->exx_nao,
-            this->conv_esolver, this->scf_nmax_flag, istep);
-#else
-    ModuleIO::ctrl_scf_lcao<TK, TR>(ucell,
-            PARAM.inp, this->kv, this->pelec, this->dmat.dm, this->pv,
-            this->gd, this->psi, hamilt_lcao, this->dftu, this->two_center_bundle_,
-            this->orb_, this->pw_wfc, this->pw_rho, this->pw_big, this->sf,
             this->deepks, this->exx_nao,
             this->conv_esolver, this->scf_nmax_flag, istep);
-#endif
 
     //! 3) Clean up RA, which is used to serach for adjacent atoms
     if (!PARAM.inp.cal_force && !PARAM.inp.cal_stress)
