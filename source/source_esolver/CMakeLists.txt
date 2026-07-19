@@ -24,6 +24,10 @@ if(ENABLE_LCAO)
       esolver_dm2rho.cpp
       esolver_double_xc.cpp
   )
+  if(ENABLE_RDMFT)
+    # New modular RDMFT esolver (LCAO backend around rdmft::EnergyGradient).
+    list(APPEND objects esolver_rdmft.cpp)
+  endif()
 endif()
 
 add_library(

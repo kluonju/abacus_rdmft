@@ -11,6 +11,9 @@
 #include "esolver_ks_lcao.h"
 #include "esolver_ks_lcao_tddft.h"
 #include "esolver_ks_lcaopw.h"
+#ifdef __RDMFT
+#include "esolver_rdmft.h"
+#endif
 #include "source_lcao/module_lr/esolver_lrtd_lcao.h"
 #include "source_base/module_external/blacs_connector.h"
 #endif
@@ -46,6 +49,10 @@ std::string determine_type()
         {
             esolver_type = "ksdft_pw";
         }
+        else if (PARAM.inp.esolver_type == "rdmft")
+        {
+            esolver_type = "rdmft_pw";
+        }
     }
     else if (PARAM.inp.basis_type == "lcao_in_pw")
     {
@@ -80,6 +87,10 @@ std::string determine_type()
         else if (PARAM.inp.esolver_type == "lr")
         {
             esolver_type = "lr_lcao";
+        }
+        else if (PARAM.inp.esolver_type == "rdmft")
+        {
+            esolver_type = "rdmft_lcao";
         }
 #else
         ModuleBase::WARNING_QUIT("ESolver", "Calculation involving numerical orbitals must be compiled with __LCAO");
@@ -248,6 +259,24 @@ ESolver* init_esolver(const Input_para& inp, UnitCell& ucell)
             }
         }
     }
+#ifdef __RDMFT
+    else if (esolver_type == "rdmft_lcao")
+    {
+        // New modular RDMFT esolver (LCAO backend around rdmft::EnergyGradient).
+        if (PARAM.globalv.gamma_only_local)
+        {
+            return new ESolver_RDMFT<double, double>();
+        }
+        else if (PARAM.inp.nspin < 4)
+        {
+            return new ESolver_RDMFT<std::complex<double>, double>();
+        }
+        else
+        {
+            return new ESolver_RDMFT<std::complex<double>, std::complex<double>>();
+        }
+    }
+#endif
     else if (esolver_type == "ksdft_lcao_tddft")
     {
         if (PARAM.inp.nspin < 4)
@@ -327,6 +356,16 @@ ESolver* init_esolver(const Input_para& inp, UnitCell& ucell)
         return p_esolver_lr;
     }
 #endif
+    else if (esolver_type == "rdmft_pw")
+    {
+        // The modular RDMFT core (source_rdmft) is basis independent and ready
+        // to drive a plane-wave backend; the PW RdmftBackend adapter (one-body,
+        // Hartree and exact-exchange oracle) is the remaining integration piece.
+        ModuleBase::WARNING_QUIT("ESolver",
+                                 "esolver_type=rdmft with basis_type=pw: the plane-wave RDMFT "
+                                 "backend is not yet wired. Use basis_type=lcao for RDMFT, or plug a "
+                                 "PW rdmft::RdmftBackend into ESolver_RDMFT.");
+    }
     else if (esolver_type == "ofdft")
     {
         return new ESolver_OF();

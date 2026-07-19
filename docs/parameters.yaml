@@ -53,6 +53,7 @@ parameters:
       * nep: Neuroevolution Potential
       * ks-lr: Kohn-Sham density functional theory + LR-TDDFT (Under Development Feature)
       * lr: LR-TDDFT with given KS orbitals (Under Development Feature)
+      * rdmft: reduced density matrix functional theory via the modular RDMFT esolver (basis_type = lcao; the SPG2/EBI occupation optimisers and the Stiefel orbital optimiser are configured through the rdmft_* keywords)
     default_value: ksdft
     unit: ""
     availability: ""
