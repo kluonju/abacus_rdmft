@@ -698,6 +698,15 @@ void EnergyGradient<TK, TR>::build_DM_xc(
     ModuleBase::matrix wk_g(nk_, nbands_);
     const bool use_override = (alpha_override > 0.0);
     const bool use_occ_weight_override = (occ_weight_override != nullptr);
+    // Trim near-empty bands (n < reg_eps) from the modified exchange density
+    // matrix, matching the PW/ACE backend (and qe's ACE path
+    // rdmft_xc_tsm_trim_wg_for_ace).  For non-HF functionals the regularised
+    // small-n tail of g(n) is nonzero at n=0 (e.g. Muller g(0) ~ (1-a) eps^a),
+    // so keeping empty states here injects a spurious occupied-empty exchange
+    // that the PW backend does not have.  Trimming both backends the same way
+    // makes the Muller-minus-HF energy basis-consistent.  HF is unaffected
+    // (g(n)=n already vanishes for empty bands).
+    const double exx_occ_trim = xc_func_.reg_eps();
     for (int ik = 0; ik < nk_; ++ik)
     {
         for (int ib = 0; ib < nbands_; ++ib)
@@ -715,6 +724,10 @@ void EnergyGradient<TK, TR>::build_DM_xc(
             else
             {
                 gn = xc_func_.g(n);
+            }
+            if (n < exx_occ_trim)
+            {
+                gn = 0.0;
             }
             wk_g(ik, ib) = rdmft_skip_occ_weight(gn) ? 0.0 : kv_->wk[ik] * gn;
         }
@@ -1879,8 +1892,10 @@ double EnergyGradient<TK, TR>::compute(
             {
                 E_xc_ += wk * mix_vx_E_acc[ik][ib] * 0.5;
             }
-            else if (!rdmft_skip_occ_weight(gn))
+            else if (n >= xc_func_.reg_eps() && !rdmft_skip_occ_weight(gn))
             {
+                // Near-empty bands are trimmed from exchange (see build_DM_xc):
+                // the modified DM excludes them, so the energy i-sum must too.
                 E_xc_ += wk * gn * vx_diag[ib] * 0.5; // factor 1/2 for exchange
             }
         }
@@ -1896,6 +1911,13 @@ double EnergyGradient<TK, TR>::compute(
             }
             else
             {
+                // Keep the regularised dg(n) tail in the gradient (NOT trimmed),
+                // matching the PW backend's grad_occ.  dg(n) = a*max(n,eps)^(a-1)
+                // is the finite driving force that lets initially-empty bands
+                // acquire fractional occupation; trimming it here would freeze
+                // them at n=0 and collapse Muller onto HF.  The energy/DM trim
+                // above still removes the spurious n<eps tail from the total
+                // energy, exactly as the PW/ACE backend does.
                 const double dgn = xc_func_.dg(n);
                 grad_occ[ik * nbands_ + ib] += wk * dgn * vx_diag[ib];
             }
@@ -1914,6 +1936,9 @@ double EnergyGradient<TK, TR>::compute(
             const double n = occ_flat[ik * nbands_ + ib_global];
             const double gn = xc_func_.g(n);
             const bool use_one_hart = !rdmft_skip_occ_weight(n);
+            // Orbital gradient keeps the regularised g(n) tail (NOT trimmed at
+            // reg_eps), matching the PW backend's riemannian_gradient; only the
+            // total-energy exchange (E_xc) and the modified DM are trimmed.
             const bool use_exx = is_mixed_exx
                                      ? !rdmft_skip_occ_weight(n)
                                      : !rdmft_skip_occ_weight(gn);
@@ -2335,8 +2360,9 @@ double EnergyGradient<TK, TR>::compute_energy(
             {
                 E_xc_ += wk * mix_vx_E_acc[ik][ib] * 0.5;
             }
-            else if (!rdmft_skip_occ_weight(gn))
+            else if (n >= xc_func_.reg_eps() && !rdmft_skip_occ_weight(gn))
             {
+                // Near-empty bands trimmed from exchange (see build_DM_xc).
                 E_xc_ += wk * gn * vx_diag[ib] * 0.5;
             }
         }
