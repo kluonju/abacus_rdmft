@@ -310,13 +310,26 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
     setmem_complex_op()(h_psi_real, 0, rhopw_dev->nrxx);
     setmem_complex_op()(density_real, 0, rhopw_dev->nrxx);
     setmem_complex_op()(density_recip, 0, rhopw_dev->npw);
-    // setmem_complex_op()(psi_all_real, 0, wfcpw->nrxx * GlobalV::NBANDS);
-    // std::map<std::pair<int, int>, bool> has_real;
     setmem_complex_op()(psi_nk_real, 0, wfcpw->nrxx);
     setmem_complex_op()(psi_mq_real, 0, wfcpw->nrxx);
     int nqs = kv->get_nkstot_full();
     int nspin_fac = PARAM.inp.nspin == 2 ? 2 : 1;
     int ispin = this->ik < (wfcpw->nks / nspin_fac) ? 0 : 1;
+
+    // Cache every target band |psi_nk> in real space ONCE.  The target bands
+    // (tmpsi_in) are constant across the source-band (m) and q-point loops, so
+    // transforming them here instead of inside the m loop removes an O(nbands)
+    // redundancy in the FFT count (previously each target band was FFT'd once
+    // per occupied source band).  This mirrors qe's exxbuff, which keeps the
+    // orbitals in real space across the Fock build.
+    const int nrxx = wfcpw->nrxx;
+    T* psi_n_real_all = nullptr;
+    resmem_complex_op()(psi_n_real_all, static_cast<size_t>(nbands) * nrxx);
+    for (int n_iband = 0; n_iband < nbands; n_iband++)
+    {
+        const T* psi_nk = tmpsi_in + n_iband * nbasis;
+        wfcpw->recip_to_real(ctx, psi_nk, psi_n_real_all + static_cast<size_t>(n_iband) * nrxx, this->ik);
+    }
 
     // ik fixed here, select band n
     for (int iq = 0; iq < nqs; iq++)
@@ -357,30 +370,19 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
 #endif
             for (int n_iband = 0; n_iband < nbands; n_iband++)
             {
-                const T* psi_nk = tmpsi_in + n_iband * nbasis;
-                // retrieve \psi_nk in real space
-                wfcpw->recip_to_real(ctx, psi_nk, psi_nk_real, this->ik);
-
+                // reuse the cached real-space target band (no re-FFT)
+                const T* psi_nk_real_c = psi_n_real_all + static_cast<size_t>(n_iband) * nrxx;
 
                 // direct multiplication in real space, \psi_nk(r) * \psi_mq(r)
-                cal_density_recip(psi_nk_real, psi_mq_real, ucell->omega);
+                cal_density_recip(psi_nk_real_c, psi_mq_real, ucell->omega);
 
                 mul_potential_op<T, Device>()(pot, density_recip, rhopw_dev->npw, wfcpw->nks, this->ik, iq);
 
                 // bring the potential back to real space
                 rho_recip2real(density_recip, density_real);
 
-                if (false)
-                {
-                    // do nothing
-                }
-                else
-                {
-                    vec_mul_vec_complex_op<T, Device>()(density_real, psi_mq_real, density_real, wfcpw->nrxx);
-                }
+                vec_mul_vec_complex_op<T, Device>()(density_real, psi_mq_real, density_real, wfcpw->nrxx);
 
-
-                Real wk_iq = kv->wk[iq];
                 Real wk_ik = kv->wk[this->ik];
 
                 Real tmp_scalar = wg_mqb / wk_ik / nqs; // wk_ik works for now, but wrong for symmetry.
@@ -388,15 +390,16 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
                 T* h_psi_nk = tmhpsi + n_iband * nbasis;
                 wfcpw->real_to_recip(ctx, density_real, h_psi_nk, this->ik, true, this->hybrid_alpha * tmp_scalar);
 
-
-            } // end of m_iband
-            setmem_complex_op()(density_real, 0, rhopw_dev->nrxx);
-            setmem_complex_op()(density_recip, 0, rhopw_dev->npw);
+                setmem_complex_op()(density_real, 0, rhopw_dev->nrxx);
+                setmem_complex_op()(density_recip, 0, rhopw_dev->npw);
+            } // end of n_iband
             setmem_complex_op()(psi_mq_real, 0, wfcpw->nrxx);
 
-        } // end of iq
+        } // end of m_iband
 
-    }
+    } // end of iq
+
+    delmem_complex_op()(psi_n_real_all);
 
     ModuleBase::timer::end("OperatorEXXPW", "act_op_kpar");
 

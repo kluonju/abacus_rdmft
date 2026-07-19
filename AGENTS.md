@@ -104,3 +104,37 @@ full mixed-line-ending hook only for intentional repository-wide normalization.
   acceptable when the header owns a value member that requires the complete type.
 - Keep historical-debt notes separate from new deterministic errors introduced
   by the PR.
+
+## Cursor Cloud specific instructions
+
+The ABACUS build dependencies are installed via `apt` in this environment
+(OpenMPI, OpenBLAS, LAPACK, ScaLAPACK, ELPA, FFTW3, cereal, libxc, gfortran,
+GoogleTest/GMock). The startup update script reinstalls them idempotently, so a
+fresh session already has everything needed to configure and build.
+
+### Building (non-obvious gotchas)
+
+- The system default `c++` is Clang and cannot link C++ programs here
+  (`/usr/bin/ld: cannot find -lstdc++`). Always configure with the GCC-backed
+  MPI wrapper by prefixing CMake with `CXX=mpicxx` (it wraps `g++` 13). Example:
+  `CXX=mpicxx cmake -B build -DENABLE_MPI=ON -DENABLE_LCAO=ON -DENABLE_ELPA=ON`.
+- `-DENABLE_RDMFT=ON` (which forces `-DENABLE_LIBRI=ON`) auto-downloads LibRI and
+  LibComm from GitHub via CMake `FetchContent` into `build/_deps` at configure
+  time (needs network). No manual install or `LIBRI_DIR`/`LIBCOMM_DIR` is needed.
+- A full build takes roughly 3-4 minutes on 4 cores. The executable name varies
+  with options (e.g. `build/abacus_basic_para`, `abacus_std_para`); `cmake
+  --install build` symlinks it to `abacus`.
+
+### Running and testing
+
+- Standard build/run/test commands live in `docs/quick_start/easy_install.md`
+  and the "Build And Test Entry Points" section above. Always
+  `export OMP_NUM_THREADS=1` for runtime and tests.
+- Hello-world DFT run: copy an example such as `examples/02_scf/01_pw_Si2` to a
+  scratch dir (fix `pseudo_dir` if needed), then
+  `OMP_NUM_THREADS=1 mpirun -n 4 <path>/abacus_basic_para`. Output goes to
+  `OUT.ABACUS/`; the converged energy is the `!FINAL_ETOT_IS ...` line in
+  `OUT.ABACUS/running_scf.log`.
+- Unit tests require `-DBUILD_TESTING=ON`. Build a specific `MODULE_*` target
+  (building all tests is slow), then run `ctest -R <pattern>` from `build/`.
+  GoogleTest/GMock come from system packages, so no download is required.

@@ -469,6 +469,8 @@ add_subdirectory(source_io/module_parameter)
 add_subdirectory(source_lcao/module_lr)
 
 if(ENABLE_RDMFT)
+  # New basis-independent RDMFT optimisation core (plane-wave + LCAO).
+  add_subdirectory(source_rdmft)
   add_subdirectory(source_lcao/module_rdmft)
 endif()
 
@@ -647,6 +649,11 @@ if(ENABLE_LCAO)
   if(USE_CUDA)
     target_link_libraries(${ABACUS_BIN_NAME} PRIVATE diag_cusolver)
   endif()
+endif()
+
+if(ENABLE_RDMFT)
+  # Basis-independent RDMFT core (used by the plane-wave and LCAO backends).
+  target_link_libraries(${ABACUS_BIN_NAME} PRIVATE rdmft_core)
 endif()
 
 if(ENABLE_MLALGO)

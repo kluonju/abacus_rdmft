@@ -7,12 +7,9 @@
 #include "source_cell/unitcell.h"                      // use UnitCell
 #include "source_estate/elecstate.h"                   // use elecstate::ElecStateLCAO<TK>
 #include "source_estate/module_dm/density_matrix.h"    // mohan add 2025-11-04
-#include "source_hamilt/module_surchem/surchem.h"       // use surchem (for dH veff pots)
+#include "source_hamilt/module_surchem/surchem.h"      // use surchem (for dH veff pots)
 #include "source_lcao/hamilt_lcao.h"                   // use hamilt::HamiltLCAO<TK, TR>
 #include "source_lcao/module_dftu/dftu.h"              // mohan add 20251107
-#ifdef __RDMFT
-#include "source_lcao/module_rdmft/rdmft.h" // use RDMFT codes
-#endif
 #include "source_lcao/setup_deepks.h"                  // for deepks, mohan add 20251008
 #include "source_lcao/setup_exx.h"                     // for exx, mohan add 20251008
 #include "source_psi/psi.h"                            // use Psi<TK>
@@ -23,7 +20,6 @@
 namespace ModuleIO
 {
 // in principle, we need to add const for all of the variables, mohan note 2025-06-05
-#ifdef __RDMFT
 template <typename TK, typename TR>
 void ctrl_scf_lcao(UnitCell& ucell,
                    const Input_para& inp,
@@ -44,30 +40,6 @@ void ctrl_scf_lcao(UnitCell& ucell,
                    const ModulePW::PW_Basis* pw_rhod,    // dense charge grid (for dH veff pots)
                    const ModuleBase::matrix& vloc,       // local pseudopotential (for dH veff pots)
                    surchem& solvent,                     // solvent model (for dH veff pots)
-                   rdmft::RDMFT<TK, TR>& rdmft_solver,   // for RDMFT
-                   Setup_DeePKS<TK>& deepks,
-                   Exx_NAO<TK>& exx_nao,
-                   const bool conv_esolver,
-                   const bool scf_nmax_flag,
-                   const int istep);
-#endif
-template <typename TK, typename TR>
-void ctrl_scf_lcao(UnitCell& ucell,
-                   const Input_para& inp,
-                   K_Vectors& kv,
-                   elecstate::ElecState* pelec,
-                   elecstate::DensityMatrix<TK, double>* dm, // mohan add 2025-11-04
-                   Parallel_Orbitals& pv,
-                   Grid_Driver& gd,
-                   psi::Psi<TK>* psi,
-                   hamilt::HamiltLCAO<TK, TR>* p_hamilt,
-                   Plus_U& dftu, // mohan add 2025-11-07
-                   TwoCenterBundle& two_center_bundle,
-                   LCAO_Orbitals& orb,
-                   const ModulePW::PW_Basis_K* pw_wfc,   // for berryphase
-                   const ModulePW::PW_Basis* pw_rho,     // for berryphase
-                   const ModulePW::PW_Basis_Big* pw_big, // for Wannier90
-                   const Structure_Factor& sf,           // for Wannier90
                    Setup_DeePKS<TK>& deepks,
                    Exx_NAO<TK>& exx_nao,
                    const bool conv_esolver,
