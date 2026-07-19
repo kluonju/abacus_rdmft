@@ -25,9 +25,15 @@ if(ENABLE_LCAO)
       esolver_double_xc.cpp
   )
   if(ENABLE_RDMFT)
-    # New modular RDMFT esolver (LCAO backend around rdmft::EnergyGradient).
+    # New modular RDMFT esolver (LCAO/LibRI backend around rdmft::EnergyGradient).
     list(APPEND objects esolver_rdmft.cpp)
   endif()
+endif()
+
+# Plane-wave RDMFT esolver (ACE exchange backend) is built when RDMFT is on
+# without LCAO, i.e. the ACE backend replaces the LibRI backend.
+if(ENABLE_RDMFT AND NOT ENABLE_LCAO)
+  list(APPEND objects esolver_rdmft_pw.cpp)
 endif()
 
 add_library(
@@ -38,7 +44,7 @@ add_library(
         ../source_pw/module_pwdft/exx_helper.h
 )
 
-if(ENABLE_LCAO AND ENABLE_RDMFT)
+if(ENABLE_RDMFT)
   target_compile_definitions(esolver PRIVATE __RDMFT)
 endif()
 

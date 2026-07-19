@@ -606,7 +606,7 @@
   - nep: Neuroevolution Potential
   - ks-lr: Kohn-Sham density functional theory + LR-TDDFT (Under Development Feature)
   - lr: LR-TDDFT with given KS orbitals (Under Development Feature)
-  - rdmft: reduced density matrix functional theory using the modular RDMFT esolver (`basis_type = lcao`). After a Kohn-Sham SCF provides the starting natural orbitals and occupations, the RDMFT energy is minimised over occupation numbers (SPG2 or EBI, selected by `rdmft_occ_optimizer`) and natural orbitals (Stiefel steepest-descent/CG/L-BFGS, selected by `rdmft_orb_optimizer`). The functional is set by `rdmft_functional`.
+  - rdmft: reduced density matrix functional theory using the modular RDMFT esolver. After a Kohn-Sham SCF provides the starting natural orbitals and occupations, the RDMFT energy is minimised over occupation numbers (SPG2, EBI or BGD, selected by `rdmft_occ_optimizer`) and, for LCAO, natural orbitals (Stiefel steepest-descent/CG/L-BFGS, selected by `rdmft_orb_optimizer`). The exchange backend follows the build: `basis_type = lcao` uses LibRI, `basis_type = pw` uses the plane-wave ACE operator (occupations optimised with orbitals frozen at the hybrid-KS solution). The functional is set by `rdmft_functional`.
 - **Default**: ksdft
 
 ### symmetry

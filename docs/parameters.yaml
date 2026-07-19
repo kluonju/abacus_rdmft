@@ -53,7 +53,7 @@ parameters:
       * nep: Neuroevolution Potential
       * ks-lr: Kohn-Sham density functional theory + LR-TDDFT (Under Development Feature)
       * lr: LR-TDDFT with given KS orbitals (Under Development Feature)
-      * rdmft: reduced density matrix functional theory via the modular RDMFT esolver (basis_type = lcao; the SPG2/EBI occupation optimisers and the Stiefel orbital optimiser are configured through the rdmft_* keywords)
+      * rdmft: reduced density matrix functional theory via the modular RDMFT esolver. With basis_type = lcao the exact exchange uses LibRI and both occupations (SPG2/EBI/BGD) and natural orbitals (Stiefel) are optimised; with basis_type = pw the exchange uses the plane-wave ACE backend and the occupations are optimised with the orbitals frozen at the hybrid-KS solution. Configured through the rdmft_* keywords.
     default_value: ksdft
     unit: ""
     availability: ""

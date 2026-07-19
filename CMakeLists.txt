@@ -32,9 +32,20 @@ option(ENABLE_MLALGO "Enable the machine learning algorithms" OFF)
 option(ENABLE_LCAO "Enable LCAO algorithm" ON)
 option(ENABLE_ELPA "Enable ELPA for LCAO" ON)
 option(ENABLE_LIBRI "Enable LibRI for hybrid functional" OFF)
-option(ENABLE_RDMFT "Enable RDMFT; enables LibRI (and LibComm) build dependencies" OFF)
-if(ENABLE_RDMFT AND ENABLE_LCAO)
-  set(ENABLE_LIBRI ON)
+option(ENABLE_RDMFT "Enable RDMFT (reduced density matrix functional theory)" OFF)
+# RDMFT exchange backend selection:
+#   * ENABLE_LCAO ON  -> use LibRI (numerical-atomic-orbital exact exchange).
+#   * ENABLE_LCAO OFF -> use the plane-wave ACE exchange backend by default.
+if(ENABLE_RDMFT)
+  if(ENABLE_LCAO)
+    set(ENABLE_LIBRI ON)
+    message(WARNING
+      "ENABLE_RDMFT with ENABLE_LCAO: RDMFT will use the LCAO/LibRI exact-exchange "
+      "backend. The plane-wave ACE backend is only built when ENABLE_LCAO=OFF.")
+  else()
+    message(STATUS
+      "ENABLE_RDMFT without LCAO: RDMFT will use the plane-wave ACE exact-exchange backend.")
+  endif()
 endif()
 option(EXX_DEV "Enable LibRI developing features" OFF)
 option(ENABLE_PEXSI "Enable PEXSI for LCAO" OFF)

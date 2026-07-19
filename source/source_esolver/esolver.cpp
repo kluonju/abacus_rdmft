@@ -17,6 +17,9 @@
 #include "source_lcao/module_lr/esolver_lrtd_lcao.h"
 #include "source_base/module_external/blacs_connector.h"
 #endif
+#if defined(__RDMFT) && !defined(__LCAO)
+#include "esolver_rdmft_pw.h"
+#endif
 #include "esolver_dp.h"
 #include "esolver_nep.h"
 #include "esolver_lj.h"
@@ -358,13 +361,20 @@ ESolver* init_esolver(const Input_para& inp, UnitCell& ucell)
 #endif
     else if (esolver_type == "rdmft_pw")
     {
-        // The modular RDMFT core (source_rdmft) is basis independent and ready
-        // to drive a plane-wave backend; the PW RdmftBackend adapter (one-body,
-        // Hartree and exact-exchange oracle) is the remaining integration piece.
+#if defined(__RDMFT) && !defined(__LCAO)
+        // Plane-wave RDMFT with the ACE exact-exchange backend.
+#if ((defined __CUDA) || (defined __ROCM))
+        if (PARAM.inp.device == "gpu")
+        {
+            return new ESolver_RDMFT_PW<std::complex<double>, base_device::DEVICE_GPU>();
+        }
+#endif
+        return new ESolver_RDMFT_PW<std::complex<double>, base_device::DEVICE_CPU>();
+#else
         ModuleBase::WARNING_QUIT("ESolver",
-                                 "esolver_type=rdmft with basis_type=pw: the plane-wave RDMFT "
-                                 "backend is not yet wired. Use basis_type=lcao for RDMFT, or plug a "
-                                 "PW rdmft::RdmftBackend into ESolver_RDMFT.");
+                                 "esolver_type=rdmft with basis_type=pw requires an RDMFT build "
+                                 "without LCAO (the ACE backend is selected when ENABLE_LCAO=OFF).");
+#endif
     }
     else if (esolver_type == "ofdft")
     {
