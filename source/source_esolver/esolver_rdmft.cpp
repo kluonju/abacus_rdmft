@@ -1,6 +1,9 @@
 #include "esolver_rdmft.h"
 
+#include "source_base/global_variable.h"
 #include "source_io/module_parameter/parameter.h"
+
+#include <complex>
 
 #ifdef __RDMFT
 #include "rdmft_backend_lcao.h"
@@ -11,6 +14,8 @@
 #include "source_rdmft/rdmft_params.h"
 
 #include <algorithm>
+#include <cctype>
+#include <cmath>
 #include <string>
 #include <vector>
 #endif
