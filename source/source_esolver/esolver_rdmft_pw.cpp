@@ -90,6 +90,87 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
         vxpsi_all_.assign(full, T(0.0, 0.0));
     }
 
+  private:
+    // Memoisation: a single Fock/ACE build per unique occupation serves the
+    // energy, the occupation gradient, and the orbital gradient.  A Strong-Wolfe
+    // line search evaluates both the energy and the gradient at each trial
+    // occupation, so without this every such point paid for two full ACE builds.
+    // Both caches are invalidated whenever the orbitals change (orb_retract /
+    // orb_restore), since the density, one-body diagonals and exchange all depend
+    // on the orbitals.  This mirrors qe-rdmft's xi/exxbuff reuse.
+    static bool occ_equal(const std::vector<double>& a, const std::vector<double>& b)
+    {
+        if (a.size() != b.size())
+        {
+            return false;
+        }
+        for (size_t i = 0; i < a.size(); ++i)
+        {
+            if (std::fabs(a[i] - b[i]) > 1.0e-14)
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Density + potential + one-body diagonals for this occupation (memoised).
+    void ensure_refresh(const std::vector<double>& occ)
+    {
+        if (refresh_valid_ && occ_equal(occ, refresh_occ_))
+        {
+            return;
+        }
+        refresh_state(occ);
+        refresh_occ_ = occ;
+        refresh_valid_ = true;
+    }
+
+    // Exact exchange for this occupation (memoised): builds the ACE projector
+    // once, then evaluates the exchange energy and the per-band exchange action
+    // (vx_diag_, vxpsi_all_) from the same build.
+    void ensure_exchange(const std::vector<double>& occ)
+    {
+        if (exx_valid_ && occ_equal(occ, exx_occ_))
+        {
+            return;
+        }
+        hamilt::OperatorEXXPW<T, Device>* op = prepare_exx(occ); // one ACE build
+        exx_energy_ = hybrid_alpha_ * exx_helper_->cal_exx_energy(psi_);
+        std::fill(vx_diag_.begin(), vx_diag_.end(), 0.0);
+        std::fill(vxpsi_all_.begin(), vxpsi_all_.end(), T(0.0, 0.0));
+        if (op != nullptr)
+        {
+            const int nbasis = psi_->get_nbasis();
+            std::vector<T> vxpsi(static_cast<size_t>(nbasis) * nbands_);
+            for (int ik = 0; ik < nks_; ++ik)
+            {
+                p_hamilt_->updateHk(ik);
+                psi_->fix_k(ik);
+                T* psi_k = psi_->get_pointer();
+                const int npw = psi_->get_current_nbas();
+                std::fill(vxpsi.begin(), vxpsi.end(), T(0.0, 0.0));
+                op->act(nbands_, nbasis, 1, psi_k, vxpsi.data(), npw, true);
+                const size_t koff = static_cast<size_t>(ik) * nbands_ * nbasis;
+                store_action(vxpsi, psi_k, npw, koff, vxpsi_all_, vx_diag_, ik);
+            }
+#ifdef __MPI
+            Parallel_Reduce::reduce_pool(vx_diag_.data(), static_cast<int>(vx_diag_.size()));
+#endif
+        }
+        exx_occ_ = occ;
+        exx_valid_ = true;
+    }
+
+    // Invalidate the per-occupation caches (call whenever the orbitals change).
+    void invalidate_state_cache()
+    {
+        refresh_valid_ = false;
+        exx_valid_ = false;
+    }
+
+  public:
+
     ~RdmftBackendPW() override
     {
         // Restore the EXX operator's weight pointer (we repointed it at wg_x_).
@@ -104,7 +185,7 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
 
     double total_energy(const std::vector<double>& occ) override
     {
-        refresh_state(occ);
+        ensure_refresh(occ);
         // E_bandlike = sum w_k n_ik <psi|H_KS(noEXX)|psi>.
         double e_bandlike = 0.0;
         for (int ik = 0; ik < nks_; ++ik)
@@ -123,14 +204,15 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
         // reduces to the HF assembly but stays correct if any semilocal V_xc is
         // present.
         const double vtxc = pelec_->f_en.vtxc;
-        const double e_x = exchange_energy(occ);
+        ensure_exchange(occ);
+        const double e_x = exx_energy_;
         return e_bandlike - e_h - vtxc + e_x + e_ewald;
     }
 
     void grad_occ(const std::vector<double>& occ, std::vector<double>& grad) override
     {
-        refresh_state(occ);
-        compute_exchange_action(occ); // fills vx_diag_ + vxpsi_all_
+        ensure_refresh(occ);
+        ensure_exchange(occ); // fills vx_diag_ + vxpsi_all_ (memoised)
         grad.assign(con_.size(), 0.0);
         const int nch = xc_.n_channels();
         for (int ik = 0; ik < nks_; ++ik)
@@ -157,8 +239,8 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
 
     double riemannian_gradient(const std::vector<double>& occ, std::vector<double>& gR) override
     {
-        refresh_state(occ);            // fills hpsi_all_
-        compute_exchange_action(occ);  // fills vxpsi_all_
+        ensure_refresh(occ);            // fills hpsi_all_ (memoised)
+        ensure_exchange(occ);           // fills vxpsi_all_ (memoised)
         gR.assign(orb_dim(), 0.0);
         const int nbasis = psi_->get_nbasis();
         const int npwx = nbasis / npol_;
@@ -259,6 +341,7 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
             }
             orthonormalize_k(Cbuf, npwk);
         }
+        invalidate_state_cache(); // orbitals changed
     }
 
     void orb_save() override
@@ -274,6 +357,7 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
     {
         psi_->fix_k(0);
         std::copy(saved_psi_.begin(), saved_psi_.end(), psi_->get_pointer());
+        invalidate_state_cache(); // orbitals changed
     }
 
   private:
@@ -580,6 +664,13 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
     std::vector<T> hpsi_all_;
     std::vector<T> vxpsi_all_;
     std::vector<T> saved_psi_;
+
+    // Per-occupation memoisation (invalidated when the orbitals change).
+    bool refresh_valid_ = false;
+    bool exx_valid_ = false;
+    std::vector<double> refresh_occ_;
+    std::vector<double> exx_occ_;
+    double exx_energy_ = 0.0;
 };
 
 rdmft_core::OccOptimizerType map_occ_optimizer_pw(const std::string& s)
