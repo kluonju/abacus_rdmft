@@ -1,6 +1,7 @@
 #include "esolver_rdmft_pw.h"
 
 #include "source_base/global_variable.h"
+#include "source_base/tool_quit.h"
 #include "source_io/module_parameter/parameter.h"
 
 #ifdef __RDMFT
@@ -114,8 +115,15 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
         }
         const double e_h = pelec_->f_en.hartree_energy;
         const double e_ewald = pelec_->f_en.ewald_energy;
+        // E_bandlike = E_one + 2 E_H + vtxc (Veff = V_loc + V_H + V_xc), so the
+        // RDMFT energy (which replaces semilocal XC by the natural-orbital
+        // functional) is E_one + E_H + E_x + E_ewald = E_bandlike - E_H - vtxc
+        // + E_x + E_ewald.  vtxc = 0 in the pure-HF XC context used here, so this
+        // reduces to the HF assembly but stays correct if any semilocal V_xc is
+        // present.
+        const double vtxc = pelec_->f_en.vtxc;
         const double e_x = exchange_energy(occ);
-        return e_bandlike - e_h + e_x + e_ewald;
+        return e_bandlike - e_h - vtxc + e_x + e_ewald;
     }
 
     void grad_occ(const std::vector<double>& occ, std::vector<double>& grad) override
@@ -618,6 +626,13 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
     if (psi == nullptr)
     {
         return;
+    }
+
+    if (PARAM.inp.nspin >= 2)
+    {
+        ModuleBase::WARNING_QUIT("ESolver_RDMFT_PW",
+                                 "collinear/non-collinear (nspin>=2) RDMFT with the plane-wave ACE "
+                                 "backend is under development; only nspin=1 is validated so far.");
     }
 
     rdmft_core::XcType xc_type = rdmft_core::XcType::HF;

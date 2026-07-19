@@ -1,6 +1,7 @@
 #include "esolver_rdmft.h"
 
 #include "source_base/global_variable.h"
+#include "source_base/tool_quit.h"
 #include "source_io/module_parameter/parameter.h"
 
 #include <complex>
@@ -76,6 +77,13 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     if (this->psi == nullptr)
     {
         return;
+    }
+
+    if (PARAM.inp.nspin >= 2)
+    {
+        ModuleBase::WARNING_QUIT("ESolver_RDMFT",
+                                 "collinear/non-collinear (nspin>=2) RDMFT is under development; "
+                                 "only nspin=1 (gamma-only and multi-k) is validated so far.");
     }
 
     const Input_para& inp = PARAM.inp;
