@@ -407,12 +407,13 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
 
     void set_exchange_weights(const std::vector<double>& occ)
     {
-        // Near-empty bands are trimmed from the modified density matrix so the
-        // regularised small-n tail of w_t(n) (which is nonzero at n=0) cannot
-        // leak empty states into the ACE build and make its Cholesky singular.
-        // Uses the qe-rdmft regularisation parameter rdmft_reg_eps as the
-        // threshold (mirrors rdmft_xc_tsm_trim_wg_for_ace: n < rdmft_reg_eps).
-        const double occ_trim = xc_.reg_eps();
+        // Modified-DM exchange weights wg_x = wk * max_t w_t(n), exactly as
+        // qe-rdmft's rdmft_xc_set_exx_wg (max over channels of the coupling
+        // weight w_t(n)).  Following qe, the main energy/gradient ACE build is
+        // NOT trimmed: the regularised small-n tail of w_t(n) (w_t(0) != 0 for
+        // Muller/Power) is kept for every band, so the PW/ACE exchange matches
+        // qe's plane-wave ACE.  (qe only trims near-empty bands in its TSM/DOS
+        // probe path, rdmft_xc_tsm_trim_wg_for_ace, not here.)
         const int nch = xc_.n_channels();
         for (int ik = 0; ik < nks_; ++ik)
         {
@@ -420,12 +421,9 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
             {
                 const double n = occ[ik * nbands_ + ib];
                 double w = 0.0;
-                if (n >= occ_trim)
+                for (int it = 1; it <= nch; ++it)
                 {
-                    for (int it = 1; it <= nch; ++it)
-                    {
-                        w = std::max(w, xc_.channel(it, n).w);
-                    }
+                    w = std::max(w, xc_.channel(it, n).w);
                 }
                 wg_x_(ik, ib) = con_.wk[ik] * w;
             }
