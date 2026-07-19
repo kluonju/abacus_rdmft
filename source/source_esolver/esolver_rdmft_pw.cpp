@@ -73,7 +73,8 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
             // the modified-DM weight is kv.wk * w_t(n).  Multiplying by an extra
             // spin factor would double-count it and break nonlinear functionals.
             con_.wk[ik] = kv.wk[ik];
-            con_.isk[ik] = (nspin == 2 && ik >= nks_ / 2) ? 2 : 1;
+            // kv.isk is 0-based (0=up, 1=down); OccConstraints uses 1/2.
+            con_.isk[ik] = (ik < static_cast<int>(kv.isk.size())) ? kv.isk[ik] + 1 : 1;
         }
         con_.n_target = nelec;
         con_.fix_magnetization = fix_mag;
@@ -262,10 +263,16 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
 
     void orb_save() override
     {
+        // The per-k loops above leave psi's cursor (current_k / psi_bias) at the
+        // last k-point, so get_pointer() no longer points at the buffer start.
+        // Reset it before copying the full [0, size()) buffer, otherwise this
+        // reads/writes past the allocation for nks_ > 1 (multi-k or nspin=2).
+        psi_->fix_k(0);
         saved_psi_.assign(psi_->get_pointer(), psi_->get_pointer() + psi_->size());
     }
     void orb_restore() override
     {
+        psi_->fix_k(0);
         std::copy(saved_psi_.begin(), saved_psi_.end(), psi_->get_pointer());
     }
 
@@ -628,11 +635,11 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
         return;
     }
 
-    if (PARAM.inp.nspin >= 2)
+    if (PARAM.inp.nspin == 4)
     {
         ModuleBase::WARNING_QUIT("ESolver_RDMFT_PW",
-                                 "collinear/non-collinear (nspin>=2) RDMFT with the plane-wave ACE "
-                                 "backend is under development; only nspin=1 is validated so far.");
+                                 "non-collinear (nspin=4) RDMFT with the plane-wave ACE backend is "
+                                 "under development.");
     }
 
     rdmft_core::XcType xc_type = rdmft_core::XcType::HF;
@@ -641,10 +648,41 @@ void ESolver_RDMFT_PW<T, Device>::after_scf(UnitCell& ucell, const int istep, co
     const rdmft_core::RdmftXC xc(xc_type, alpha, 1.0e-8);
 
     const int nspin = PARAM.inp.nspin;
-    const bool fix_mag = (nspin == 2) && (std::fabs(inp.nupdown) > 1.0e-12);
     const double nelec = PARAM.inp.nelec;
-    const double nelec_up = 0.5 * (nelec + inp.nupdown);
-    const double nelec_down = 0.5 * (nelec - inp.nupdown);
+    double nelec_up = 0.5 * nelec;
+    double nelec_down = 0.5 * nelec;
+    bool fix_mag = false;
+    if (nspin == 2)
+    {
+        // Collinear RDMFT: the exchange functional is spin-diagonal, so the
+        // per-spin electron numbers are conserved independently.  Derive the two
+        // targets from the converged KS reference occupations rather than from
+        // inp.nupdown (which may be auto-filled internally).
+        double nup = 0.0;
+        double ndw = 0.0;
+        const int nkloc = this->pelec->wg.nr;
+        const int nbloc = this->pelec->wg.nc;
+        for (int ik = 0; ik < nkloc; ++ik)
+        {
+            const int is = (ik < static_cast<int>(this->kv.isk.size())) ? this->kv.isk[ik] : 0;
+            double s = 0.0;
+            for (int ib = 0; ib < nbloc; ++ib)
+            {
+                s += this->pelec->wg(ik, ib);
+            }
+            if (is == 0)
+            {
+                nup += s;
+            }
+            else
+            {
+                ndw += s;
+            }
+        }
+        nelec_up = nup;
+        nelec_down = ndw;
+        fix_mag = true;
+    }
     const double hybrid_alpha = GlobalC::exx_info.info_global.hybrid_alpha;
 
     RdmftBackendPW<T, Device> backend(static_cast<hamilt::Hamilt<T, Device>*>(this->p_hamilt),

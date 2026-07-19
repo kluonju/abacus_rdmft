@@ -79,11 +79,10 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
         return;
     }
 
-    if (PARAM.inp.nspin >= 2)
+    if (PARAM.inp.nspin == 4)
     {
         ModuleBase::WARNING_QUIT("ESolver_RDMFT",
-                                 "collinear/non-collinear (nspin>=2) RDMFT is under development; "
-                                 "only nspin=1 (gamma-only and multi-k) is validated so far.");
+                                 "non-collinear (nspin=4) RDMFT is under development.");
     }
 
     const Input_para& inp = PARAM.inp;
@@ -116,10 +115,52 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
 
     // --- electron-number targets ------------------------------------------
     const int nspin = PARAM.inp.nspin;
-    const bool fix_mag = (nspin == 2) && (std::fabs(inp.nupdown) > 1.0e-12);
     const double nelec = PARAM.inp.nelec;
-    const double nelec_up = 0.5 * (nelec + inp.nupdown);
-    const double nelec_down = 0.5 * (nelec - inp.nupdown);
+    double nelec_up = 0.5 * nelec;
+    double nelec_down = 0.5 * nelec;
+    bool fix_mag = false;
+    if (nspin == 2)
+    {
+        // Collinear RDMFT: the exact-exchange (and power) functional is
+        // spin-diagonal, so the per-spin electron numbers are conserved
+        // independently during the occupation optimisation.  Derive the two
+        // targets from the converged KS reference occupations rather than from
+        // inp.nupdown, which may be resolved internally in a way that does not
+        // reflect the actual spin populations (e.g. auto-filled defaults).
+        double nup = 0.0;
+        double ndw = 0.0;
+        const int nkloc = this->pelec->wg.nr;
+        const int nbloc = this->pelec->wg.nc;
+        for (int ik = 0; ik < nkloc; ++ik)
+        {
+            const int is = (ik < static_cast<int>(this->kv.isk.size())) ? this->kv.isk[ik] : 0;
+            double s = 0.0;
+            for (int ib = 0; ib < nbloc; ++ib)
+            {
+                s += this->pelec->wg(ik, ib);
+            }
+            if (is == 0)
+            {
+                nup += s;
+            }
+            else
+            {
+                ndw += s;
+            }
+        }
+        nelec_up = nup;
+        nelec_down = ndw;
+        fix_mag = true;
+    }
+
+    // The KS solve leaves psi's internal cursor (current_k / psi_bias) pointing
+    // at the last processed spin/k block.  The RDMFT engine and backend index
+    // k-blocks explicitly from the buffer start (psi(ik,0,0)) but the backend's
+    // flat save/restore helpers use get_pointer()+size(); a non-zero psi_bias
+    // would make those read one block past the buffer (harmless for nspin=1
+    // where current_k stays 0, but an out-of-bounds access for nspin>=2).  Reset
+    // the cursor so get_pointer() == buffer start before any backend copies.
+    this->psi->fix_k(0);
 
     // --- LCAO backend around the validated energy/gradient engine ----------
     ModuleESolver::RdmftBackendLCAO<TK, TR> backend(this->eg_, *(this->psi), this->kv, nspin, nelec,

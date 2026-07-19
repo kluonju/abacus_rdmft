@@ -92,7 +92,8 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
             // factor 2), so n = wg/kv.wk is the per-spin natural occupation in
             // [0,1] and equals the occupation EnergyGradient expects (wg/wk).
             con_.wk[ik] = kv.wk[kslot];
-            con_.isk[ik] = (nspin == 2 && ik >= nks) ? 2 : 1;
+            // kv.isk is 0-based (0=up, 1=down); OccConstraints uses 1/2.
+            con_.isk[ik] = (ik < static_cast<int>(kv.isk.size())) ? kv.isk[ik] + 1 : 1;
         }
         con_.n_target = nelec;
         con_.fix_magnetization = fix_mag;
