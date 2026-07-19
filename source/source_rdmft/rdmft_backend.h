@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_BACKEND_H
-#define SOURCE_RDMFT_RDMFT_BACKEND_H
+#ifndef RDMFT_BACKEND_H
+#define RDMFT_BACKEND_H
 
 #include "rdmft_occ_constraints.h"
 
@@ -96,4 +96,4 @@ class RdmftBackend
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_BACKEND_H
+#endif // RDMFT_BACKEND_H

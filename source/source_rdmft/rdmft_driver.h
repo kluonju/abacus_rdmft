@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_DRIVER_H
-#define SOURCE_RDMFT_RDMFT_DRIVER_H
+#ifndef RDMFT_DRIVER_H
+#define RDMFT_DRIVER_H
 
 #include "rdmft_backend.h"
 #include "rdmft_params.h"
@@ -36,4 +36,4 @@ class RdmftDriver
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_DRIVER_H
+#endif // RDMFT_DRIVER_H

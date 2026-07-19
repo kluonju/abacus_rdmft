@@ -340,6 +340,137 @@ void OccConstraints::proximal_project_uniform(std::vector<double>& occ) const
     }
 }
 
+int OccConstraints::fermi_boundary_ib(const std::vector<double>& occ, int ik) const
+{
+    const int base = ik * nbnd;
+    for (int ib = 0; ib < nbnd; ++ib)
+    {
+        if (occ[base + ib] < 0.5)
+        {
+            return ib - 1; // last band with n >= 0.5 (may be -1)
+        }
+    }
+    int last_occ = -1;
+    for (int ib = 0; ib < nbnd; ++ib)
+    {
+        if (occ[base + ib] > 1.0e-8)
+        {
+            last_occ = ib;
+        }
+    }
+    return last_occ;
+}
+
+void OccConstraints::initialize_occupations(std::vector<double>& occ, int mode, double delta,
+                                            int nbands_top) const
+{
+    const int K = std::min(nbands_top, nbnd);
+    // mode: 0=ks (no transform), 1=perturbed, 2=binary, 3=uniform.
+    if (mode == 1 && delta > 0.0)
+    {
+        if (K > 0)
+        {
+            for (int ik = 0; ik < nks; ++ik)
+            {
+                const int ibF = fermi_boundary_ib(occ, ik);
+                const int base = ik * nbnd;
+                for (int t = 0; t < K; ++t)
+                {
+                    const int above = ibF + 1 + t;
+                    const int below = ibF - t;
+                    if (above >= 0 && above < nbnd)
+                    {
+                        double& v = occ[base + above];
+                        v += (v < 0.5) ? delta : -delta;
+                    }
+                    if (below >= 0 && below < nbnd && below != above)
+                    {
+                        double& v = occ[base + below];
+                        v += (v < 0.5) ? delta : -delta;
+                    }
+                }
+            }
+        }
+        else
+        {
+            for (int i = 0; i < size(); ++i)
+            {
+                occ[i] = (occ[i] >= 0.5) ? std::max(delta, occ[i] - delta)
+                                         : std::min(1.0 - delta, occ[i] + delta);
+            }
+        }
+    }
+    else if (mode == 2 && K > 0 && delta > 0.0)
+    {
+        for (int ik = 0; ik < nks; ++ik)
+        {
+            std::vector<double> nks_col(nbnd);
+            const int base = ik * nbnd;
+            for (int ib = 0; ib < nbnd; ++ib)
+            {
+                nks_col[ib] = occ[base + ib];
+            }
+            const int ibF = fermi_boundary_ib(occ, ik);
+            for (int t = 0; t < K; ++t)
+            {
+                const int above = ibF + 1 + t;
+                const int below = ibF - t;
+                if (above >= 0 && above < nbnd)
+                {
+                    occ[base + above] = (nks_col[above] < 0.5) ? delta : 1.0 - delta;
+                }
+                if (below >= 0 && below < nbnd && below != above)
+                {
+                    occ[base + below] = (nks_col[below] < 0.5) ? delta : 1.0 - delta;
+                }
+            }
+        }
+    }
+    else if (mode == 3 && K > 0)
+    {
+        for (int ik = 0; ik < nks; ++ik)
+        {
+            const int ibF = fermi_boundary_ib(occ, ik);
+            const int base = ik * nbnd;
+            double sum = 0.0;
+            int count = 0;
+            for (int t = 0; t < K; ++t)
+            {
+                const int above = ibF + 1 + t;
+                const int below = ibF - t;
+                if (above >= 0 && above < nbnd)
+                {
+                    sum += occ[base + above];
+                    ++count;
+                }
+                if (below >= 0 && below < nbnd && below != above)
+                {
+                    sum += occ[base + below];
+                    ++count;
+                }
+            }
+            if (count > 0)
+            {
+                const double avg = sum / count;
+                for (int t = 0; t < K; ++t)
+                {
+                    const int above = ibF + 1 + t;
+                    const int below = ibF - t;
+                    if (above >= 0 && above < nbnd)
+                    {
+                        occ[base + above] = avg;
+                    }
+                    if (below >= 0 && below < nbnd && below != above)
+                    {
+                        occ[base + below] = avg;
+                    }
+                }
+            }
+        }
+    }
+    proximal_project(occ);
+}
+
 double OccConstraints::pg_map_grad_inf(const std::vector<double>& occ,
                                        const std::vector<double>& grad, double alpha) const
 {

@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_OCC_OPTIMIZER_H
-#define SOURCE_RDMFT_RDMFT_OCC_OPTIMIZER_H
+#ifndef RDMFT_OCC_OPTIMIZER_H
+#define RDMFT_OCC_OPTIMIZER_H
 
 #include "rdmft_backend.h"
 #include "rdmft_params.h"
@@ -48,8 +48,10 @@ class OccOptimizer
                             std::vector<double>& occ, double& etot);
     OccBlockResult run_ebi(RdmftBackend& backend, const RdmftParams& params,
                            std::vector<double>& occ, double& etot);
+    OccBlockResult run_bgd(RdmftBackend& backend, const RdmftParams& params,
+                           std::vector<double>& occ, double& etot);
 };
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_OCC_OPTIMIZER_H
+#endif // RDMFT_OCC_OPTIMIZER_H

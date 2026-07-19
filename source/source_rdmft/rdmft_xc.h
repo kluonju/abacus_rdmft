@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_XC_H
-#define SOURCE_RDMFT_RDMFT_XC_H
+#ifndef RDMFT_XC_H
+#define RDMFT_XC_H
 
 #include "rdmft_params.h"
 
@@ -75,4 +75,4 @@ class RdmftXC
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_XC_H
+#endif // RDMFT_XC_H

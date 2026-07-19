@@ -1,5 +1,5 @@
-#ifndef SOURCE_ESOLVER_RDMFT_BACKEND_LCAO_H
-#define SOURCE_ESOLVER_RDMFT_BACKEND_LCAO_H
+#ifndef RDMFT_BACKEND_LCAO_H
+#define RDMFT_BACKEND_LCAO_H
 
 #include "source_rdmft/rdmft_backend.h"
 #include "source_lcao/module_rdmft/rdmft_energy_gradient.h"
@@ -205,4 +205,4 @@ class RdmftBackendLCAO : public rdmft::RdmftBackend
 
 } // namespace ModuleESolver
 
-#endif // SOURCE_ESOLVER_RDMFT_BACKEND_LCAO_H
+#endif // RDMFT_BACKEND_LCAO_H

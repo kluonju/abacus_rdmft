@@ -238,6 +238,60 @@ TEST(OccOptimizer, EBIConvergesToInteriorKKT)
     EXPECT_LT(max_diff, 1.0e-3);
 }
 
+TEST(OccOptimizer, BGDConvergesToKKT)
+{
+    OccConstraints con = make_constraints(5, 2, 3.0);
+    std::vector<double> t = {0.7, 0.3, 0.9, 0.1, 0.5, 0.6, 0.4, 0.8, 0.2, 0.55};
+    std::vector<double> k = {1.0, 1.5, 0.8, 2.0, 1.0, 1.2, 0.9, 1.1, 1.3, 1.0};
+    std::vector<double> nref = kkt_reference(con, t, k, 3.0);
+
+    QuadraticOccBackend backend(con, t, k);
+    RdmftParams params;
+    params.occ_optimizer = OccOptimizerType::BGD;
+    params.occ_maxiter = 400;
+    params.occ_tol = 1.0e-10;
+    params.bgd_tau = 1.0;
+
+    std::vector<double> occ(con.size(), 0.6);
+    double etot = 0.0;
+    OccOptimizer opt;
+    opt.run(backend, params, occ, etot);
+
+    EXPECT_NEAR(con.weighted_sum(occ), 3.0, 1.0e-7);
+    double max_diff = 0.0;
+    for (int i = 0; i < con.size(); ++i)
+    {
+        max_diff = std::max(max_diff, std::fabs(occ[i] - nref[i]));
+    }
+    EXPECT_LT(max_diff, 1.0e-3);
+}
+
+TEST(OccConstraints, InitModesStayFeasible)
+{
+    OccConstraints con = make_constraints(4, 2, 3.0);
+    // KS-seeded occupations (n = wg/wk); here directly given.
+    const std::vector<double> seed = {0.95, 0.9, 0.1, 0.05, 0.92, 0.88, 0.08, 0.04};
+    for (int mode = 0; mode <= 3; ++mode)
+    {
+        std::vector<double> occ = seed;
+        con.initialize_occupations(occ, mode, 1.0e-2, 2);
+        for (double v : occ)
+        {
+            EXPECT_GE(v, -1.0e-12);
+            EXPECT_LE(v, 1.0 + 1.0e-12);
+        }
+        EXPECT_NEAR(con.weighted_sum(occ), 3.0, 1.0e-8) << "mode=" << mode;
+    }
+}
+
+TEST(OccConstraints, FermiBoundary)
+{
+    OccConstraints con = make_constraints(4, 1, 2.0);
+    std::vector<double> occ = {0.99, 0.98, 0.02, 0.01};
+    // First band below 0.5 is index 2 -> boundary = 1.
+    EXPECT_EQ(con.fermi_boundary_ib(occ, 0), 1);
+}
+
 TEST(OccOptimizer, SPG2SpinResolvedConstraint)
 {
     OccConstraints con;

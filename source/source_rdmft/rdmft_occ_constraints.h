@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_OCC_CONSTRAINTS_H
-#define SOURCE_RDMFT_RDMFT_OCC_CONSTRAINTS_H
+#ifndef RDMFT_OCC_CONSTRAINTS_H
+#define RDMFT_OCC_CONSTRAINTS_H
 
 #include <vector>
 
@@ -45,6 +45,20 @@ struct OccConstraints
     void proximal_project(std::vector<double>& occ) const;
     //! Uniform-shift proximal projector P_u (auxiliary).
     void proximal_project_uniform(std::vector<double>& occ) const;
+
+    // --- occupation initialisation ------------------------------------------
+    //! Transform an initial KS-seeded occupation vector (n = wg/wk already
+    //! filled by the caller) according to an init mode, then proximal-project
+    //! onto the feasible set.  mode: 0=ks, 1=perturbed, 2=binary, 3=uniform
+    //! (see rdmft::OccInitMode).  delta is the perturbation, nbands_top the
+    //! Fermi-window half-width (0 => all bands for the legacy perturbed mode).
+    //! Ported from qe-rdmft/rdmft_energy.f90::rdmft_initial_n_from_ks.
+    void initialize_occupations(std::vector<double>& occ, int mode, double delta,
+                                int nbands_top) const;
+
+    //! 1-based-equivalent Fermi boundary band index (0-based here) for one
+    //! k-column: last band before the first n < 0.5, else last n > 1e-8.
+    int fermi_boundary_ib(const std::vector<double>& occ, int ik) const;
 
     // --- SPG2 stopping map and KKT residual ---------------------------------
     //! ||n - P_w(n - alpha*grad)||_inf.
@@ -93,4 +107,4 @@ struct OccConstraints
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_OCC_CONSTRAINTS_H
+#endif // RDMFT_OCC_CONSTRAINTS_H

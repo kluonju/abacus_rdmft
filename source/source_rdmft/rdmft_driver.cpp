@@ -14,8 +14,10 @@ DriverResult RdmftDriver::solve(RdmftBackend& backend, const RdmftParams& params
     DriverResult res;
     const OccConstraints& con = backend.occ_constraints();
 
-    // Seed a feasible occupation vector.
-    con.proximal_project(occ);
+    // Apply the occupation-init mode to the KS-seeded vector, then project it
+    // onto the feasible set (box + electron-number constraint).
+    con.initialize_occupations(occ, static_cast<int>(params.occ_init_mode), params.occ_init_perturb,
+                               params.occ_init_nbands_top);
     etot = backend.total_energy(occ);
 
     OccOptimizer occ_opt;

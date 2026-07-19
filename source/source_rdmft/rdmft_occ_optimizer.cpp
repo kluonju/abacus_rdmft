@@ -38,6 +38,10 @@ OccBlockResult OccOptimizer::run(RdmftBackend& backend, const RdmftParams& param
     {
         return run_ebi(backend, params, occ, etot);
     }
+    if (params.occ_optimizer == OccOptimizerType::BGD)
+    {
+        return run_bgd(backend, params, occ, etot);
+    }
     return run_spg2(backend, params, occ, etot);
 }
 
@@ -347,6 +351,216 @@ OccBlockResult OccOptimizer::run_ebi(RdmftBackend& backend, const RdmftParams& p
         etot = backend.total_energy(occ);
 
         const double sum_dn = sum_abs_diff(occ, n_save);
+        if (params.occ_tol > 0.0 && sum_dn < params.occ_tol)
+        {
+            res.converged = true;
+            break;
+        }
+    }
+
+    res.energy = etot;
+    return res;
+}
+
+// ----------------------------------------------------------------------------
+// BGD occupation block (ELK rdmvaryn reduced gradient + Armijo line search)
+// ----------------------------------------------------------------------------
+namespace
+{
+// gamma_ik(kappa) = t*(1-n) if t>0 else t*n, with t = dedn_ik - kappa.
+inline double bgd_gamma(double dedn, double n, double kappa)
+{
+    const double t = dedn - kappa;
+    return (t > 0.0) ? t * (1.0 - n) : t * n;
+}
+
+// Solve kappa so that sum_ik w_k gamma_ik(kappa) = 0 over the selected spin
+// channel (monotone non-increasing in kappa -> bisection).
+double bgd_solve_kappa(const OccConstraints& con, const std::vector<double>& dedn,
+                       const std::vector<double>& n, int ispin, bool use_filter)
+{
+    auto gs = [&](double kappa) {
+        double s = 0.0;
+        for (int ik = 0; ik < con.nks; ++ik)
+        {
+            if (use_filter && con.isk[ik] != ispin)
+            {
+                continue;
+            }
+            const int b = ik * con.nbnd;
+            for (int ib = 0; ib < con.nbnd; ++ib)
+            {
+                s += con.wk[ik] * bgd_gamma(dedn[b + ib], n[b + ib], kappa);
+            }
+        }
+        return s;
+    };
+    double lo = -1.0e6;
+    double hi = 1.0e6;
+    // gs is non-increasing: gs(lo) >= 0 >= gs(hi).
+    for (int it = 0; it < 200; ++it)
+    {
+        const double mid = 0.5 * (lo + hi);
+        if (gs(mid) > 0.0)
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid;
+        }
+    }
+    return 0.5 * (lo + hi);
+}
+} // namespace
+
+OccBlockResult OccOptimizer::run_bgd(RdmftBackend& backend, const RdmftParams& params,
+                                     std::vector<double>& occ, double& etot)
+{
+    OccBlockResult res;
+    const OccConstraints& con = backend.occ_constraints();
+    const int ndim = con.size();
+    if (ndim <= 0 || params.occ_maxiter <= 0)
+    {
+        res.converged = true;
+        return res;
+    }
+
+    con.proximal_project(occ);
+    etot = backend.total_energy(occ);
+
+    std::vector<double> grad_n(ndim);
+    std::vector<double> dedn(ndim);
+    std::vector<double> gamma(ndim);
+    std::vector<double> n0(ndim);
+
+    for (int inner = 0; inner < params.occ_maxiter; ++inner)
+    {
+        res.iterations = inner + 1;
+        backend.grad_occ(occ, grad_n);
+        res.grad_norm = con.pg_kkt_residual(occ, grad_n);
+
+        // ELK reduced gradient dedn = -(dE/dn)/wk.
+        for (int ik = 0; ik < con.nks; ++ik)
+        {
+            const double wk = con.wk[ik];
+            const int b = ik * con.nbnd;
+            for (int ib = 0; ib < con.nbnd; ++ib)
+            {
+                dedn[b + ib] = (wk > 0.0) ? -grad_n[b + ib] / wk : 0.0;
+            }
+        }
+
+        // Charge-neutral direction gamma via chemical potential kappa.
+        if (con.fix_magnetization)
+        {
+            const double kap_up = bgd_solve_kappa(con, dedn, occ, 1, true);
+            const double kap_dw = bgd_solve_kappa(con, dedn, occ, 2, true);
+            for (int ik = 0; ik < con.nks; ++ik)
+            {
+                const double kap = (con.isk[ik] == 1) ? kap_up : kap_dw;
+                const int b = ik * con.nbnd;
+                for (int ib = 0; ib < con.nbnd; ++ib)
+                {
+                    gamma[b + ib] = bgd_gamma(dedn[b + ib], occ[b + ib], kap);
+                }
+            }
+        }
+        else
+        {
+            const double kap = bgd_solve_kappa(con, dedn, occ, 0, false);
+            for (int i = 0; i < ndim; ++i)
+            {
+                gamma[i] = bgd_gamma(dedn[i], occ[i], kap);
+            }
+        }
+
+        // Normalise if the weighted norm exceeds one.
+        double sumsq = 0.0;
+        for (int ik = 0; ik < con.nks; ++ik)
+        {
+            const int b = ik * con.nbnd;
+            for (int ib = 0; ib < con.nbnd; ++ib)
+            {
+                sumsq += con.wk[ik] * gamma[b + ib] * gamma[b + ib];
+            }
+        }
+        if (sumsq > 1.0)
+        {
+            const double s = 1.0 / std::sqrt(sumsq);
+            for (int i = 0; i < ndim; ++i)
+            {
+                gamma[i] *= s;
+            }
+        }
+
+        // Feasible step bound tau_max keeping n + tau*gamma in [0,1].
+        double tau_max = 1.0e300;
+        for (int i = 0; i < ndim; ++i)
+        {
+            if (gamma[i] > 1.0e-30)
+            {
+                tau_max = std::min(tau_max, (1.0 - occ[i]) / gamma[i]);
+            }
+            else if (gamma[i] < -1.0e-30)
+            {
+                tau_max = std::min(tau_max, -occ[i] / gamma[i]);
+            }
+        }
+
+        const bool gamma_active = (sumsq > 1.0e-30) && (tau_max > 1.0e-30) && (tau_max < 1.0e299);
+        if (!gamma_active)
+        {
+            res.converged = true;
+            break;
+        }
+
+        const double phi0 = dot(grad_n, gamma);
+        if (phi0 >= 0.0 || (params.occ_tol > 0.0 && std::fabs(phi0) <= params.occ_tol))
+        {
+            res.converged = true;
+            break;
+        }
+
+        n0 = occ;
+        const double E0 = etot;
+        const double alpha_cap = std::min(params.bgd_tau, tau_max);
+
+        LineSearchEval eval = [&](double alpha, double& f, double& g, int& ierr) {
+            ierr = 0;
+            if (alpha > tau_max)
+            {
+                ierr = 1;
+                f = 1.0e300;
+                g = 0.0;
+                return;
+            }
+            std::vector<double> nt(ndim);
+            for (int i = 0; i < ndim; ++i)
+            {
+                nt[i] = n0[i] + alpha * gamma[i];
+            }
+            f = backend.total_energy(nt);
+            g = phi0;
+        };
+
+        LineSearchResult ls = armijo_line_search(eval, E0, phi0, alpha_cap, params.ls_c1,
+                                                 params.ls_rho, params.ls_max_iter, E0,
+                                                 params.bb_alpha_min);
+        if (!ls.success || ls.step <= 0.0)
+        {
+            occ = n0;
+            etot = backend.total_energy(occ);
+            break;
+        }
+
+        for (int i = 0; i < ndim; ++i)
+        {
+            occ[i] = n0[i] + ls.step * gamma[i];
+        }
+        etot = ls.f_new;
+
+        const double sum_dn = sum_abs_diff(occ, n0);
         if (params.occ_tol > 0.0 && sum_dn < params.occ_tol)
         {
             res.converged = true;

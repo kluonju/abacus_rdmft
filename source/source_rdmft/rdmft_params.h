@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_PARAMS_H
-#define SOURCE_RDMFT_RDMFT_PARAMS_H
+#ifndef RDMFT_PARAMS_H
+#define RDMFT_PARAMS_H
 
 #include <string>
 #include <algorithm>
@@ -39,7 +39,18 @@ enum class XcType
 enum class OccOptimizerType
 {
     SPG2,  //!< Birgin-Martinez-Raydan spectral projected gradient (default).
-    EBI    //!< Explicit-by-implicit erf parameterisation (Yao et al. 2022).
+    EBI,   //!< Explicit-by-implicit erf parameterisation (Yao et al. 2022).
+    BGD    //!< ELK-style bound-constrained gradient descent (rdmvaryn + Armijo).
+};
+
+//! Occupation-number initialisation mode (seeded from the KS weights).
+//! Integer values match OccConstraints::initialize_occupations mode codes.
+enum class OccInitMode
+{
+    KS = 0,        //!< n = wg/wk (default).
+    Perturbed = 1, //!< nudge Fermi-window bands by +/- delta.
+    Binary = 2,    //!< snap Fermi-window bands to delta / (1-delta).
+    Uniform = 3    //!< average Fermi-window bands.
 };
 
 //! Orbital (Stiefel) descent method.
@@ -78,6 +89,14 @@ struct RdmftParams
     SolverStrategy strategy = SolverStrategy::Alternating;
     OccOptimizerType occ_optimizer = OccOptimizerType::SPG2;
     OrbOptimizerType orb_optimizer = OrbOptimizerType::CG;
+
+    // Occupation initialisation --------------------------------------------
+    OccInitMode occ_init_mode = OccInitMode::KS;
+    double occ_init_perturb = 1.0e-2; //!< delta for perturbed / binary modes
+    int occ_init_nbands_top = 0;      //!< Fermi-window half-width (0 = all bands)
+
+    // BGD-specific ---------------------------------------------------------
+    double bgd_tau = 1.0; //!< caps the initial BGD line-search step
 
     // Iteration limits -----------------------------------------------------
     int outer_maxiter = 50;   //!< Outer alternating cycles.
@@ -183,6 +202,10 @@ inline bool parse_occ_optimizer(const std::string& name_in, OccOptimizerType& ou
     {
         out = OccOptimizerType::EBI;
     }
+    else if (s == "bgd" || s == "gd")
+    {
+        out = OccOptimizerType::BGD;
+    }
     else
     {
         return false;
@@ -215,4 +238,4 @@ inline bool parse_orb_optimizer(const std::string& name_in, OrbOptimizerType& ou
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_PARAMS_H
+#endif // RDMFT_PARAMS_H

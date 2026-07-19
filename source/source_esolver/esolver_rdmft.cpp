@@ -128,6 +128,24 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     params.power_alpha = inp.rdmft_power_alpha;
     params.occ_optimizer = map_occ_optimizer(inp.rdmft_occ_optimizer);
     params.orb_optimizer = map_orb_optimizer(inp.rdmft_orb_optimizer);
+    if (inp.rdmft_occ_init_mode == "perturbed")
+    {
+        params.occ_init_mode = rdmft::OccInitMode::Perturbed;
+    }
+    else if (inp.rdmft_occ_init_mode == "binary")
+    {
+        params.occ_init_mode = rdmft::OccInitMode::Binary;
+    }
+    else if (inp.rdmft_occ_init_mode == "uniform")
+    {
+        params.occ_init_mode = rdmft::OccInitMode::Uniform;
+    }
+    else
+    {
+        params.occ_init_mode = rdmft::OccInitMode::KS;
+    }
+    params.occ_init_perturb = inp.rdmft_occ_init_perturb;
+    params.occ_init_nbands_top = inp.rdmft_occ_init_nbands_top;
     params.outer_maxiter = inp.rdmft_outer_maxiter;
     params.occ_maxiter = std::max(0, inp.rdmft_occ_maxiter);
     params.orb_maxiter = std::max(0, inp.rdmft_orb_maxiter);

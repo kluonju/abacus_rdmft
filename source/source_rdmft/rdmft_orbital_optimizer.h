@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_ORBITAL_OPTIMIZER_H
-#define SOURCE_RDMFT_RDMFT_ORBITAL_OPTIMIZER_H
+#ifndef RDMFT_ORBITAL_OPTIMIZER_H
+#define RDMFT_ORBITAL_OPTIMIZER_H
 
 #include "rdmft_backend.h"
 #include "rdmft_params.h"
@@ -39,4 +39,4 @@ class OrbitalOptimizer
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_ORBITAL_OPTIMIZER_H
+#endif // RDMFT_ORBITAL_OPTIMIZER_H

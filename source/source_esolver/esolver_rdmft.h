@@ -1,5 +1,5 @@
-#ifndef SOURCE_ESOLVER_ESOLVER_RDMFT_H
-#define SOURCE_ESOLVER_ESOLVER_RDMFT_H
+#ifndef ESOLVER_RDMFT_H
+#define ESOLVER_RDMFT_H
 
 #include "esolver_ks_lcao.h"
 
@@ -47,4 +47,4 @@ class ESolver_RDMFT : public ESolver_KS_LCAO<TK, TR>
 
 } // namespace ModuleESolver
 
-#endif // SOURCE_ESOLVER_ESOLVER_RDMFT_H
+#endif // ESOLVER_RDMFT_H

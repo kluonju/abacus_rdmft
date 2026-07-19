@@ -1,5 +1,5 @@
-#ifndef SOURCE_RDMFT_RDMFT_LINE_SEARCH_H
-#define SOURCE_RDMFT_RDMFT_LINE_SEARCH_H
+#ifndef RDMFT_LINE_SEARCH_H
+#define RDMFT_LINE_SEARCH_H
 
 #include <functional>
 #include <vector>
@@ -66,4 +66,4 @@ class BarzilaiBorwein
 
 } // namespace rdmft
 
-#endif // SOURCE_RDMFT_RDMFT_LINE_SEARCH_H
+#endif // RDMFT_LINE_SEARCH_H
