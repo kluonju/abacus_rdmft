@@ -194,6 +194,23 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     double etot = 0.0;
     rdmft_core::RdmftDriver driver;
     rdmft_core::DriverResult result = driver.solve(backend, params, occ, etot);
+
+    // Diagnostic: report the optimised natural occupations at the first k-point
+    // and the Stiefel gram residual ||X^H X - I|| (X-space; the generalised
+    // C^H S C = I constraint is enforced through the Cholesky S transform).
+    {
+        std::vector<double> gram;
+        this->eg_.stiefel_gram_residual_frobenius_per_k(*(this->psi), gram);
+        double gmax = 0.0;
+        for (double g : gram) { gmax = std::max(gmax, g); }
+        GlobalV::ofs_running << " RDMFT(LCAO) natural occ (ik=0):";
+        for (int ib = 0; ib < std::min(nbands, 8); ++ib)
+        {
+            GlobalV::ofs_running << " " << occ[ib];
+        }
+        GlobalV::ofs_running << " | max||X^H X - I||_F=" << gmax << std::endl;
+    }
+
     backend.finalize_orbitals(); // X-space -> C-space natural orbitals
 
     // --- write back optimised occupations and energy ----------------------
