@@ -416,7 +416,7 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
         }
 
         std::vector<double> wg_mq(psi.get_nbands(), 0.0);
-        if (iq_pool == GlobalV::MY_POOL)
+        if (iq_pool == kv->para_k.my_pool)
         {
             for (int m_iband = 0; m_iband < psi.get_nbands(); ++m_iband)
             {
@@ -433,7 +433,7 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
             if (wg_mqb < 1e-12)
                 continue;
 
-            if (iq_pool == GlobalV::MY_POOL)
+            if (iq_pool == kv->para_k.my_pool)
             {
                 const T* psi_mq = get_pw(m_iband, iq_loc_spin);
                 wfcpw->recip_to_real(ctx, psi_mq, psi_mq_real, iq_loc);

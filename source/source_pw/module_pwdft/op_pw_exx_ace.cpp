@@ -286,7 +286,7 @@ void OperatorEXXPW<T, Device>::construct_ace() const
                     setmem_complex_op()(L_ace + i * nbands, 0, i);
                 }
 
-                if (PARAM.inp.device == "cpu")
+                if (wfcpw->get_device() == "cpu")
                 {
                     for (int ib = 0; ib < nbands; ++ib)
                     {

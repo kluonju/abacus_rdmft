@@ -424,7 +424,7 @@ class RdmftBackendPW : public rdmft_core::RdmftBackend
             op->set_wg(&wg_x_);
             op->first_iter = false;
             op->set_psi_keep_ace_build_cache(*psi_);
-            if (PARAM.inp.exxace && op->separate_loop)
+            if (op->separate_loop)
             {
                 op->construct_ace();
             }
