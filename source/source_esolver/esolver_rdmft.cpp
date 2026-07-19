@@ -89,6 +89,15 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     // by xc_type inside EnergyGradient.
     XC_Functional::set_xc_type("hf");
 
+    // EnergyGradient enables its own exact-exchange infrastructure only when
+    // PARAM.inp.rdmft is set (rdmft_energy_gradient.cpp).  This esolver is
+    // selected through esolver_type=rdmft rather than that flag, so enable it
+    // around the RDMFT stage and restore it afterwards (the base KS after_scf
+    // above has already run with the original flag, so its legacy embedded
+    // RDMFT path is not triggered).
+    const bool rdmft_flag_saved = PARAM.inp.rdmft;
+    const_cast<Input_para&>(PARAM.inp).rdmft = true;
+
     if (!this->eg_ready_)
     {
         this->eg_.init(&this->pv, &ucell, &this->gd, &this->kv, this->pelec, &this->orb_,
@@ -193,6 +202,8 @@ void ESolver_RDMFT<TK, TR>::after_scf(UnitCell& ucell, const int istep, const bo
     GlobalV::ofs_running << "\n RDMFT (modular esolver) finished: E = " << etot
                          << " Ry, converged = " << (result.converged ? "T" : "F")
                          << ", outer iterations = " << result.outer_iterations << std::endl;
+
+    const_cast<Input_para&>(PARAM.inp).rdmft = rdmft_flag_saved;
 #endif
 }
 
