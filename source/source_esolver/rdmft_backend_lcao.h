@@ -79,8 +79,7 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
         const int nk = eg_.nk();
         const int nbands = eg_.nbands();
         const int nks = kv.get_nks();
-        const double spin_deg = (nspin == 1) ? 2.0 : 1.0;
-        spin_deg_ = spin_deg;
+        (void)nspin;
 
         con_.nbnd = nbands;
         con_.nks = nk;
@@ -89,7 +88,10 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
         for (int ik = 0; ik < nk; ++ik)
         {
             const int kslot = (ik < nks) ? ik : ik - nks;
-            con_.wk[ik] = spin_deg * kv.wk[kslot];
+            // kv.wk already folds the spin degeneracy (for nspin=1 it carries the
+            // factor 2), so n = wg/kv.wk is the per-spin natural occupation in
+            // [0,1] and equals the occupation EnergyGradient expects (wg/wk).
+            con_.wk[ik] = kv.wk[kslot];
             con_.isk[ik] = (nspin == 2 && ik >= nks) ? 2 : 1;
         }
         con_.n_target = nelec;
@@ -119,8 +121,8 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
         grad.resize(con_.size());
         for (int i = 0; i < con_.size(); ++i)
         {
-            // dE/dn = dE/docc_flat * docc_flat/dn = grad_scratch * spin_deg.
-            grad[i] = grad_scratch_[i] * spin_deg_;
+            // occ_flat == n (see to_engine_occ), so dE/dn = dE/docc_flat.
+            grad[i] = grad_scratch_[i];
         }
     }
 
@@ -188,7 +190,8 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
         occ_flat.resize(con_.size());
         for (int i = 0; i < con_.size(); ++i)
         {
-            occ_flat[i] = spin_deg_ * n[i];
+            // n is already the per-spin occupation wg/kv.wk expected by EnergyGradient.
+            occ_flat[i] = n[i];
         }
     }
 
@@ -198,7 +201,6 @@ class RdmftBackendLCAO : public rdmft_core::RdmftBackend
     psi::Psi<TK> scratch_;
     psi::Psi<TK> saved_;
     rdmft_core::OccConstraints con_;
-    double spin_deg_ = 1.0;
     std::vector<double> occ_scratch_;
     std::vector<double> grad_scratch_;
 };

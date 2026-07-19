@@ -41,6 +41,7 @@ class RdmftXC
 
     XcType type() const { return type_; }
     double alpha() const { return alpha_; }
+    double reg_eps() const { return reg_eps_; }
 
     //! Single-channel separable coupling g(n) and derivative dg(n).
     double g(double n) const;
