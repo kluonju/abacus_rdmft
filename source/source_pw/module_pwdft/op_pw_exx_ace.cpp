@@ -2,6 +2,7 @@
 #include "source_base/parallel_comm.h"
 #include "source_base/parallel_device.h"
 #include "source_base/parallel_reduce.h"
+#include "source_base/module_external/blas_connector.h"
 #include "source_io/module_parameter/parameter.h"
 #include "source_hamilt/module_xc/exx_info.h"
 
@@ -117,6 +118,37 @@ void OperatorEXXPW<T, Device>::construct_ace() const
 
     if (first_iter) return;
     ModuleBase::timer::start("OperatorEXXPW", "construct_ace");
+
+    if (use_real_space_orbital_cache())
+    {
+        if (psi_n_real_cache_k.size() != static_cast<size_t>(wfcpw->nks))
+        {
+            for (auto& psi_real : psi_n_real_cache_k)
+            {
+                delmem_complex_op()(psi_real);
+            }
+            psi_n_real_cache_k.assign(wfcpw->nks, nullptr);
+            for (int ik = 0; ik < wfcpw->nks; ++ik)
+            {
+                resmem_complex_op()(psi_n_real_cache_k[ik], static_cast<size_t>(nbands) * wfcpw->nrxx);
+            }
+            real_space_cache_valid = false;
+        }
+        if (!real_space_cache_valid)
+        {
+            for (int ik = 0; ik < wfcpw->nks; ++ik)
+            {
+                psi.fix_kb(ik, 0);
+                const T* psi_k = psi.get_pointer();
+                for (int ib = 0; ib < nbands; ++ib)
+                {
+                    wfcpw->recip_to_real(ctx, psi_k + static_cast<size_t>(ib) * nbasis,
+                                         psi_n_real_cache_k[ik] + static_cast<size_t>(ib) * wfcpw->nrxx, ik);
+                }
+            }
+            real_space_cache_valid = true;
+        }
+    }
 
     int nk_max = kv->para_k.get_max_nks_pool();
     int nspin_fac = PARAM.inp.nspin == 2 ? 2 : 1;
@@ -254,24 +286,51 @@ void OperatorEXXPW<T, Device>::construct_ace() const
                     setmem_complex_op()(L_ace + i * nbands, 0, i);
                 }
 
-                // L_ace inv in place
-                char non = 'N';
-                lapack_trtri()(lo, non, nbands, L_ace, nbands);
-
-                // Xi_ace = L_ace^-1 * h_psi_ace^dagger
-                gemm_complex_op()('N',
-                                  'C',
-                                  nbands,
-                                  npwk,
-                                  nbands,
-                                  &intermediate_one,
-                                  L_ace,
-                                  nbands,
-                                  h_psi_ace,
-                                  nbasis,
-                                  &intermediate_zero,
-                                  Xi_ace,
-                                  nbands);
+                if (PARAM.inp.device == "cpu")
+                {
+                    for (int ib = 0; ib < nbands; ++ib)
+                    {
+                        for (int ig = 0; ig < npwk; ++ig)
+                        {
+                            Xi_ace[ib + ig * nbands] = std::conj(h_psi_ace[ib * nbasis + ig]);
+                        }
+                    }
+                    const char side = 'L', trans = 'N', diag = 'N';
+                    if (sizeof(T) == sizeof(std::complex<float>))
+                    {
+                        const std::complex<float> alpha(1.0f, 0.0f);
+                        ctrsm_(&side, &lo, &trans, &diag, &nbands, &npwk, &alpha,
+                               reinterpret_cast<const std::complex<float>*>(L_ace), &nbands,
+                               reinterpret_cast<std::complex<float>*>(Xi_ace), &nbands);
+                    }
+                    else
+                    {
+                        const std::complex<double> alpha(1.0, 0.0);
+                        ztrsm_(&side, &lo, &trans, &diag, &nbands, &npwk, &alpha,
+                               reinterpret_cast<const std::complex<double>*>(L_ace), &nbands,
+                               reinterpret_cast<std::complex<double>*>(Xi_ace), &nbands);
+                    }
+                }
+                else
+                {
+                    // GPU backends do not provide a device triangular solve through
+                    // the common kernel layer yet; retain the existing fallback.
+                    char non = 'N';
+                    lapack_trtri()(lo, non, nbands, L_ace, nbands);
+                    gemm_complex_op()('N',
+                                      'C',
+                                      nbands,
+                                      npwk,
+                                      nbands,
+                                      &intermediate_one,
+                                      L_ace,
+                                      nbands,
+                                      h_psi_ace,
+                                      nbasis,
+                                      &intermediate_zero,
+                                      Xi_ace,
+                                      nbands);
+                }
 
                 // clear mem
                 setmem_complex_op()(h_psi_ace, 0, nbands * nbasis);

@@ -25,6 +25,11 @@
 
 namespace hamilt
 {
+namespace
+{
+const size_t ace_cache_memory_limit = 256ULL * 1024ULL * 1024ULL;
+}
+
 template <typename T, typename Device>
 std::vector<typename GetTypeReal<T>::type> OperatorEXXPW<T, Device>::fock_div = {};
 
@@ -150,7 +155,66 @@ OperatorEXXPW<T, Device>::~OperatorEXXPW()
         delmem_complex_op()(Xi_ace);
     }
     Xi_ace_k.clear();
+    for (auto& psi_real : psi_n_real_cache_k)
+    {
+        delmem_complex_op()(psi_real);
+    }
+    psi_n_real_cache_k.clear();
     delete rhopw_dev;
+}
+
+template <typename T, typename Device>
+bool OperatorEXXPW<T, Device>::use_real_space_orbital_cache() const
+{
+    const size_t cache_size = static_cast<size_t>(wfcpw->nks) * psi.get_nbands() * wfcpw->nrxx * sizeof(T);
+    return cache_size <= ace_cache_memory_limit;
+}
+
+template <typename T, typename Device>
+bool OperatorEXXPW<T, Device>::use_coulomb_kernel_cache() const
+{
+    const size_t cache_size = static_cast<size_t>(wfcpw->nks) * kv->get_nkstot_full() * rhopw_dev->npw
+                              * sizeof(Real);
+    return cache_size <= ace_cache_memory_limit;
+}
+
+template <typename T, typename Device>
+void OperatorEXXPW<T, Device>::invalidate_ace_build_cache() const
+{
+    real_space_cache_valid = false;
+    coulomb_kernel_cache.clear();
+}
+
+template <typename T, typename Device>
+void OperatorEXXPW<T, Device>::set_psi(psi::Psi<T, Device>& psi_in) const
+{
+    psi = psi_in;
+    invalidate_ace_build_cache();
+}
+
+template <typename T, typename Device>
+void OperatorEXXPW<T, Device>::get_cached_exx_potential(const int ik, const int iq) const
+{
+    if (!use_coulomb_kernel_cache())
+    {
+        get_exx_potential<Real, Device>(kv, wfcpw, rhopw_dev, pot, tpiba, gamma_extrapolation, ucell->omega,
+                                        ik, iq, false, coulomb_param);
+        return;
+    }
+
+    const std::pair<int, int> key(ik, iq);
+    const auto found = coulomb_kernel_cache.find(key);
+    if (found != coulomb_kernel_cache.end())
+    {
+        syncmem_real_c2d_op()(pot, found->second.data(), rhopw_dev->npw);
+        return;
+    }
+
+    get_exx_potential<Real, Device>(kv, wfcpw, rhopw_dev, pot, tpiba, gamma_extrapolation, ucell->omega, ik,
+                                    iq, false, coulomb_param);
+    std::vector<Real> kernel(rhopw_dev->npw);
+    syncmem_real_d2c_op()(kernel.data(), pot, rhopw_dev->npw);
+    coulomb_kernel_cache.emplace(key, std::move(kernel));
 }
 
 template <typename T>
@@ -323,19 +387,24 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
     // per occupied source band).  This mirrors qe's exxbuff, which keeps the
     // orbitals in real space across the Fock build.
     const int nrxx = wfcpw->nrxx;
-    T* psi_n_real_all = nullptr;
-    resmem_complex_op()(psi_n_real_all, static_cast<size_t>(nbands) * nrxx);
-    for (int n_iband = 0; n_iband < nbands; n_iband++)
+    const bool use_cached_orbitals = real_space_cache_valid
+                                     && this->ik < static_cast<int>(psi_n_real_cache_k.size());
+    T* psi_n_real_all = use_cached_orbitals ? psi_n_real_cache_k[this->ik] : nullptr;
+    if (!use_cached_orbitals)
     {
-        const T* psi_nk = tmpsi_in + n_iband * nbasis;
-        wfcpw->recip_to_real(ctx, psi_nk, psi_n_real_all + static_cast<size_t>(n_iband) * nrxx, this->ik);
+        resmem_complex_op()(psi_n_real_all, static_cast<size_t>(nbands) * nrxx);
+        for (int n_iband = 0; n_iband < nbands; n_iband++)
+        {
+            const T* psi_nk = tmpsi_in + n_iband * nbasis;
+            wfcpw->recip_to_real(ctx, psi_nk, psi_n_real_all + static_cast<size_t>(n_iband) * nrxx, this->ik);
+        }
     }
 
     // ik fixed here, select band n
     for (int iq = 0; iq < nqs; iq++)
     {
         // for \psi_nk, get the pw of iq and band m
-        get_exx_potential<Real,  Device>(kv, wfcpw, rhopw_dev, pot, tpiba, gamma_extrapolation, ucell->omega, this->ik, iq, false, this->coulomb_param);
+        get_cached_exx_potential(this->ik, iq);
 
         // decide which pool does the iq belong to
         int iq_pool = kv->para_k.whichpool[iq];
@@ -346,16 +415,21 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
             iq_loc_spin += wfcpw->nks / nspin_fac;
         }
 
+        std::vector<double> wg_mq(psi.get_nbands(), 0.0);
+        if (iq_pool == GlobalV::MY_POOL)
+        {
+            for (int m_iband = 0; m_iband < psi.get_nbands(); ++m_iband)
+            {
+                wg_mq[m_iband] = (*wg)(iq_loc_spin, m_iband);
+            }
+        }
+#ifdef __MPI
+        MPI_Bcast(wg_mq.data(), static_cast<int>(wg_mq.size()), MPI_DOUBLE,
+                  kv->para_k.get_startpro_pool(iq_pool), MPI_COMM_WORLD);
+#endif
         for (int m_iband = 0; m_iband < psi.get_nbands(); m_iband++)
         {
-            double wg_mqb = 0;
-            if (iq_pool == GlobalV::MY_POOL)
-            {
-                wg_mqb = (*wg)(iq_loc_spin, m_iband);
-            }
-#ifdef __MPI
-            MPI_Bcast(&wg_mqb, 1, MPI_DOUBLE, kv->para_k.get_startpro_pool(iq_pool), MPI_COMM_WORLD);
-#endif
+            const double wg_mqb = wg_mq[m_iband];
             if (wg_mqb < 1e-12)
                 continue;
 
@@ -399,7 +473,10 @@ void OperatorEXXPW<T, Device>::act_op_kpar(const int nbands,
 
     } // end of iq
 
-    delmem_complex_op()(psi_n_real_all);
+    if (!use_cached_orbitals)
+    {
+        delmem_complex_op()(psi_n_real_all);
+    }
 
     ModuleBase::timer::end("OperatorEXXPW", "act_op_kpar");
 

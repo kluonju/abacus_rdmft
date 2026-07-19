@@ -13,6 +13,7 @@
 #include "source_base/module_container/ATen/kernels/lapack.h"
 
 #include <memory>
+#include <map>
 #include <utility>
 #include <vector>
 
@@ -50,11 +51,16 @@ class OperatorEXXPW : public OperatorPW<T, Device>
 
     double cal_exx_energy(psi::Psi<T, Device> *psi_) const;
 
-    void set_psi(psi::Psi<T, Device> &psi_in) const { psi = psi_in; }
+    void set_psi(psi::Psi<T, Device> &psi_in) const;
+    void set_psi_keep_ace_build_cache(psi::Psi<T, Device>& psi_in) const { psi = psi_in; }
 
     void set_wg(const ModuleBase::matrix *wg_in) { wg = wg_in; }
 
     void construct_ace() const;
+
+    // The RDMFT orbital optimiser changes the wave functions in place.  It must
+    // invalidate these otherwise persistent ACE-build work caches after a move.
+    void invalidate_ace_build_cache() const;
 
     bool first_iter = true;
     bool separate_loop = false;
@@ -140,6 +146,12 @@ class OperatorEXXPW : public OperatorPW<T, Device>
     mutable std::vector<T*> Xi_ace_k; // L^{-1} (H \Psi)^{\dagger}, \Xi in the paper
 //    mutable T* Xi_ace = nullptr; // L^{-1} (H \Psi)^{\dagger}, \Xi in the paper
 
+    // Retain real-space target orbitals and Coulomb kernels between ACE rebuilds
+    // when their bounded memory footprints are acceptable.
+    mutable std::vector<T*> psi_n_real_cache_k;
+    mutable bool real_space_cache_valid = false;
+    mutable std::map<std::pair<int, int>, std::vector<Real>> coulomb_kernel_cache;
+
     mutable std::map<int, std::vector<int>> q_points;
 
     // occupational number
@@ -172,6 +184,10 @@ class OperatorEXXPW : public OperatorPW<T, Device>
     using lapack_trtri = container::kernels::lapack_trtri<T, ct_Device>;
 
     bool gamma_extrapolation = true;
+
+    bool use_real_space_orbital_cache() const;
+    bool use_coulomb_kernel_cache() const;
+    void get_cached_exx_potential(int ik, int iq) const;
 
 };
 

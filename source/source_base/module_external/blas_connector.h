@@ -168,6 +168,12 @@ void dtrsm_(const char *side, const char *uplo, const char *transa, const char *
             const double *a, const int *lda,
             double *b, const int *ldb);
 
+void ctrsm_(const char *side, const char *uplo, const char *transa, const char *diag,
+            const int *m, const int *n,
+            const std::complex<float> *alpha,
+            const std::complex<float> *a, const int *lda,
+            std::complex<float> *b, const int *ldb);
+
 void ztrsm_(const char *side, const char *uplo, const char *transa, const char *diag,
             const int *m, const int *n,
             const std::complex<double> *alpha,
