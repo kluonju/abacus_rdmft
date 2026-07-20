@@ -638,8 +638,7 @@ if(ENABLE_LCAO)
       gint
       hcontainer
       numerical_atomic_orbitals
-      lr
-      rdmft)
+      lr)
   if(ENABLE_ELPA)
     target_link_libraries(${ABACUS_BIN_NAME} PRIVATE genelpa)
   endif()
@@ -654,6 +653,10 @@ endif()
 if(ENABLE_RDMFT)
   # Basis-independent RDMFT core (used by the plane-wave and LCAO backends).
   target_link_libraries(${ABACUS_BIN_NAME} PRIVATE rdmft_core)
+  # LCAO/LibRI RDMFT backend objects (target only exists when ENABLE_LCAO).
+  if(ENABLE_LCAO)
+    target_link_libraries(${ABACUS_BIN_NAME} PRIVATE rdmft)
+  endif()
 endif()
 
 if(ENABLE_MLALGO)
